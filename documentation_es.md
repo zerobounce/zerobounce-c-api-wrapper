@@ -48,11 +48,12 @@ Incluye la biblioteca en tu archivo:
 ###include <ZeroBounce/ZeroBounce.h>
 ```
 
-Inicializa el envoltorio con tu clave de API:
+Inicializa el envoltorio con tu clave de API y tu API preferida:
 ```c
 ZeroBounce* zb = zero_bounce_get_instance();
-zero_bounce_initialize(zb, "<TU_CLAVE_DE_API>");
+zero_bounce_initialize(zb, "<YOUR_API_KEY>", Default);
 ```
+
 #### Ejemplos
 Luego puedes usar cualquiera de las funciones de envoltura, por ejemplo:
 
@@ -285,6 +286,54 @@ void on_success_delete_file(ZBDeleteFileResponse response) {
 char* file_id = "<ID_DEL_ARCHIVO>";                       // El ID de archivo devuelto al llamar a la API scoringSendfile
 
 scoring_delete_file(zb, file_id, on_success_delete_file, on_error);
+```
+
+* ##### El buscador de correos electrónicos te permite identificar el formato correcto de correo electrónico cuando proporcionas un nombre y un dominio de correo electrónico o el nombre de una empresa.
+```c
+void error_callback(ZBErrorResponse error_response) {
+    char* error_string = concatenate_strings(&(error_response.errors), "");
+    printf("ERROR: %s\n", error_string);
+    free(error_string);
+}
+
+void on_success_callback(ZBFindEmailResponse response) {
+    char* result = zb_find_email_response_to_string(&response);
+    printf("%s\n", result);
+    free(result);
+}
+
+// actual method
+find_email_by_domain(
+    zb, "example.com", "John", "", "Doe", on_success_callback, error_callback
+);
+
+find_email_by_company_name(
+    zb, "company", "John", "", "Doe", on_success_callback, error_callback
+);
+```
+
+* ##### La búsqueda de dominio le permite identificar el dominio de correo electrónico cuando proporciona un dominio o nombre de empresa.
+```c
+void error_callback(ZBErrorResponse error_response) {
+    char* error_string = concatenate_strings(&(error_response.errors), "");
+    printf("ERROR: %s\n", error_string);
+    free(error_string);
+}
+
+void on_success_callback(ZBDomainSearchResponse response) {
+    char* result = zb_domain_search_response_to_string(&response);
+    printf("%s\n", result);
+    free(result);
+}
+
+// actual method
+search_domain_by_domain(
+    zb, "example.com", on_success_callback, error_callback
+);
+
+search_domain_by_company_name(
+    zb, "company", on_success_callback, error_callback
+);
 ```
 
 #### DESARROLLO

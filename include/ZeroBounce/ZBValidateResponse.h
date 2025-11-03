@@ -54,7 +54,8 @@ typedef enum {
     AliasAddress,
     RoleBasedCatchAll,
     Disposable,
-    Toxic
+    Toxic,
+    AcceptAll
 } ZBValidateSubStatus;
 
 /**

@@ -69,6 +69,8 @@ ZBValidateSubStatus sub_status_from_string(const char* string) {
         return Disposable;
     } else if (strcmp(string, "toxic") == 0) {
         return Toxic;
+    } else if (strcmp(string, "accept_all") == 0) {
+        return AcceptAll;
     }
 
     return None;

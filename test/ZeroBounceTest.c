@@ -18,6 +18,7 @@ static ZBGetFileResponse expected_get_file_response;
 static ZBDeleteFileResponse expected_delete_file_response;
 static ZBActivityDataResponse expected_activity_data_response;
 static ZBFindEmailResponse expected_find_email_response;
+static ZBDomainSearchResponse expected_domain_search_response;
 
 static char* response_json = "";
 
@@ -104,6 +105,12 @@ void on_success_activity_data_invalid(ZBActivityDataResponse response) {
 void on_success_find_email_valid(ZBFindEmailResponse response) {
     TEST_ASSERT_TRUE(
         zb_find_email_response_compare(&expected_find_email_response, &response)
+    );
+}
+
+void on_success_search_domain_valid(ZBDomainSearchResponse response) {
+    TEST_ASSERT_TRUE(
+        zb_domain_search_response_compare(&expected_domain_search_response, &response)
     );
 }
 
@@ -216,6 +223,7 @@ void test_get_api_usage_valid(void)
         "    \"sub_status_alternate\": 0,\n"
         "    \"sub_status_blocked\": 0,\n"
         "    \"sub_status_allowed\": 0,\n"
+        "    \"sub_status_accept_all\": 0,\n"
         "    \"start_date\": \"1/1/2018\",\n"
         "    \"end_date\": \"12/12/2019\"\n"
         "}";
@@ -594,14 +602,11 @@ void test_scoring_delete_file_valid(void)
 void test_find_email_status_invalid_payload(void) {
     response_json = "{\n"
         "    \"email\": \"\",\n"
+        "    \"email_confidence\": \"high\",\n"
         "    \"domain\": \"example.com\",\n"
-        "    \"format\": \"unknown\",\n"
-        "    \"status\": \"invalid\",\n"
-        "    \"sub_status\": \"no_dns_entries\",\n"
-        "    \"confidence\": \"undetermined\",\n"
+        "    \"company_name\": \"\",\n"
         "    \"did_you_mean\": \"\",\n"
-        "    \"failure_reason\": \"\",\n"
-        "    \"other_domain_formats\": []\n"
+        "    \"failure_reason\": \"\"\n"
         "}";
 
     // de-serialization testing
@@ -610,13 +615,11 @@ void test_find_email_status_invalid_payload(void) {
     );
     TEST_ASSERT_EQUAL_STRING("", response_obj.email);
     TEST_ASSERT_EQUAL_STRING("example.com", response_obj.domain);
-    TEST_ASSERT_EQUAL_STRING("invalid", response_obj.status);
-    TEST_ASSERT_EQUAL_INT(0, response_obj.other_domain_formats.size);
 
     // request checking
     get_http_code_fake.return_val = 200;
     expected_find_email_response = response_obj;
-    find_email(
+    find_email_by_domain_first_middle_last_name(
         zb, "example.com", "John", "", "Doe",
         on_success_find_email_valid,
         on_error_valid
@@ -627,10 +630,66 @@ void test_find_email_status_invalid_payload(void) {
 void test_find_email_status_valid_payload(void) {
     response_json = "{\n"
         "    \"email\": \"john.doe@example.com\",\n"
+        "    \"email_confidence\": \"high\",\n"
         "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
+        "    \"did_you_mean\": \"\",\n"
+        "    \"failure_reason\": \"\"\n"
+        "}";
+
+    // de-serialization testing
+    ZBFindEmailResponse response_obj = zb_find_email_response_from_json(
+        json_tokener_parse(response_json)
+    );
+    TEST_ASSERT_EQUAL_STRING("john.doe@example.com", response_obj.email);
+    TEST_ASSERT_EQUAL_STRING("example.com", response_obj.domain);
+
+    // request checking
+    get_http_code_fake.return_val = 200;
+    expected_find_email_response = response_obj;
+    find_email_by_domain_first_middle_last_name(
+        zb, "example.com", "John", "", "Doe",
+        on_success_find_email_valid,
+        on_error_valid
+    );
+    zb_find_email_response_free(&response_obj);
+}
+
+
+void test_search_domain_status_invalid_payload(void) {
+    response_json = "{\n"
+        "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
+        "    \"format\": \"unknown\",\n"
+        "    \"confidence\": \"undetermined\",\n"
+        "    \"did_you_mean\": \"\",\n"
+        "    \"failure_reason\": \"\",\n"
+        "    \"other_domain_formats\": []\n"
+        "}";
+
+    // de-serialization testing
+    ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(
+        json_tokener_parse(response_json)
+    );
+    TEST_ASSERT_EQUAL_STRING("example.com", response_obj.domain);
+    TEST_ASSERT_EQUAL_INT(0, response_obj.other_domain_formats.size);
+
+    // request checking
+    get_http_code_fake.return_val = 200;
+    expected_domain_search_response = response_obj;
+    search_domain_by_domain(
+        zb, "example.com",
+        on_success_search_domain_valid,
+        on_error_valid
+    );
+    zb_domain_search_response_free(&response_obj);
+}
+
+void test_search_domain_status_valid_payload(void) {
+    response_json = "{\n"
+        "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
         "    \"format\": \"first.last\",\n"
-        "    \"status\": \"valid\",\n"
-        "    \"sub_status\": \"\",\n"
         "    \"confidence\": \"high\",\n"
         "    \"did_you_mean\": \"\",\n"
         "    \"failure_reason\": \"\",\n"
@@ -647,12 +706,11 @@ void test_find_email_status_valid_payload(void) {
         "}";
 
     // de-serialization testing
-    ZBFindEmailResponse response_obj = zb_find_email_response_from_json(
+    ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(
         json_tokener_parse(response_json)
     );
-    TEST_ASSERT_EQUAL_STRING("john.doe@example.com", response_obj.email);
     TEST_ASSERT_EQUAL_STRING("example.com", response_obj.domain);
-    TEST_ASSERT_EQUAL_STRING("valid", response_obj.status);
+    TEST_ASSERT_EQUAL_STRING("", response_obj.company_name);
     TEST_ASSERT_EQUAL_INT(2, response_obj.other_domain_formats.size);
     TEST_ASSERT_EQUAL_STRING("first_last", response_obj.other_domain_formats.data[0].format);
     TEST_ASSERT_EQUAL_STRING("high", response_obj.other_domain_formats.data[0].confidence);
@@ -661,23 +719,21 @@ void test_find_email_status_valid_payload(void) {
 
     // request checking
     get_http_code_fake.return_val = 200;
-    expected_find_email_response = response_obj;
-    find_email(
-        zb, "example.com", "John", "", "Doe",
-        on_success_find_email_valid,
+    expected_domain_search_response = response_obj;
+    search_domain_by_domain(
+        zb, "example.com", 
+        on_success_search_domain_valid,
         on_error_valid
     );
-    zb_find_email_response_free(&response_obj);
+    zb_domain_search_response_free(&response_obj);
 }
 
 
-void test_find_email_status_serialize_functions() {
+void test_search_domain_status_serialize_functions() {
     response_json = "{\n"
-        "    \"email\": \"john.doe@example.com\",\n"
         "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
         "    \"format\": \"first.last\",\n"
-        "    \"status\": \"valid\",\n"
-        "    \"sub_status\": \"\",\n"
         "    \"confidence\": \"high\",\n"
         "    \"did_you_mean\": \"\",\n"
         "    \"failure_reason\": \"\",\n"
@@ -693,7 +749,7 @@ void test_find_email_status_serialize_functions() {
         "    ]\n"
         "}";
 
-    ZBFindEmailResponse response_obj = zb_find_email_response_from_json(
+    ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(
         json_tokener_parse(response_json)
     );
 
@@ -708,13 +764,13 @@ void test_find_email_status_serialize_functions() {
         "domain format vector serializing is '[]' but is should not"
     );
 
-    char* string3 = zb_find_email_response_to_string(&response_obj);
+    char* string3 = zb_domain_search_response_to_string(&response_obj);
     TEST_ASSERT_NOT_NULL_MESSAGE(string3, "find mail response serializing failed");
 
     free(string1);
     free(string2);
     free(string3);
-    zb_find_email_response_free(&response_obj);
+    zb_domain_search_response_free(&response_obj);
 }
 
 
@@ -748,7 +804,9 @@ int main(void)
     RUN_TEST(test_scoring_delete_file_valid);
     RUN_TEST(test_find_email_status_invalid_payload);
     RUN_TEST(test_find_email_status_valid_payload);
-    RUN_TEST(test_find_email_status_serialize_functions);
+    RUN_TEST(test_search_domain_status_invalid_payload);
+    RUN_TEST(test_search_domain_status_valid_payload);
+    RUN_TEST(test_search_domain_status_serialize_functions);
 
     return UNITY_END();
 }

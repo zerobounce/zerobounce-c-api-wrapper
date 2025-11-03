@@ -48,10 +48,10 @@ Include the library in your file:
 ###include <ZeroBounce/ZeroBounce.h>
 ```
 
-Initialize the wrapper with your api key:
+Initialize the wrapper with your api key and preferred api:
 ```c
 ZeroBounce* zb = zero_bounce_get_instance();
-zero_bounce_initialize(zb, "<YOUR_API_KEY>");
+zero_bounce_initialize(zb, "<YOUR_API_KEY>", Default);
 ```
 
 #### Examples
@@ -281,6 +281,54 @@ void on_success_delete_file(ZBDeleteFileResponse response) {
 char* file_id = "<FILE_ID>";                       // The returned file ID when calling scoringSendfile API
 
 scoring_delete_file(zb, file_id, on_success_delete_file, on_error);
+```
+
+* ##### Email finder allows you to identify the correct email format when you provide a name and email domain or company name
+```c
+void error_callback(ZBErrorResponse error_response) {
+    char* error_string = concatenate_strings(&(error_response.errors), "");
+    printf("ERROR: %s\n", error_string);
+    free(error_string);
+}
+
+void on_success_callback(ZBFindEmailResponse response) {
+    char* result = zb_find_email_response_to_string(&response);
+    printf("%s\n", result);
+    free(result);
+}
+
+// actual method
+find_email_by_domain(
+    zb, "example.com", "John", "", "Doe", on_success_callback, error_callback
+);
+
+find_email_by_company_name(
+    zb, "company", "John", "", "Doe", on_success_callback, error_callback
+);
+```
+
+* ##### Domain search allows you to identify the email domain when you provide a domain or company name
+```c
+void error_callback(ZBErrorResponse error_response) {
+    char* error_string = concatenate_strings(&(error_response.errors), "");
+    printf("ERROR: %s\n", error_string);
+    free(error_string);
+}
+
+void on_success_callback(ZBDomainSearchResponse response) {
+    char* result = zb_domain_search_response_to_string(&response);
+    printf("%s\n", result);
+    free(result);
+}
+
+// actual method
+search_domain_by_domain(
+    zb, "example.com", on_success_callback, error_callback
+);
+
+search_domain_by_company_name(
+    zb, "company", on_success_callback, error_callback
+);
 ```
 
 #### DEVELOPMENT
