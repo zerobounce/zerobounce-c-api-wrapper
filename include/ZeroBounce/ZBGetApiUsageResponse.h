@@ -40,6 +40,7 @@ typedef struct {
     int sub_status_alternate;
     int sub_status_blocked;
     int sub_status_allowed;
+    int sub_status_accept_all;
     char* start_date;
     char* end_date;
     char* error;

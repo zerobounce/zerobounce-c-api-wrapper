@@ -20,6 +20,8 @@
 #include "ZeroBounce/ZBDeleteFileResponse.h"
 #include "ZeroBounce/ZBActivityDataResponse.h"
 #include "ZeroBounce/ZBFindEmailResponse.h"
+#include "ZeroBounce/ZBDomainSearchResponse.h"
+#include "ZeroBounce/ZBApiURL.h"
 
 typedef void (*OnErrorCallback)(ZBErrorResponse error_response);
 typedef void (*OnSuccessCallbackCredits)(ZBCreditsResponse response);
@@ -32,6 +34,7 @@ typedef void (*OnSuccessCallbackGetFile)(ZBGetFileResponse response);
 typedef void (*OnSuccessCallbackDeleteFile)(ZBDeleteFileResponse response);
 typedef void (*OnSuccessCallbackActivityData)(ZBActivityDataResponse response);
 typedef void (*OnSuccessCallbackFindEmail)(ZBFindEmailResponse response);
+typedef void (*OnSuccessCallbackDomainSearch)(ZBDomainSearchResponse response);
 
 
 /**
@@ -94,7 +97,7 @@ char* get_content_type_value(CURL* curl);
  */
 typedef struct {
     char* api_key;
-    const char* api_base_url;
+    char* api_base_url;
     const char* bulk_api_base_url;
     const char* bulk_api_scoring_base_url;
 } ZeroBounce;
@@ -116,12 +119,20 @@ ZeroBounce* new_zero_bounce_instance();
 ZeroBounce* zero_bounce_get_instance();
 
 /**
- * @brief Initializes the wrapper with an API key.
+ * @brief Initializes the wrapper with the default base URL.
  *
  * @param zb ZeroBounce pointer
  * @param api_key the API key
  */
 void zero_bounce_initialize(ZeroBounce* zb, const char* api_key);
+
+/**
+ * @brief Initializes the wrapper.
+ *
+ * @param zb ZeroBounce pointer
+ * @param api_key the API key
+ */
+void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, ZBApiURL api_base_url);
 
 /**
  * @brief Checks if the [api_key] is invalid or not and if it is, then it throws an error through the provided
@@ -227,6 +238,46 @@ static void delete_file_internal(
     bool scoring,
     char* file_id,
     OnSuccessCallbackDeleteFile success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param domain            The email domain for which to find the email format
+ * @param company_name      The company name for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param middle_name       The middle name of the person whose email format is being searched
+ * @param last_name         The last name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+static void find_email_internal(
+    ZeroBounce* zb,
+    char* domain,
+    char* company_name,
+    char* first_name,
+    char* middle_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Domain Search - Identifies an email domain
+ *
+ * @param zb                ZeroBounce pointer
+ * @param domain            The email domain for which to find the email format
+ * @param company_name      The company name for which to identify the domain
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+static void search_domain_internal(
+    ZeroBounce* zb,
+    char* domain,
+    char* company_name,
+    OnSuccessCallbackDomainSearch success_callback,
     OnErrorCallback error_callback
 );
 
@@ -441,6 +492,152 @@ void get_activity_data(
     OnErrorCallback error_callback
 );
 
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param domain            The email domain for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param middle_name       The middle name of the person whose email format is being searched
+ * @param last_name         The last name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void find_email_by_domain_first_middle_last_name(
+    ZeroBounce* zb,
+    char* domain,
+    char* first_name,
+    char* middle_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param domain            The email domain for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param last_name         The last name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void find_email_by_domain_first_last_name(
+    ZeroBounce* zb,
+    char* domain,
+    char* first_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param domain            The email domain for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void find_email_by_domain_first_name(
+    ZeroBounce* zb,
+    char* domain,
+    char* first_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param company_name      The company name for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param middle_name       The middle name of the person whose email format is being searched
+ * @param last_name         The last name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void find_email_by_company_name_first_middle_last_name(
+    ZeroBounce* zb,
+    char* company_name,
+    char* first_name,
+    char* middle_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param company_name      The company name for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param middle_name       The middle name of the person whose email format is being searched
+ * @param last_name         The last name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void find_email_by_company_name_first_last_name(
+    ZeroBounce* zb,
+    char* company_name,
+    char* first_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Email Address Search - Identifies and validates a person’s primary email address
+ *
+ * @param zb                ZeroBounce pointer
+ * @param company_name      The company name for which to find the email format
+ * @param first_name        The first name of the person whose email format is being searched
+ * @param middle_name       The middle name of the person whose email format is being searched
+ * @param last_name         The last name of the person whose email format is being searched
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void find_email_by_company_name_first_name(
+    ZeroBounce* zb,
+    char* company_name,
+    char* first_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Domain Search - Identifies an email domain
+ *
+ * @param zb                ZeroBounce pointer
+ * @param domain            The email domain for which to find the email format
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void search_domain_by_domain(
+    ZeroBounce* zb,
+    char* domain,
+    OnSuccessCallbackDomainSearch success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Domain Search - Identifies an email domain
+ *
+ * @param zb                ZeroBounce pointer
+ * @param company_name     The company name for which to identify the domain
+ * @param success_callback  success callback
+ * @param error_callback    error callback
+ */
+void search_domain_by_company_name(
+    ZeroBounce* zb,
+    char* company_name,
+    OnSuccessCallbackDomainSearch success_callback,
+    OnErrorCallback error_callback
+);
 
 /**
  * @brief Email Address Search - Identifies and validates a person’s primary email address
@@ -453,6 +650,7 @@ void get_activity_data(
  * @param success_callback  success callback
  * @param error_callback    error callback
  */
+#warning "Use find_email... methods for Email Finder API, or search_domain... methods for Domain Search API"
 void find_email(
     ZeroBounce* zb,
     char* domain,

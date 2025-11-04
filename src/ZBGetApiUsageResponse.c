@@ -39,6 +39,7 @@ ZBGetApiUsageResponse new_zb_get_api_usage_response() {
     response.sub_status_alternate = 0;
     response.sub_status_blocked = 0;
     response.sub_status_allowed = 0;
+    response.sub_status_accept_all = 0;
     response.start_date = "";
     response.end_date = "";
     response.error = "";
@@ -80,6 +81,7 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
         ", sub_status_alternate=%d"
         ", sub_status_blocked=%d"
         ", sub_status_allowed=%d"
+        ", sub_status_accept_all=%d"
         ", start_date='%s'"
         ", end_date='%s'"
         ", error='%s'"
@@ -119,6 +121,7 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
         response->sub_status_alternate,
         response->sub_status_blocked,
         response->sub_status_allowed,
+        response->sub_status_accept_all,
         response->start_date,
         response->end_date,
         response->error
@@ -167,6 +170,7 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
         response->sub_status_alternate,
         response->sub_status_blocked,
         response->sub_status_allowed,
+        response->sub_status_accept_all,
         response->start_date,
         response->end_date,
         response->error
@@ -209,6 +213,7 @@ ZBGetApiUsageResponse zb_get_api_usage_response_from_json(const json_object* j) 
     r.sub_status_alternate = *(int*)get_json_value(j, json_type_int, "sub_status_alternate", &(int){0});
     r.sub_status_blocked = *(int*)get_json_value(j, json_type_int, "sub_status_blocked", &(int){0});
     r.sub_status_allowed = *(int*)get_json_value(j, json_type_int, "sub_status_allowed", &(int){0});
+    r.sub_status_accept_all = *(int*)get_json_value(j, json_type_int, "sub_status_accept_all", &(int){0});
     r.start_date = *(char**)get_json_value(j, json_type_string, "start_date", &(char*){""});
     r.end_date = *(char**)get_json_value(j, json_type_string, "end_date", &(char*){""});
     r.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
@@ -249,6 +254,7 @@ int compare_zb_get_api_usage_response(const ZBGetApiUsageResponse* response1, co
         response1->sub_status_alternate == response2->sub_status_alternate &&
         response1->sub_status_blocked == response2->sub_status_blocked &&
         response1->sub_status_allowed == response2->sub_status_allowed &&
+        response1->sub_status_accept_all == response2->sub_status_accept_all &&
         strcmp(response1->start_date, response2->start_date) == 0 &&
         strcmp(response1->end_date, response2->end_date) == 0 &&
         strcmp(response1->error, response2->error) == 0;

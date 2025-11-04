@@ -91,6 +91,15 @@ void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
 }
 
 
+void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, ZBApiURL api_base_url) {
+    if (zb->api_key) {
+        free(zb->api_key);
+    }
+    zb->api_key = strdup(api_key);
+    zb->api_base_url = base_url_string_from_zb_api_url(api_base_url);
+}
+
+
 static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback) {
     if (zb->api_key == NULL || strlen(zb->api_key) == 0) {
         ZBErrorResponse error_response = parse_error(
@@ -544,6 +553,139 @@ static void delete_file_internal(
     free(response_data.response);
 }
 
+static void find_email_internal(
+    ZeroBounce* zb,
+    char* domain,
+    char* company_name,
+    char* first_name,
+    char* middle_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) return;
+
+    StringVector string_vector = string_vector_init();
+    string_vector_append(&string_vector, zb->api_base_url);
+    string_vector_append(&string_vector, strdup("/guessformat?api_key="));
+    string_vector_append(&string_vector, zb->api_key);
+
+    if (domain != NULL && strlen(domain)) {
+        string_vector_append(&string_vector, strdup("&domain="));
+        string_vector_append(&string_vector, domain);
+    }
+    if (company_name != NULL && strlen(company_name)) {
+        string_vector_append(&string_vector, strdup("&company_name="));
+        string_vector_append(&string_vector, company_name);
+    }
+    if (first_name != NULL && strlen(first_name)) {
+        string_vector_append(&string_vector, strdup("&first_name="));
+        string_vector_append(&string_vector, first_name);
+    }
+    if (middle_name != NULL && strlen(middle_name)) {
+        string_vector_append(&string_vector, strdup("&middle_name="));
+        string_vector_append(&string_vector, middle_name);
+    }
+    if (last_name != NULL && strlen(last_name)) {
+        string_vector_append(&string_vector, strdup("&last_name="));
+        string_vector_append(&string_vector, last_name);
+    }
+    char *url_path = concatenate_strings(&string_vector, "");
+    if (!url_path) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    };
+
+    memory response_data = {0};
+    long http_code;
+
+    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+        goto cleanup;
+    }
+
+    if (http_code > 299) {
+        if (error_callback) {
+            error_callback(parse_error(response_data.response));
+        }
+    } else {
+        if (success_callback) {
+            json_object *j_obj = json_tokener_parse(response_data.response);
+            if (j_obj == NULL) {
+                error_callback(parse_error("Failed to parse json string"));
+                goto cleanup;
+            }
+            ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
+            success_callback(response_obj);
+            zb_find_email_response_free(&response_obj);
+            json_object_put(j_obj);
+        }
+    }
+
+    cleanup:
+    string_vector_free(&string_vector);
+    free(url_path);
+    free(response_data.response);
+}
+
+static void search_domain_internal(
+    ZeroBounce* zb,
+    char* domain,
+    char* company_name,
+    OnSuccessCallbackDomainSearch success_callback,
+    OnErrorCallback error_callback
+) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) return;
+
+    StringVector string_vector = string_vector_init();
+    string_vector_append(&string_vector, zb->api_base_url);
+    string_vector_append(&string_vector, strdup("/guessformat?api_key="));
+    string_vector_append(&string_vector, zb->api_key);
+
+    if (domain != NULL && strlen(domain)) {
+        string_vector_append(&string_vector, strdup("&domain="));
+        string_vector_append(&string_vector, domain);
+    }
+    if (company_name != NULL && strlen(company_name)) {
+        string_vector_append(&string_vector, strdup("&company_name="));
+        string_vector_append(&string_vector, company_name);
+    }
+    char *url_path = concatenate_strings(&string_vector, "");
+    if (!url_path) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    };
+
+    memory response_data = {0};
+    long http_code;
+
+    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+        goto cleanup;
+    }
+
+    if (http_code > 299) {
+        if (error_callback) {
+            error_callback(parse_error(response_data.response));
+        }
+    } else {
+        if (success_callback) {
+            json_object *j_obj = json_tokener_parse(response_data.response);
+            if (j_obj == NULL) {
+                error_callback(parse_error("Failed to parse json string"));
+                goto cleanup;
+            }
+            ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(j_obj);
+            success_callback(response_obj);
+            zb_domain_search_response_free(&response_obj);
+            json_object_put(j_obj);
+        }
+    }
+
+    cleanup:
+    string_vector_free(&string_vector);
+    free(url_path);
+    free(response_data.response);
+}
+
 
 void get_credits(
     ZeroBounce *zb,
@@ -955,6 +1097,91 @@ void get_activity_data(
     cleanup:
     free(url_path);
     free(response_data.response);
+}
+
+
+void find_email_by_domain_first_middle_last_name(
+    ZeroBounce* zb,
+    char* domain,
+    char* first_name,
+    char* middle_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    find_email_internal(zb, domain, NULL, first_name, middle_name, last_name, success_callback, error_callback);
+}
+
+void find_email_by_domain_first_last_name(
+    ZeroBounce* zb,
+    char* domain,
+    char* first_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    find_email_internal(zb, domain, NULL, first_name, NULL, last_name, success_callback, error_callback);
+}
+
+void find_email_by_domain_first_name(
+    ZeroBounce* zb,
+    char* domain,
+    char* first_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    find_email_internal(zb, domain, NULL, first_name, NULL, NULL, success_callback, error_callback);
+}
+
+void find_email_by_company_name_first_middle_last_name(
+    ZeroBounce* zb,
+    char* company_name,
+    char* first_name,
+    char* middle_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    find_email_internal(zb, NULL, company_name, first_name, middle_name, last_name, success_callback, error_callback);
+}
+
+void find_email_by_company_name_first_last_name(
+    ZeroBounce* zb,
+    char* company_name,
+    char* first_name,
+    char* last_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    find_email_internal(zb, NULL, company_name, first_name, NULL, last_name, success_callback, error_callback);
+}
+
+void find_email_by_company_name_first_name(
+    ZeroBounce* zb,
+    char* company_name,
+    char* first_name,
+    OnSuccessCallbackFindEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    find_email_internal(zb, NULL, company_name, first_name, NULL, NULL, success_callback, error_callback);
+}
+
+void search_domain_by_domain(
+    ZeroBounce* zb,
+    char* domain,
+    OnSuccessCallbackDomainSearch success_callback,
+    OnErrorCallback error_callback
+) {
+    search_domain_internal(zb, domain, NULL, success_callback, error_callback);
+}
+
+void search_domain_by_company_name(
+    ZeroBounce* zb,
+    char* company_name,
+    OnSuccessCallbackDomainSearch success_callback,
+    OnErrorCallback error_callback
+) {
+    search_domain_internal(zb, NULL, company_name, success_callback, error_callback);
 }
 
 
