@@ -2,13 +2,13 @@
 
 char* base_url_string_from_zb_api_url(ZBApiURL zbApiUrl) {
     switch (zbApiUrl) {
-    case Default:
+    case ZB_Api_URL_Default:
         return "https://api.zerobounce.net/v2";
 
-    case USA:
+    case ZB_Api_URL_USA:
         return "https://api-us.zerobounce.net/v2";
 
-    case EU:
+    case ZB_Api_URL_EU:
         return "https://api-eu.zerobounce.net/v2";
 
     default:
