@@ -51,7 +51,7 @@ Incluye la biblioteca en tu archivo:
 Inicializa el envoltorio con tu clave de API y tu API preferida:
 ```c
 ZeroBounce* zb = zero_bounce_get_instance();
-zero_bounce_initialize(zb, "<YOUR_API_KEY>", Default);
+zero_bounce_initialize(zb, "<YOUR_API_KEY>", ZB_Api_URL_Default);
 ```
 
 #### Ejemplos

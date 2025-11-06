@@ -7,9 +7,9 @@
  * Enum that lists all the possible API base URLs.
  */
 typedef enum {
-    Default,
-    USA,
-    EU
+    ZB_Api_URL_Default,
+    ZB_Api_URL_USA,
+    ZB_Api_URL_EU
 } ZBApiURL;
 
 /**

@@ -55,7 +55,7 @@ Include the library in your file:
 Initialize the wrapper with your api key and preferred api:
 ```c
 ZeroBounce* zb = zero_bounce_get_instance();
-zero_bounce_initialize(zb, "<YOUR_API_KEY>", Default);
+zero_bounce_initialize(zb, "<YOUR_API_KEY>", ZB_Api_URL_Default);
 ```
 
 ## Examples
