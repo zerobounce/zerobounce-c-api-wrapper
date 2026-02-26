@@ -1,4 +1,5 @@
 #include <curl/curl.h>
+#include <string.h>
 #include "unity.h"
 #include "fff.h"
 
@@ -21,6 +22,7 @@ static ZBFindEmailResponse expected_find_email_response;
 static ZBDomainSearchResponse expected_domain_search_response;
 
 static char* response_json = "";
+static const char* mock_content_type = "application/json";
 
 void on_error_valid(ZBErrorResponse error_response) {
     TEST_FAIL_MESSAGE(zb_error_response_to_string(&error_response));
@@ -128,12 +130,26 @@ FAKE_VOID_FUNC(set_write_callback, CURL*, memory*);
 FAKE_VALUE_FUNC(long, get_http_code, CURL*);
 FAKE_VALUE_FUNC(char*, get_content_type_value, CURL*);
 
+static int mock_http_perform(memory* response_data, long* http_code, char** content_type_out) {
+    size_t len = strlen(response_json);
+    response_data->response = (char*)malloc(len + 1);
+    if (!response_data->response) return 0;
+    memcpy(response_data->response, response_json, len + 1);
+    response_data->size = len;
+    *http_code = (long)get_http_code_fake.return_val;
+    if (content_type_out)
+        *content_type_out = mock_content_type ? strdup(mock_content_type) : NULL;
+    return 1;
+}
 
 // Tests
 
 void setUp(void) {
     zb = zero_bounce_get_instance();
     zero_bounce_initialize(zb, "api_key");
+
+    zero_bounce_set_http_perform_for_test(mock_http_perform);
+    mock_content_type = "application/json";
 
     RESET_FAKE(curl_easy_perform);
     RESET_FAKE(set_write_callback);
@@ -224,6 +240,8 @@ void test_get_api_usage_valid(void)
         "    \"sub_status_blocked\": 0,\n"
         "    \"sub_status_allowed\": 0,\n"
         "    \"sub_status_accept_all\": 0,\n"
+        "    \"sub_status_gold\": 0,\n"
+        "    \"sub_status_role_based_accept_all\": 0,\n"
         "    \"start_date\": \"1/1/2018\",\n"
         "    \"end_date\": \"12/12/2019\"\n"
         "}";
@@ -243,6 +261,56 @@ void test_get_api_usage_valid(void)
     end_date.tm_mday = 12;
 
     get_api_usage(zb, start_date, end_date, on_success_api_usage_valid, on_error_valid);
+}
+
+void test_get_api_usage_response_parse_and_compare(void)
+{
+    const char* json = "{\n"
+        "    \"total\": 3,\n"
+        "    \"status_valid\": 1,\n"
+        "    \"status_invalid\": 2,\n"
+        "    \"status_catch_all\": 0,\n"
+        "    \"status_do_not_mail\": 0,\n"
+        "    \"status_spamtrap\": 0,\n"
+        "    \"status_unknown\": 0,\n"
+        "    \"sub_status_toxic\": 0,\n"
+        "    \"sub_status_disposable\": 0,\n"
+        "    \"sub_status_role_based\": 0,\n"
+        "    \"sub_status_possible_trap\": 0,\n"
+        "    \"sub_status_global_suppression\": 0,\n"
+        "    \"sub_status_timeout_exceeded\": 0,\n"
+        "    \"sub_status_mail_server_temporary_error\": 0,\n"
+        "    \"sub_status_mail_server_did_not_respond\": 0,\n"
+        "    \"sub_status_greylisted\": 0,\n"
+        "    \"sub_status_antispam_system\": 0,\n"
+        "    \"sub_status_does_not_accept_mail\": 0,\n"
+        "    \"sub_status_exception_occurred\": 0,\n"
+        "    \"sub_status_failed_syntax_check\": 0,\n"
+        "    \"sub_status_mailbox_not_found\": 2,\n"
+        "    \"sub_status_unroutable_ip_address\": 0,\n"
+        "    \"sub_status_possible_typo\": 0,\n"
+        "    \"sub_status_no_dns_entries\": 0,\n"
+        "    \"sub_status_role_based_catch_all\": 0,\n"
+        "    \"sub_status_mailbox_quota_exceeded\": 0,\n"
+        "    \"sub_status_forcible_disconnect\": 0,\n"
+        "    \"sub_status_failed_smtp_connection\": 0,\n"
+        "    \"sub_status_accept_all\": 0,\n"
+        "    \"sub_status_gold\": 0,\n"
+        "    \"sub_status_role_based_accept_all\": 0,\n"
+        "    \"start_date\": \"1/1/2018\",\n"
+        "    \"end_date\": \"12/12/2019\"\n"
+        "}";
+    struct json_object* j = json_tokener_parse(json);
+    TEST_ASSERT_NOT_NULL_MESSAGE(j, "parse api usage JSON");
+    ZBGetApiUsageResponse r = zb_get_api_usage_response_from_json(j);
+    TEST_ASSERT_EQUAL_INT(3, r.total);
+    TEST_ASSERT_EQUAL_INT(1, r.status_valid);
+    TEST_ASSERT_EQUAL_INT(2, r.status_invalid);
+    TEST_ASSERT_EQUAL_INT(2, r.sub_status_mailbox_not_found);
+    TEST_ASSERT_EQUAL_INT(0, r.sub_status_gold);
+    TEST_ASSERT_EQUAL_INT(0, r.sub_status_role_based_accept_all);
+    ZBGetApiUsageResponse expected = zb_get_api_usage_response_from_json(json_tokener_parse(json));
+    TEST_ASSERT_EQUAL_INT(1, compare_zb_get_api_usage_response(&expected, &r));
 }
 
 void test_validate_email_invalid(void)
@@ -446,7 +514,7 @@ void test_get_file_valid(void)
         "\"valid@example.com\",\"zero\",\"bounce\",\"\",\"valid\",\"\",\"\",\"\",\"zero\",\"bounce\",\"male\",\"False\",\"true\",\"mx.example.com\",\"example\",\"\"\n";
 
     get_http_code_fake.return_val = 200;
-    get_content_type_value_fake.return_val = "application/octet-stream";
+    mock_content_type = "application/octet-stream";
 
     expected_get_file_response = new_zb_get_file_response();
     expected_get_file_response.success = true;
@@ -563,7 +631,7 @@ void test_scoring_get_file_valid(void)
         "\"valid@example.com\",\"zero\",\"bounce\",\"10\"";
 
     get_http_code_fake.return_val = 200;
-    get_content_type_value_fake.return_val = "application/octet-stream";
+    mock_content_type = "application/octet-stream";
 
     expected_get_file_response = new_zb_get_file_response();
     expected_get_file_response.success = true;
@@ -782,6 +850,7 @@ int main(void)
     RUN_TEST(test_get_credits_valid);
     RUN_TEST(test_get_api_usage_invalid);
     RUN_TEST(test_get_api_usage_valid);
+    RUN_TEST(test_get_api_usage_response_parse_and_compare);
     RUN_TEST(test_validate_email_invalid);
     RUN_TEST(test_validate_email_valid);
     RUN_TEST(test_validate_email_batch_invalid);

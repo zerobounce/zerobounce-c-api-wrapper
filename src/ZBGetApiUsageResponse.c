@@ -40,6 +40,8 @@ ZBGetApiUsageResponse new_zb_get_api_usage_response() {
     response.sub_status_blocked = 0;
     response.sub_status_allowed = 0;
     response.sub_status_accept_all = 0;
+    response.sub_status_gold = 0;
+    response.sub_status_role_based_accept_all = 0;
     response.start_date = "";
     response.end_date = "";
     response.error = "";
@@ -82,6 +84,8 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
         ", sub_status_blocked=%d"
         ", sub_status_allowed=%d"
         ", sub_status_accept_all=%d"
+        ", sub_status_gold=%d"
+        ", sub_status_role_based_accept_all=%d"
         ", start_date='%s'"
         ", end_date='%s'"
         ", error='%s'"
@@ -122,6 +126,8 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
         response->sub_status_blocked,
         response->sub_status_allowed,
         response->sub_status_accept_all,
+        response->sub_status_gold,
+        response->sub_status_role_based_accept_all,
         response->start_date,
         response->end_date,
         response->error
@@ -171,6 +177,8 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
         response->sub_status_blocked,
         response->sub_status_allowed,
         response->sub_status_accept_all,
+        response->sub_status_gold,
+        response->sub_status_role_based_accept_all,
         response->start_date,
         response->end_date,
         response->error
@@ -190,13 +198,13 @@ ZBGetApiUsageResponse zb_get_api_usage_response_from_json(const json_object* j) 
     r.status_unknown = *(int*)get_json_value(j, json_type_int, "status_unknown", &(int){0});
     r.sub_status_toxic = *(int*)get_json_value(j, json_type_int, "sub_status_toxic", &(int){0});
     r.sub_status_disposable = *(int*)get_json_value(j, json_type_int, "sub_status_disposable", &(int){0});
-    r.sub_status_role_based = *(int*)get_json_value(j, json_type_int, "sucsub_status_role_basedcess", &(int){0});
+    r.sub_status_role_based = *(int*)get_json_value(j, json_type_int, "sub_status_role_based", &(int){0});
     r.sub_status_possible_trap = *(int*)get_json_value(j, json_type_int, "sub_status_possible_trap", &(int){0});
     r.sub_status_global_suppression = *(int*)get_json_value(j, json_type_int, "sub_status_global_suppression", &(int){0});
     r.sub_status_timeout_exceeded = *(int*)get_json_value(j, json_type_int, "sub_status_timeout_exceeded", &(int){0});
     r.sub_status_mail_server_temporary_error = *(int*)get_json_value(j, json_type_int, "sub_status_mail_server_temporary_error", &(int){0});
     r.sub_status_mail_server_did_not_respond = *(int*)get_json_value(j, json_type_int, "sub_status_mail_server_did_not_respond", &(int){0});
-    r.sub_status_grey_listed = *(int*)get_json_value(j, json_type_int, "sub_status_grey_listed", &(int){0});
+    r.sub_status_grey_listed = *(int*)get_json_value(j, json_type_int, "sub_status_greylisted", &(int){0});
     r.sub_status_anti_spam_system = *(int*)get_json_value(j, json_type_int, "sub_status_anti_spam_system", &(int){0});
     r.sub_status_does_not_accept_mail = *(int*)get_json_value(j, json_type_int, "sub_status_does_not_accept_mail", &(int){0});
     r.sub_status_exception_occurred = *(int*)get_json_value(j, json_type_int, "sub_status_exception_occurred", &(int){0});
@@ -214,6 +222,8 @@ ZBGetApiUsageResponse zb_get_api_usage_response_from_json(const json_object* j) 
     r.sub_status_blocked = *(int*)get_json_value(j, json_type_int, "sub_status_blocked", &(int){0});
     r.sub_status_allowed = *(int*)get_json_value(j, json_type_int, "sub_status_allowed", &(int){0});
     r.sub_status_accept_all = *(int*)get_json_value(j, json_type_int, "sub_status_accept_all", &(int){0});
+    r.sub_status_gold = *(int*)get_json_value(j, json_type_int, "sub_status_gold", &(int){0});
+    r.sub_status_role_based_accept_all = *(int*)get_json_value(j, json_type_int, "sub_status_role_based_accept_all", &(int){0});
     r.start_date = *(char**)get_json_value(j, json_type_string, "start_date", &(char*){""});
     r.end_date = *(char**)get_json_value(j, json_type_string, "end_date", &(char*){""});
     r.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
@@ -255,6 +265,8 @@ int compare_zb_get_api_usage_response(const ZBGetApiUsageResponse* response1, co
         response1->sub_status_blocked == response2->sub_status_blocked &&
         response1->sub_status_allowed == response2->sub_status_allowed &&
         response1->sub_status_accept_all == response2->sub_status_accept_all &&
+        response1->sub_status_gold == response2->sub_status_gold &&
+        response1->sub_status_role_based_accept_all == response2->sub_status_role_based_accept_all &&
         strcmp(response1->start_date, response2->start_date) == 0 &&
         strcmp(response1->end_date, response2->end_date) == 0 &&
         strcmp(response1->error, response2->error) == 0;

@@ -41,6 +41,8 @@ typedef struct {
     int sub_status_blocked;
     int sub_status_allowed;
     int sub_status_accept_all;
+    int sub_status_gold;
+    int sub_status_role_based_accept_all;
     char* start_date;
     char* end_date;
     char* error;

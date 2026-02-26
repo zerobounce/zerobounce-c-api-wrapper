@@ -11,6 +11,12 @@
 
 #include "ZeroBounce/ZeroBounce.h"
 
+static ZBHttpPerformFn s_http_perform = NULL;
+
+void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
+    s_http_perform = fn;
+}
+
 static size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp) {
   size_t real_size = size * nmemb;
   memory *mem = (memory*)clientp;
@@ -120,6 +126,10 @@ static int make_request(
     long* http_code,
     OnErrorCallback error_callback
 ) {
+    if (s_http_perform) {
+        return s_http_perform(response_data, http_code, NULL);
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl) {
         error_callback(parse_error("Failed to initialize libcurl"));
@@ -190,6 +200,26 @@ static void send_file_internal(
 
     memory response_data = {0};
 
+    if (s_http_perform) {
+        long http_code = 0;
+        if (!s_http_perform(&response_data, &http_code, NULL)) {
+            if (error_callback) error_callback(parse_error("Mock request failed"));
+            goto cleanup;
+        }
+        if (http_code > 299) {
+            if (error_callback) error_callback(parse_error(response_data.response));
+        } else if (success_callback) {
+            json_object *j_obj = json_tokener_parse(response_data.response);
+            if (j_obj == NULL) {
+                error_callback(parse_error("Failed to parse json string"));
+            } else {
+                success_callback(zb_send_file_response_from_json(j_obj));
+                json_object_put(j_obj);
+            }
+        }
+        goto cleanup;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl) {
         error_callback(parse_error("Failed to initialize libcurl"));
@@ -248,7 +278,7 @@ static void send_file_internal(
         }
     }
 
-    if (!strlen(options.return_url) == 0) {
+    if (strlen(options.return_url) != 0) {
         part = curl_mime_addpart(multipart);
         curl_mime_name(part, "return_url");
         curl_mime_data(part, options.return_url, CURL_ZERO_TERMINATED);
@@ -397,46 +427,55 @@ static void get_file_internal(
     );
 
     memory response_data = {0};
+    long http_code = 0;
+    char* content_type = NULL;
 
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        error_callback(parse_error("Failed to initialize libcurl"));
-        curl_easy_cleanup(curl);
-        goto cleanup;
-    }
+    if (s_http_perform) {
+        if (!s_http_perform(&response_data, &http_code, &content_type)) {
+            if (error_callback) error_callback(parse_error("Mock request failed"));
+            goto cleanup;
+        }
+        if (!content_type) content_type = strdup("application/octet-stream");
+    } else {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+            curl_easy_cleanup(curl);
+            goto cleanup;
+        }
 
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "GET");
-    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "GET");
+        curl_easy_setopt(curl, CURLOPT_URL, url_path);
 
-    struct curl_slist* headers = NULL;
-    headers = curl_slist_append(headers, "Accept: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Accept: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-    set_write_callback(curl, &response_data);
+        set_write_callback(curl, &response_data);
 
-    CURLcode res = curl_easy_perform(curl);
+        CURLcode res = curl_easy_perform(curl);
 
-    if (res != CURLE_OK) {
-        char error_message[300];
-        sprintf(
-            error_message,
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res,
-            curl_easy_strerror(res)
-        );
-        error_callback(parse_error(error_message));
+        if (res != CURLE_OK) {
+            char error_message[300];
+            sprintf(
+                error_message,
+                "Failed to perform request. CURLcode: %d. Error: %s",
+                res,
+                curl_easy_strerror(res)
+            );
+            error_callback(parse_error(error_message));
+
+            curl_easy_cleanup(curl);
+            curl_slist_free_all(headers);
+            goto cleanup;
+        }
+
+        http_code = get_http_code(curl);
+        content_type = get_content_type_value(curl);
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
-        goto cleanup;
     }
-
-    long http_code = get_http_code(curl);
-
-    char* content_type = get_content_type_value(curl);
-
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
 
     if (http_code > 299) {
         if (error_callback) {
@@ -444,7 +483,7 @@ static void get_file_internal(
         }
     } else {
         if (success_callback) {
-            if (strcmp(content_type, "application/json") != 0) {
+            if (content_type && strcmp(content_type, "application/json") != 0) {
                 struct stat sb;
 
                 #ifdef _WIN32
@@ -495,6 +534,7 @@ static void get_file_internal(
     cleanup:
     free(url_path);
     free(response_data.response);
+    if (s_http_perform && content_type) free(content_type);
 }
 
 
@@ -897,49 +937,59 @@ void validate_email_batch(
     json_object_object_add(payload, "email_batch", email_batch_json);
 
     memory response_data = {0};
+    long http_code = 0;
 
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        error_callback(parse_error("Failed to initialize libcurl"));
-        curl_easy_cleanup(curl);
-        goto cleanup;
-    }
+    if (s_http_perform) {
+        json_object_put(payload);
+        if (!s_http_perform(&response_data, &http_code, NULL)) {
+            if (error_callback) error_callback(parse_error("Mock request failed"));
+            return;
+        }
+    } else {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+            curl_easy_cleanup(curl);
+            json_object_put(payload);
+            return;
+        }
 
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
-    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
+        curl_easy_setopt(curl, CURLOPT_URL, url_path);
 
-    struct curl_slist* headers = NULL;
-    headers = curl_slist_append(headers, "Accept: application/json");
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Accept: application/json");
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-    curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, json_object_to_json_string(payload));
+        curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, json_object_to_json_string(payload));
 
-    json_object_put(payload);
+        json_object_put(payload);
 
-    set_write_callback(curl, &response_data);
+        set_write_callback(curl, &response_data);
 
-    CURLcode res = curl_easy_perform(curl);
+        CURLcode res = curl_easy_perform(curl);
 
-    if (res != CURLE_OK) {
-        char error_message[300];
-        sprintf(
-            error_message,
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res,
-            curl_easy_strerror(res)
-        );
-        error_callback(parse_error(error_message));
+        if (res != CURLE_OK) {
+            char error_message[300];
+            sprintf(
+                error_message,
+                "Failed to perform request. CURLcode: %d. Error: %s",
+                res,
+                curl_easy_strerror(res)
+            );
+            error_callback(parse_error(error_message));
+
+            curl_easy_cleanup(curl);
+            curl_slist_free_all(headers);
+            return;
+        }
+
+        http_code = get_http_code(curl);
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
-        goto cleanup;
     }
-
-    long http_code = get_http_code(curl);
-
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
 
     if (http_code > 299) {
         if (error_callback) {

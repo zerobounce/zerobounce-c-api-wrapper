@@ -38,3 +38,7 @@ build
 downloads
 test/downloads
 main.c
+
+
+.DS_Store
+.env

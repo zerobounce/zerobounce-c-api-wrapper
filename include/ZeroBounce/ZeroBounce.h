@@ -661,4 +661,13 @@ void find_email(
     OnErrorCallback error_callback
 );
 
+/**
+ * @brief Test hook: when set, HTTP perform uses this instead of libcurl.
+ * response_data and http_code must be filled by the function.
+ * content_type_out may be set when non-NULL (caller frees).
+ * @return 1 on success, 0 on failure
+ */
+typedef int (*ZBHttpPerformFn)(memory* response_data, long* http_code, char** content_type_out);
+void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn);
+
 #endif
