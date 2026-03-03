@@ -97,3 +97,20 @@ jobs:
       uses: github/codeql-action/analyze@v4
       with:
         category: "/language:${{matrix.language}}"
+        output: sarif-results
+        upload: never
+
+    # Exclude alerts in fetched dependencies (e.g. libcurl curl_log.c) from code scanning results
+    - name: Filter dependency alerts from SARIF
+      uses: advanced-security/filter-sarif@v1
+      with:
+        patterns: |
+          -**/libcurl-src/**
+        input: sarif-results/cpp.sarif
+        output: sarif-results/cpp.sarif
+
+    - name: Upload SARIF
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: sarif-results
+        category: "/language:${{matrix.language}}"
