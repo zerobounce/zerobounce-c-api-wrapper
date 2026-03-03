@@ -22,12 +22,13 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/json-c/json-c.git
   GIT_TAG json-c-0.17-20230812
 )
-# Download and build libcurl
+# Download and build libcurl (NTLM disabled to avoid weak DES crypto in CodeQL/security scans)
 FetchContent_Declare(
   libcurl
   GIT_REPOSITORY https://github.com/curl/curl.git
   GIT_TAG curl-8_0_1
 )
+set(CURL_DISABLE_NTLM ON CACHE BOOL "" FORCE)
 # Download and build unity
 FetchContent_Declare(
   unity
