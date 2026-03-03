@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ZeroBounce VERSION 2.0.9 LANGUAGES C)
+project(ZeroBounce VERSION 2.0.10 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
