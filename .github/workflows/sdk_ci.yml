@@ -1,0 +1,26 @@
+# Build and run Unity tests on every PR.
+name: SDK CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake libssl-dev
+
+      - name: Configure and build
+        run: cmake -S . -B build -G "Unix Makefiles" && cmake --build build
+
+      - name: Run tests
+        run: ./build/bin/ZeroBounceTests
