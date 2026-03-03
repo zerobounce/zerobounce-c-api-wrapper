@@ -352,3 +352,7 @@ You should see an output like this
 24 Tests 0 Failures 0 Ignored
 OK
 ```
+
+## Publish
+
+Distribution is via [vcpkg](https://vcpkg.io) (PR to microsoft/vcpkg). See the [sdk-docs (vcpkg)](../sdk-docs/vcpkg/) guide in the SDKs repo for port files and submission steps.
