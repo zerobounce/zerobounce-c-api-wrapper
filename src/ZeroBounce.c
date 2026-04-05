@@ -4,10 +4,19 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdbool.h>
 
 #ifdef _WIN32
 #include <direct.h>
+#define ZB_STRICMP _stricmp
+#define zb_strncasecmp _strnicmp
+#else
+#include <strings.h>
+#define ZB_STRICMP strcasecmp
+#define zb_strncasecmp strncasecmp
 #endif
+
+#include <json.h>
 
 #include "ZeroBounce/ZeroBounce.h"
 
@@ -63,8 +72,226 @@ SendFileOptions new_send_file_options() {
     options.ip_address_column = 0;
     options.has_header_row = true;
     options.remove_duplicate = true;
+    options.allow_phase_2_is_set = false;
+    options.allow_phase_2 = false;
 
     return options;
+}
+
+
+GetFileOptions new_get_file_options(void) {
+    GetFileOptions o = { NULL, -1 };
+    return o;
+}
+
+
+static bool zb_ct_includes_application_json(const char *content_type) {
+    if (!content_type) {
+        return false;
+    }
+    for (const char *p = content_type; *p; p++) {
+        if (zb_strncasecmp(p, "application/json", 16) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+bool zb_get_file_json_indicates_error(const char *body) {
+    if (!body) {
+        return false;
+    }
+    while (*body == ' ' || *body == '\t' || *body == '\n' || *body == '\r') {
+        body++;
+    }
+    if (*body != '{') {
+        return false;
+    }
+    json_object *o = json_tokener_parse(body);
+    if (!o || json_object_get_type(o) != json_type_object) {
+        if (o) {
+            json_object_put(o);
+        }
+        return false;
+    }
+
+    json_object *s = json_object_object_get(o, "success");
+    if (s) {
+        if (json_object_is_type(s, json_type_boolean) && !json_object_get_boolean(s)) {
+            json_object_put(o);
+            return true;
+        }
+        if (json_object_is_type(s, json_type_string)) {
+            const char *sv = json_object_get_string(s);
+            if (sv && (ZB_STRICMP(sv, "false") == 0 || ZB_STRICMP(sv, "False") == 0)) {
+                json_object_put(o);
+                return true;
+            }
+        }
+    }
+
+    const char *keys[] = {"message", "error", "error_message"};
+    for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+        json_object *v = json_object_object_get(o, keys[k]);
+        if (!v || json_object_is_type(v, json_type_null)) {
+            continue;
+        }
+        if (json_object_is_type(v, json_type_string)) {
+            const char *t = json_object_get_string(v);
+            if (t && t[0]) {
+                json_object_put(o);
+                return true;
+            }
+        }
+        if (json_object_is_type(v, json_type_array) && json_object_array_length(v) > 0) {
+            json_object_put(o);
+            return true;
+        }
+    }
+
+    bool has_success_key = json_object_object_get(o, "success") != NULL;
+    json_object_put(o);
+    return has_success_key;
+}
+
+
+static bool zb_should_treat_getfile_body_as_error(const char *body, const char *content_type) {
+    if (zb_ct_includes_application_json(content_type)) {
+        return true;
+    }
+    return zb_get_file_json_indicates_error(body);
+}
+
+
+char *zb_format_get_file_error_message(const char *body) {
+    if (!body) {
+        return strdup("Invalid getfile response");
+    }
+    json_object *o = json_tokener_parse(body);
+    if (!o || json_object_get_type(o) != json_type_object) {
+        if (o) {
+            json_object_put(o);
+        }
+        return strdup(body[0] ? body : "Invalid getfile response");
+    }
+
+    const char *keys[] = {"message", "error", "error_message"};
+    for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+        json_object *v = json_object_object_get(o, keys[k]);
+        if (!v || json_object_is_type(v, json_type_null)) {
+            continue;
+        }
+        if (json_object_is_type(v, json_type_string)) {
+            const char *t = json_object_get_string(v);
+            if (t && t[0]) {
+                char *r = strdup(t);
+                json_object_put(o);
+                return r ? r : strdup("");
+            }
+        }
+        if (json_object_is_type(v, json_type_array) && json_object_array_length(v) > 0) {
+            json_object *item = json_object_array_get_idx(v, 0);
+            if (json_object_is_type(item, json_type_string)) {
+                const char *t = json_object_get_string(item);
+                if (t && t[0]) {
+                    char *r = strdup(t);
+                    json_object_put(o);
+                    return r ? r : strdup("");
+                }
+            }
+        }
+    }
+
+    json_object_put(o);
+    return strdup(body);
+}
+
+
+static char *zb_build_getfile_url(
+    ZeroBounce *zb,
+    bool scoring,
+    const char *file_id,
+    const GetFileOptions *opts
+) {
+    const char *base_url = scoring ? zb->bulk_api_scoring_base_url : zb->bulk_api_base_url;
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        return NULL;
+    }
+
+    char *ek = curl_easy_escape(curl, zb->api_key, 0);
+    char *fid = curl_easy_escape(curl, file_id, 0);
+    if (!ek || !fid) {
+        curl_free(ek);
+        curl_free(fid);
+        curl_easy_cleanup(curl);
+        return NULL;
+    }
+
+    int base_len = snprintf(NULL, 0, "%s/getfile?api_key=%s&file_id=%s", base_url, ek, fid);
+    if (base_len < 0) {
+        curl_free(ek);
+        curl_free(fid);
+        curl_easy_cleanup(curl);
+        return NULL;
+    }
+
+    char *dt_esc = NULL;
+    int dt_len = 0;
+    if (opts && opts->download_type && opts->download_type[0]) {
+        dt_esc = curl_easy_escape(curl, opts->download_type, 0);
+        if (!dt_esc) {
+            curl_free(ek);
+            curl_free(fid);
+            curl_easy_cleanup(curl);
+            return NULL;
+        }
+        dt_len = snprintf(NULL, 0, "&download_type=%s", dt_esc);
+        if (dt_len < 0) {
+            curl_free(dt_esc);
+            curl_free(ek);
+            curl_free(fid);
+            curl_easy_cleanup(curl);
+            return NULL;
+        }
+    }
+
+    int ad_len = 0;
+    if (!scoring && opts && opts->activity_data >= 0) {
+        ad_len = snprintf(NULL, 0, "&activity_data=%s", opts->activity_data ? "true" : "false");
+        if (ad_len < 0) {
+            curl_free(dt_esc);
+            curl_free(ek);
+            curl_free(fid);
+            curl_easy_cleanup(curl);
+            return NULL;
+        }
+    }
+
+    size_t total = (size_t)base_len + (size_t)dt_len + (size_t)ad_len + 1;
+    char *url = malloc(total);
+    if (!url) {
+        curl_free(dt_esc);
+        curl_free(ek);
+        curl_free(fid);
+        curl_easy_cleanup(curl);
+        return NULL;
+    }
+
+    snprintf(url, total, "%s/getfile?api_key=%s&file_id=%s", base_url, ek, fid);
+    if (dt_esc) {
+        snprintf(url + strlen(url), total - strlen(url), "&download_type=%s", dt_esc);
+    }
+    if (!scoring && opts && opts->activity_data >= 0) {
+        snprintf(url + strlen(url), total - strlen(url), "&activity_data=%s", opts->activity_data ? "true" : "false");
+    }
+
+    curl_free(dt_esc);
+    curl_free(ek);
+    curl_free(fid);
+    curl_easy_cleanup(curl);
+    return url;
 }
 
 
@@ -290,7 +517,13 @@ static void send_file_internal(
 
     part = curl_mime_addpart(multipart);
     curl_mime_name(part, "remove_duplicate");
-    curl_mime_data(part, options.has_header_row ? "true" : "false", CURL_ZERO_TERMINATED);
+    curl_mime_data(part, options.remove_duplicate ? "true" : "false", CURL_ZERO_TERMINATED);
+
+    if (!scoring && options.allow_phase_2_is_set) {
+        part = curl_mime_addpart(multipart);
+        curl_mime_name(part, "allow_phase_2");
+        curl_mime_data(part, options.allow_phase_2 ? "true" : "false", CURL_ZERO_TERMINATED);
+    }
 
     curl_easy_setopt(curl, CURLOPT_MIMEPOST, multipart);
 
@@ -404,27 +637,24 @@ static void get_file_internal(
     bool scoring,
     char* file_id,
     char* local_download_path,
+    const GetFileOptions *get_file_options,
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 ) {
     if (zero_bounce_invalid_api_key(zb, error_callback)) return;
 
-    const char *url_pattern = "%s/getfile?api_key=%s&file_id=%s";
-    const char* base_url = scoring ? zb->bulk_api_scoring_base_url : zb->bulk_api_base_url;
-
-    int url_path_len = snprintf(
-        NULL, 0, url_pattern, base_url, zb->api_key, file_id
-    );
-
-    char *url_path = malloc(url_path_len + 1);
-    if (!url_path) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        exit(EXIT_FAILURE);
+    GetFileOptions default_opts = new_get_file_options();
+    if (!get_file_options) {
+        get_file_options = &default_opts;
     }
 
-    snprintf(
-        url_path, url_path_len + 1, url_pattern, base_url, zb->api_key, file_id
-    );
+    char *url_path = zb_build_getfile_url(zb, scoring, file_id, get_file_options);
+    if (!url_path) {
+        if (error_callback) {
+            error_callback(parse_error("Failed to build getfile URL"));
+        }
+        return;
+    }
 
     memory response_data = {0};
     long http_code = 0;
@@ -435,12 +665,13 @@ static void get_file_internal(
             if (error_callback) error_callback(parse_error("Mock request failed"));
             goto cleanup;
         }
-        if (!content_type) content_type = strdup("application/octet-stream");
+        if (!content_type) {
+            content_type = strdup("application/octet-stream");
+        }
     } else {
         CURL* curl = curl_easy_init();
         if (!curl) {
             error_callback(parse_error("Failed to initialize libcurl"));
-            curl_easy_cleanup(curl);
             goto cleanup;
         }
 
@@ -471,70 +702,78 @@ static void get_file_internal(
         }
 
         http_code = get_http_code(curl);
-        content_type = get_content_type_value(curl);
+        struct curl_header *hdr = NULL;
+        CURLHcode hch = curl_easy_header(curl, "Content-Type", 0, CURLH_HEADER, -1, &hdr);
+        if (hch == CURLHE_OK && hdr && hdr->value) {
+            content_type = strdup(hdr->value);
+        }
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
     }
 
+    const char *body = response_data.response ? response_data.response : "";
+
     if (http_code > 299) {
         if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
-    } else {
-        if (success_callback) {
-            if (content_type && strcmp(content_type, "application/json") != 0) {
-                struct stat sb;
-
-                #ifdef _WIN32
-                const char path_separator = '\\';
-                #define mkdir(path, mode) _mkdir(path)
-                #else
-                const char path_separator = '/';
-                #endif
-
-                if (stat(local_download_path, &sb) == 0 && S_ISDIR(sb.st_mode)) {
-                    error_callback(parse_error("Invalid file path"));
-                    goto cleanup;
-                }
-
-                char* dir_path = strdup(local_download_path);
-                char* end = strrchr(dir_path, path_separator);
-                if (end != NULL) {
-                    *end = '\0';
-                    mkdir(dir_path, 0777);
-                }
-                free(dir_path);
-
-                FILE *file_stream = fopen(local_download_path, "wb");
-                if (file_stream == NULL) {
-                    perror("fopen");
-                    goto cleanup;
-                }
-                fwrite(response_data.response, sizeof(char), strlen(response_data.response), file_stream);
-                fclose(file_stream);
-
-                ZBGetFileResponse response = new_zb_get_file_response();
-                response.success = true;
-                response.local_file_path = local_download_path;
-                success_callback(response);
-            } else {
-                json_object *j_obj = json_tokener_parse(response_data.response);
-                if (j_obj == NULL) {
-                    error_callback(parse_error("Failed to parse json string"));
-                    goto cleanup;
-                }
-
-                success_callback(zb_get_file_response_from_json(j_obj));
-                json_object_put(j_obj);
+            char *fmt = NULL;
+            if (body[0] == '{') {
+                fmt = zb_format_get_file_error_message(body);
             }
+            error_callback(parse_error(fmt && fmt[0] ? fmt : body));
+            free(fmt);
+        }
+    } else if (success_callback) {
+        if (zb_should_treat_getfile_body_as_error(body, content_type)) {
+            if (error_callback) {
+                char *msg = zb_format_get_file_error_message(body);
+                error_callback(parse_error(msg ? msg : ""));
+                free(msg);
+            }
+        } else {
+            struct stat sb;
+
+            #ifdef _WIN32
+            const char path_separator = '\\';
+            #define mkdir(path, mode) _mkdir(path)
+            #else
+            const char path_separator = '/';
+            #endif
+
+            if (stat(local_download_path, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+                if (error_callback) {
+                    error_callback(parse_error("Invalid file path"));
+                }
+                goto cleanup;
+            }
+
+            char* dir_path = strdup(local_download_path);
+            char* end = strrchr(dir_path, path_separator);
+            if (end != NULL) {
+                *end = '\0';
+                mkdir(dir_path, 0777);
+            }
+            free(dir_path);
+
+            FILE *file_stream = fopen(local_download_path, "wb");
+            if (file_stream == NULL) {
+                perror("fopen");
+                goto cleanup;
+            }
+            fwrite(response_data.response, 1, response_data.size, file_stream);
+            fclose(file_stream);
+
+            ZBGetFileResponse response = new_zb_get_file_response();
+            response.success = true;
+            response.local_file_path = local_download_path;
+            success_callback(response);
         }
     }
 
     cleanup:
     free(url_path);
     free(response_data.response);
-    if (s_http_perform && content_type) free(content_type);
+    free(content_type);
 }
 
 
@@ -1043,7 +1282,19 @@ void get_file(
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 ) {
-    get_file_internal(zb, false, file_id, local_download_path, success_callback, error_callback);
+    get_file_internal(zb, false, file_id, local_download_path, NULL, success_callback, error_callback);
+}
+
+
+void get_file_with_options(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    get_file_internal(zb, false, file_id, local_download_path, options, success_callback, error_callback);
 }
 
 
@@ -1083,7 +1334,19 @@ void scoring_get_file(
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 ) {
-    get_file_internal(zb, true, file_id, local_download_path, success_callback, error_callback);
+    get_file_internal(zb, true, file_id, local_download_path, NULL, success_callback, error_callback);
+}
+
+
+void scoring_get_file_with_options(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    get_file_internal(zb, true, file_id, local_download_path, options, success_callback, error_callback);
 }
 
 void scoring_delete_file(

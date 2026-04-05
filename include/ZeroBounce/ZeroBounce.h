@@ -48,7 +48,25 @@ typedef struct {
     int ip_address_column;
     bool has_header_row;
     bool remove_duplicate;
+    /** When set, sent as allow_phase_2 on validation sendfile only (not scoring). */
+    bool allow_phase_2_is_set;
+    bool allow_phase_2;
 } SendFileOptions;
+
+/** Bulk getfile download_type query values (validation and scoring). */
+#define ZB_DOWNLOAD_TYPE_PHASE_1 "phase_1"
+#define ZB_DOWNLOAD_TYPE_PHASE_2 "phase_2"
+#define ZB_DOWNLOAD_TYPE_COMBINED "combined"
+
+/**
+ * Optional query parameters for bulk getfile (v2).
+ * download_type: NULL to omit. Use ZB_DOWNLOAD_TYPE_* constants.
+ * activity_data: -1 to omit, 0 false, 1 true — validation get_file only (ignored for scoring_get_file).
+ */
+typedef struct {
+    const char *download_type;
+    int activity_data;
+} GetFileOptions;
 
 /**
  * @brief Function used to initialize a new SendFileOptions.
@@ -56,6 +74,21 @@ typedef struct {
  * @return SendFileOptions new instance
  */
 SendFileOptions new_send_file_options();
+
+/**
+ * @brief Default GetFileOptions (no download_type, activity_data omitted).
+ */
+GetFileOptions new_get_file_options(void);
+
+/**
+ * @brief Whether a getfile response body looks like a JSON error payload (including HTTP 200).
+ */
+bool zb_get_file_json_indicates_error(const char *body);
+
+/**
+ * @brief Human-readable message from a getfile JSON error body. Caller must free() the returned string.
+ */
+char *zb_format_get_file_error_message(const char *body);
 
 
 /**
@@ -220,6 +253,7 @@ static void get_file_internal(
     bool scoring,
     char* file_id,
     char* local_download_path,
+    const GetFileOptions *get_file_options,
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 );
@@ -395,6 +429,18 @@ void get_file(
 );
 
 /**
+ * @brief Bulk get file with optional v2 query parameters (download_type, activity_data for validation only).
+ */
+void get_file_with_options(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
  * @brief Delete a file.
  *
  * @param zb                ZeroBounce pointer
@@ -457,6 +503,18 @@ void scoring_get_file(
     ZeroBounce *zb,
     char* file_id,
     char* local_download_path,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Scoring bulk get file with optional download_type (activity_data is not sent).
+ */
+void scoring_get_file_with_options(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 );

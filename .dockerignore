@@ -1,4 +1,16 @@
-build/
-.git
+.git/
 .gitignore
+
+# Docs not needed in images
 *.md
+documentation*.md
+
+.env
+.env.*
+
+# Build and IDE
+build/
+cmake-build-*/
+.vscode/
+.idea/
+_deps/

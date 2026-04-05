@@ -18,6 +18,7 @@ typedef struct {
     char* upload_date;
     char* file_status;
     char* complete_percentage;
+    char* file_phase_2_status;
     char* return_url;
 } ZBFileStatusResponse;
 

@@ -29,6 +29,7 @@ FetchContent_Declare(
   GIT_TAG curl-8_0_1
 )
 set(CURL_DISABLE_NTLM ON CACHE BOOL "" FORCE)
+set(CURL_DISABLE_TESTS ON CACHE BOOL "" FORCE)
 # Download and build unity
 FetchContent_Declare(
   unity

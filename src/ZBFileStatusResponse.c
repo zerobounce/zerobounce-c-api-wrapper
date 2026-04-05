@@ -15,6 +15,7 @@ ZBFileStatusResponse new_zb_file_status_response() {
     response.upload_date = "";
     response.file_status = "";
     response.complete_percentage = "";
+    response.file_phase_2_status = "";
     response.return_url = "";
 
     return response;
@@ -29,6 +30,7 @@ char* zb_file_status_response_to_string(ZBFileStatusResponse* response) {
         ", upload_date='%s'"
         ", file_status='%s'"
         ", complete_percentage='%s'"
+        ", file_phase_2_status='%s'"
         ", return_url='%s'"
         ", error_reason='%s'"
         "}";
@@ -42,6 +44,7 @@ char* zb_file_status_response_to_string(ZBFileStatusResponse* response) {
         response->upload_date,
         response->file_status,
         response->complete_percentage,
+        response->file_phase_2_status,
         response->return_url,
         response->error_reason
     );
@@ -64,6 +67,7 @@ char* zb_file_status_response_to_string(ZBFileStatusResponse* response) {
         response->upload_date,
         response->file_status,
         response->complete_percentage,
+        response->file_phase_2_status,
         response->return_url,
         response->error_reason
     );
@@ -81,6 +85,7 @@ ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j) {
     r.upload_date = *(char**)get_json_value(j, json_type_string, "upload_date", &(char*){""});
     r.file_status = *(char**)get_json_value(j, json_type_string, "file_status", &(char*){""});
     r.complete_percentage = *(char**)get_json_value(j, json_type_string, "complete_percentage", &(char*){""});
+    r.file_phase_2_status = *(char**)get_json_value(j, json_type_string, "file_phase_2_status", &(char*){""});
     r.return_url = *(char**)get_json_value(j, json_type_string, "return_url", &(char*){""});
 
     return r;
@@ -95,5 +100,6 @@ int compare_zb_file_status_response(const ZBFileStatusResponse* response1, const
         strcmp(response1->upload_date, response2->upload_date) == 0 &&
         strcmp(response1->file_status, response2->file_status) == 0 &&
         strcmp(response1->complete_percentage, response2->complete_percentage) == 0 &&
+        strcmp(response1->file_phase_2_status, response2->file_phase_2_status) == 0 &&
         strcmp(response1->return_url, response2->return_url) == 0;
 }

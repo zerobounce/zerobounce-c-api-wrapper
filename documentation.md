@@ -187,6 +187,12 @@ char* local_download_path = "<FILE_DOWNLOAD_PATH>"; 	// The location where the d
 get_file(zb, file_id, local_download_path, on_success_get_file, on_error);
 ```
 
+Bulk validation uses the [v2 bulk API](https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-send-file). Optional [v2 get file](https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-get-file) query parameters are passed with `get_file_with_options` / `scoring_get_file_with_options` and a `GetFileOptions` value from `new_get_file_options()`. Set `download_type` to `ZB_DOWNLOAD_TYPE_PHASE_1`, `ZB_DOWNLOAD_TYPE_PHASE_2`, or `ZB_DOWNLOAD_TYPE_COMBINED`; set `activity_data` to `0` or `1` when you want `activity_data=false` or `true` (validation `get_file_with_options` only; scoring omits this parameter). On `SendFileOptions`, set `allow_phase_2_is_set` to `true` and `allow_phase_2` to the desired value to send `allow_phase_2` for validation `send_file` only (not `scoring_send_file`).
+
+If the HTTP status is an error, or the body is a JSON error (including some HTTP 200 responses with `"success": false`), the error callback runs with a parsed message—not the get-file success callback. To inspect a raw body string yourself, use `zb_get_file_json_indicates_error(body)`; use `zb_format_get_file_error_message(body)` for a human-readable line (caller must `free()` the returned pointer).
+
+`ZBFileStatusResponse` includes `file_phase_2_status` when the API returns it.
+
 * ####### Check the status of a file uploaded via "sendFile" method
 ```c
 void on_error(ZBErrorResponse error_response) {

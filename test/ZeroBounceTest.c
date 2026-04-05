@@ -523,6 +523,51 @@ void test_get_file_valid(void)
     get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/file.csv", on_success_get_file_valid, on_error_valid);
 }
 
+void test_get_file_json_error_http_200(void)
+{
+    response_json = "{\"success\":false,\"message\":\"not ready\"}";
+
+    get_http_code_fake.return_val = 200;
+    mock_content_type = "application/json";
+
+    expected_error_response = parse_error("not ready");
+
+    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/file.csv", on_success_get_file_invalid, on_error_invalid);
+}
+
+void test_get_file_json_indicates_helper(void)
+{
+    TEST_ASSERT_TRUE(zb_get_file_json_indicates_error("{\"success\":false,\"message\":\"\"}"));
+    TEST_ASSERT_FALSE(zb_get_file_json_indicates_error("{\"file_id\":\"x\"}"));
+}
+
+void test_get_file_with_options_validation(void)
+{
+    response_json =
+        "\"Email Address\",\"First Name\"\n"
+        "\"valid@example.com\",\"zero\"\n";
+
+    get_http_code_fake.return_val = 200;
+    mock_content_type = "application/octet-stream";
+
+    expected_get_file_response = new_zb_get_file_response();
+    expected_get_file_response.success = true;
+    expected_get_file_response.local_file_path = "test/downloads/file.csv";
+
+    GetFileOptions opts = new_get_file_options();
+    opts.download_type = ZB_DOWNLOAD_TYPE_COMBINED;
+    opts.activity_data = 1;
+
+    get_file_with_options(
+        zb,
+        "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
+        "test/downloads/file.csv",
+        &opts,
+        on_success_get_file_valid,
+        on_error_valid
+    );
+}
+
 void test_delete_file_invalid(void)
 {
     response_json = "{\"success\":false,\"message\":\"File cannot be found.\"}";
@@ -861,6 +906,9 @@ int main(void)
     RUN_TEST(test_file_status_valid);
     RUN_TEST(test_get_file_invalid);
     RUN_TEST(test_get_file_valid);
+    RUN_TEST(test_get_file_json_error_http_200);
+    RUN_TEST(test_get_file_json_indicates_helper);
+    RUN_TEST(test_get_file_with_options_validation);
     RUN_TEST(test_delete_file_invalid);
     RUN_TEST(test_delete_file_valid);
     RUN_TEST(test_scoring_send_file_invalid);
