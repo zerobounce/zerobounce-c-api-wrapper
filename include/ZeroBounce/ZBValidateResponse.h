@@ -83,6 +83,8 @@ typedef struct {
     bool mx_found;
     char* mx_record;
     char* smtp_provider;
+    bool catchall_domain;
+    bool catchall_domain_set;
     char* first_name;
     char* last_name;
     char* gender;

@@ -90,6 +90,8 @@ ZBValidateResponse new_zb_validate_response() {
     response.mx_found = false;
     response.mx_record = "";
     response.smtp_provider = "";
+    response.catchall_domain = false;
+    response.catchall_domain_set = false;
     response.first_name = "";
     response.last_name = "";
     response.gender = "";
@@ -116,6 +118,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         ", mx_found=%d"
         ", mx_record='%s'"
         ", smtp_provider='%s'"
+        ", catchall_domain=%d"
+        ", catchall_domain_set=%d"
         ", first_name='%s'"
         ", last_name='%s'"
         ", gender='%s'"
@@ -140,6 +144,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         response->mx_found,
         response->mx_record,
         response->smtp_provider,
+        response->catchall_domain,
+        response->catchall_domain_set,
         response->first_name,
         response->last_name,
         response->gender,
@@ -173,6 +179,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         response->mx_found,
         response->mx_record,
         response->smtp_provider,
+        response->catchall_domain,
+        response->catchall_domain_set,
         response->first_name,
         response->last_name,
         response->gender,
@@ -204,6 +212,14 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
 
     r.mx_record = *(char**)get_json_value(j, json_type_string, "mx_record", &(char*){""});
     r.smtp_provider = *(char**)get_json_value(j, json_type_string, "smtp_provider", &(char*){""});
+
+    json_object* catchall_domain_obj = NULL;
+    if (json_object_object_get_ex(j, "catchall_domain", &catchall_domain_obj)
+        && json_object_is_type(catchall_domain_obj, json_type_boolean)) {
+        r.catchall_domain_set = true;
+        r.catchall_domain = json_object_get_boolean(catchall_domain_obj);
+    }
+
     r.first_name = *(char**)get_json_value(j, json_type_string, "firstname", &(char*){""});
     r.last_name = *(char**)get_json_value(j, json_type_string, "lastname", &(char*){""});
     r.gender = *(char**)get_json_value(j, json_type_string, "gender", &(char*){""});
@@ -230,6 +246,8 @@ int compare_zb_validate_response(const ZBValidateResponse* response1, const ZBVa
         response1->mx_found == response2->mx_found &&
         strcmp(response1->mx_record, response2->mx_record) == 0 &&
         strcmp(response1->smtp_provider, response2->smtp_provider) == 0 &&
+        response1->catchall_domain == response2->catchall_domain &&
+        response1->catchall_domain_set == response2->catchall_domain_set &&
         strcmp(response1->first_name, response2->first_name) == 0 &&
         strcmp(response1->last_name, response2->last_name) == 0 &&
         strcmp(response1->gender, response2->gender) == 0 &&

@@ -335,6 +335,7 @@ void test_validate_email_valid(void)
         "    \"domain\": null,\n"
         "    \"domain_age_days\": \"9692\",\n"
         "    \"smtp_provider\": \"example\",\n"
+        "    \"catchall_domain\": false,\n"
         "    \"mx_found\": \"true\",\n"
         "    \"mx_record\": \"mx.example.com\",\n"
         "    \"firstname\": \"zero\",\n"
