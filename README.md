@@ -361,4 +361,7 @@ OK
 
 ## Publish
 
-No package registry. Use the C API from this repo (clone or add as submodule).
+1. Bump `project(ZeroBounce VERSION …)` in `CMakeLists.txt`, commit, tag (`vX.Y.Z`), push tag.
+2. **Actions → Publish → Run workflow** with that tag.
+
+No package registry — GitHub release only. Pin the tag in FetchContent or as a submodule.
