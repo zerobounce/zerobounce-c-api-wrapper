@@ -728,4 +728,9 @@ void find_email(
 typedef int (*ZBHttpPerformFn)(memory* response_data, long* http_code, char** content_type_out);
 void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn);
 
+/**
+ * @brief Test hook: returns the URL of the most recent validatebatch request.
+ */
+const char* zero_bounce_get_last_request_url_for_test(void);
+
 #endif
