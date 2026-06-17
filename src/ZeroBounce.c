@@ -21,9 +21,23 @@
 #include "ZeroBounce/ZeroBounce.h"
 
 static ZBHttpPerformFn s_http_perform = NULL;
+static char s_last_request_url_for_test[1024] = {0};
 
 void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
     s_http_perform = fn;
+}
+
+const char* zero_bounce_get_last_request_url_for_test(void) {
+    return s_last_request_url_for_test[0] ? s_last_request_url_for_test : NULL;
+}
+
+static void zero_bounce_record_request_url_for_test(const char* url) {
+    if (!url) {
+        s_last_request_url_for_test[0] = '\0';
+        return;
+    }
+    strncpy(s_last_request_url_for_test, url, sizeof(s_last_request_url_for_test) - 1);
+    s_last_request_url_for_test[sizeof(s_last_request_url_for_test) - 1] = '\0';
 }
 
 static size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp) {
@@ -1149,7 +1163,7 @@ void validate_email_batch(
     const char *url_pattern = "%s/validatebatch";
 
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->bulk_api_base_url
+        NULL, 0, url_pattern, zb->api_base_url
     );
 
     char *url_path = malloc(url_path_len + 1);
@@ -1159,8 +1173,10 @@ void validate_email_batch(
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->bulk_api_base_url
+        url_path, url_path_len + 1, url_pattern, zb->api_base_url
     );
+
+    zero_bounce_record_request_url_for_test(url_path);
 
     json_object *payload = json_object_new_object();
     json_object *email_batch_json = json_object_new_array();

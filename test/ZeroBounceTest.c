@@ -367,6 +367,28 @@ void test_validate_email_batch_invalid(void)
     validate_email_batch(zb, emails, on_success_validate_batch_invalid, on_error_invalid);
 }
 
+void test_validate_email_batch_uses_api_url(void)
+{
+    response_json = "{\"email_batch\":[],\"errors\":[]}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_batch_response = zb_validate_batch_response_from_json(json_tokener_parse(response_json));
+
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"valid@example.com", "1.1.1.1"};
+    email_to_validate_vector_append(&emails, email);
+
+    validate_email_batch(zb, emails, on_success_validate_batch_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_EQUAL_STRING("https://api.zerobounce.net/v2/validatebatch", url);
+    TEST_ASSERT_NULL(strstr(url, "bulkapi"));
+
+    email_to_validate_vector_free(&emails);
+}
+
 void test_validate_email_batch_valid(void)
 {
     response_json = "{\n"
@@ -900,6 +922,7 @@ int main(void)
     RUN_TEST(test_validate_email_invalid);
     RUN_TEST(test_validate_email_valid);
     RUN_TEST(test_validate_email_batch_invalid);
+    RUN_TEST(test_validate_email_batch_uses_api_url);
     RUN_TEST(test_validate_email_batch_valid);
     RUN_TEST(test_send_file_invalid);
     RUN_TEST(test_send_file_valid);
