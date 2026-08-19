@@ -2,6 +2,13 @@
 This API wrapper contains function for interacting easily with ZeroBounce API.
 More information about ZeroBounce you can find in the [official documentation](https://www.zerobounce.net/docs/).
 
+
+## Security
+
+- Keep API keys on a trusted server. Do not embed them in mobile apps or browser JavaScript that untrusted users can inspect.
+- Custom API base URLs (when supported) must use `https://`. Do not pass end-user-controlled hosts into those settings.
+- Request URLs include `api_key` as a query parameter (ZeroBounce API contract). Do not log full request URLs or enable payload debug logging in production.
+
 ## INSTALLATION
 Before installing the wrapper, you have to make sure that `CMake` is installed on your system. It can be downloaded from [here](https://cmake.org/download/).
 

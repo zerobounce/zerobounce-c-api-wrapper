@@ -59,6 +59,8 @@ static size_t write_callback(void *data, size_t size, size_t nmemb, void *client
 void set_write_callback(CURL* curl, memory* response_data) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 }
 
 long get_http_code(CURL* curl) {
