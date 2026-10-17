@@ -23,6 +23,7 @@
 #include "ZeroBounce/ZBFindEmailResponse.h"
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
+#include "ZeroBounce/ZBPriority3Options.h"
 
 typedef void (*OnErrorCallback)(ZBErrorResponse error_response);
 typedef void (*OnSuccessCallbackCredits)(ZBCreditsResponse response);
@@ -37,6 +38,8 @@ typedef void (*OnSuccessCallbackActivityData)(ZBActivityDataResponse response);
 typedef void (*OnSuccessCallbackScoreEmail)(ZBScoreEmailResponse response);
 typedef void (*OnSuccessCallbackFindEmail)(ZBFindEmailResponse response);
 typedef void (*OnSuccessCallbackDomainSearch)(ZBDomainSearchResponse response);
+/** Raw JSON body; valid only for the duration of the callback. */
+typedef void (*OnSuccessCallbackRawJson)(const char* json_response);
 
 
 /**
@@ -155,6 +158,7 @@ char* get_content_type_value(CURL* curl);
 typedef struct {
     char* api_key;
     char* api_base_url;
+    const char* bulk_api_root_url;
     const char* bulk_api_base_url;
     const char* bulk_api_scoring_base_url;
 } ZeroBounce;
@@ -199,7 +203,6 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
  * @param error_callback error callback
  * @return **true** if the [api_key] is null or **false** otherwise
  */
-static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback);
 
 /**
  * @brief Internal function used to make libcurl requests.
@@ -761,6 +764,139 @@ void search_domain_by_company_name(
     ZeroBounce* zb,
     char* company_name,
     OnSuccessCallbackDomainSearch success_callback,
+    OnErrorCallback error_callback
+);
+
+/* Priority 3 — bulk email finder, domain search, list evaluator, filters, S3 */
+
+void send_email_finder_file(
+    ZeroBounce *zb,
+    char *file_path,
+    int domain_column,
+    const EmailFinderSendFileOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void email_finder_file_status(
+    ZeroBounce *zb,
+    char *file_id,
+    OnSuccessCallbackFileStatus success_callback,
+    OnErrorCallback error_callback
+);
+
+void email_finder_get_file(
+    ZeroBounce *zb,
+    char *file_id,
+    char *local_download_path,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void email_finder_delete_file(
+    ZeroBounce *zb,
+    char *file_id,
+    OnSuccessCallbackDeleteFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void send_domain_search_file(
+    ZeroBounce *zb,
+    char *file_path,
+    int domain_column,
+    const DomainSearchSendFileOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void domain_search_file_status(
+    ZeroBounce *zb,
+    char *file_id,
+    OnSuccessCallbackFileStatus success_callback,
+    OnErrorCallback error_callback
+);
+
+void domain_search_get_file(
+    ZeroBounce *zb,
+    char *file_id,
+    char *local_download_path,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void domain_search_delete_file(
+    ZeroBounce *zb,
+    char *file_id,
+    OnSuccessCallbackDeleteFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void send_list_evaluator_file(
+    ZeroBounce *zb,
+    char *file_path,
+    int email_address_column,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void get_list_evaluator_result(
+    ZeroBounce *zb,
+    char *file_id,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+);
+
+void send_evaluated_file(
+    ZeroBounce *zb,
+    char *file_path,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void add_filter(
+    ZeroBounce *zb,
+    char *rule,
+    char *target,
+    char *value,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+);
+
+void list_filters(
+    ZeroBounce *zb,
+    bool use_post,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+);
+
+void delete_filter(
+    ZeroBounce *zb,
+    char *rule,
+    char *target,
+    char *value,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+);
+
+void validate_s3_file(
+    ZeroBounce *zb,
+    const ValidateS3FileOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void score_s3_file(
+    ZeroBounce *zb,
+    const ScoreS3FileOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+void export_s3_file(
+    ZeroBounce *zb,
+    char *file_id,
+    char *export_bucket,
+    OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 );
 

@@ -944,6 +944,27 @@ void test_score_email_valid(void) {
     TEST_ASSERT_NOT_NULL(strstr(url, "email="));
 }
 
+void test_validate_s3_file_valid(void) {
+    response_json = "{\"success\":true,\"file_id\":\"s3-1\",\"message\":\"\"}";
+
+    expected_send_file_response = zb_send_file_response_from_json(
+        json_tokener_parse(response_json)
+    );
+
+    get_http_code_fake.return_val = 200;
+    ValidateS3FileOptions options = new_validate_s3_file_options();
+    options.file_name = "bucket/key.csv";
+    validate_s3_file(zb, &options, on_success_send_file_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/validateS3file"));
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "file_name="));
+}
+
 void test_score_email_post_valid(void) {
     response_json = "{\"email\":\"mark@gmail.com\",\"score\":10}";
 
@@ -1046,6 +1067,7 @@ int main(void)
     RUN_TEST(test_scoring_delete_file_valid);
     RUN_TEST(test_score_email_valid);
     RUN_TEST(test_score_email_post_valid);
+    RUN_TEST(test_validate_s3_file_valid);
     RUN_TEST(test_find_email_status_invalid_payload);
     RUN_TEST(test_find_email_status_valid_payload);
     RUN_TEST(test_search_domain_status_invalid_payload);

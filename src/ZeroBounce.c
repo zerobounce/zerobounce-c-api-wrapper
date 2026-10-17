@@ -19,6 +19,7 @@
 #include <json.h>
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/zb_internal.h"
 
 static ZBHttpPerformFn s_http_perform = NULL;
 static char s_last_request_url_for_test[1024] = {0};
@@ -26,6 +27,13 @@ static char s_last_post_body_for_test[4096] = {0};
 
 void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
     s_http_perform = fn;
+}
+
+int zb_http_perform_if_mock(memory *response_data, long *http_code, char **content_type_out) {
+    if (!s_http_perform) {
+        return 0;
+    }
+    return s_http_perform(response_data, http_code, content_type_out);
 }
 
 const char* zero_bounce_get_last_request_url_for_test(void) {
@@ -36,7 +44,7 @@ const char* zero_bounce_get_last_post_body_for_test(void) {
     return s_last_post_body_for_test[0] ? s_last_post_body_for_test : NULL;
 }
 
-static void zero_bounce_record_request_url_for_test(const char* url) {
+void zero_bounce_record_request_url_for_test(const char* url) {
     if (!url) {
         s_last_request_url_for_test[0] = '\0';
         return;
@@ -45,7 +53,7 @@ static void zero_bounce_record_request_url_for_test(const char* url) {
     s_last_request_url_for_test[sizeof(s_last_request_url_for_test) - 1] = '\0';
 }
 
-static char* zb_url_escape(const char* value) {
+char* zb_url_escape(const char* value) {
     char* escaped = curl_easy_escape(NULL, value ? value : "", 0);
     char* copy = escaped ? strdup(escaped) : NULL;
     curl_free(escaped);
@@ -403,6 +411,7 @@ ZeroBounce* new_zero_bounce_instance() {
 
     zb->api_key = NULL;
     zb->api_base_url = "https://api.zerobounce.net/v2";
+    zb->bulk_api_root_url = "https://bulkapi.zerobounce.net";
     zb->bulk_api_base_url = "https://bulkapi.zerobounce.net/v2";
     zb->bulk_api_scoring_base_url = "https://bulkapi.zerobounce.net/v2/scoring";
 
@@ -436,7 +445,7 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
 }
 
 
-static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback) {
+bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback) {
     if (zb->api_key == NULL || strlen(zb->api_key) == 0) {
         ZBErrorResponse error_response = parse_error(
             "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first"
@@ -448,7 +457,7 @@ static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_ca
 }
 
 
-static int make_request_with_post_body(
+int zb_make_request_with_post_body(
     char* url_path,
     char* body,
     memory* response_data,
@@ -505,7 +514,7 @@ static int make_request_with_post_body(
     return 1;
 }
 
-static int make_request(
+int zb_make_request(
     char* url_path,
     char* request_type,
     char* header,
@@ -513,6 +522,7 @@ static int make_request(
     long* http_code,
     OnErrorCallback error_callback
 ) {
+    zero_bounce_record_request_url_for_test(url_path);
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
     }
@@ -771,7 +781,7 @@ static void file_status_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -979,7 +989,7 @@ static void delete_file_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1037,7 +1047,7 @@ static void find_email_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1091,7 +1101,7 @@ static void search_domain_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1149,7 +1159,7 @@ void get_credits(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1220,7 +1230,7 @@ void get_api_usage(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1345,7 +1355,7 @@ void validate_email_with_options(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1666,7 +1676,7 @@ void get_activity_data(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
@@ -1746,8 +1756,8 @@ static void score_email_internal(
     memory response_data = {0};
     long http_code = 0;
     int ok = use_post
-        ? make_request_with_post_body(url_path, post_body, &response_data, &http_code, error_callback)
-        : make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback);
+        ? zb_make_request_with_post_body(url_path, post_body, &response_data, &http_code, error_callback)
+        : zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback);
 
     if (!ok) {
         goto cleanup;
@@ -1916,7 +1926,7 @@ void find_email(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
