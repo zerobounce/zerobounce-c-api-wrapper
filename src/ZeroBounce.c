@@ -72,6 +72,21 @@ static bool zb_append_query_param(StringVector* vector, const char* name, const 
     return true;
 }
 
+static bool zb_url_append_suffix(char **url_path, const char *suffix) {
+    if (!url_path || !*url_path || !suffix) {
+        return false;
+    }
+    size_t old_len = strlen(*url_path);
+    size_t suffix_len = strlen(suffix);
+    char *extended = realloc(*url_path, old_len + suffix_len + 1);
+    if (!extended) {
+        return false;
+    }
+    memcpy(extended + old_len, suffix, suffix_len + 1);
+    *url_path = extended;
+    return true;
+}
+
 static size_t zb_response_max_bytes(const memory *mem) {
     if (mem->max_bytes != 0) {
         return mem->max_bytes;
@@ -1248,10 +1263,20 @@ void validate_email_with_options(
         free(timeout_esc);
     }
     if (options->activity_data >= 0) {
-        strcat(url_path, options->activity_data ? "&activity_data=true" : "&activity_data=false");
+        const char *suffix = options->activity_data ? "&activity_data=true" : "&activity_data=false";
+        if (!zb_url_append_suffix(&url_path, suffix)) {
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
     }
     if (options->verify_plus >= 0) {
-        strcat(url_path, options->verify_plus ? "&verify_plus=true" : "&verify_plus=false");
+        const char *suffix = options->verify_plus ? "&verify_plus=true" : "&verify_plus=false";
+        if (!zb_url_append_suffix(&url_path, suffix)) {
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
     }
 
     free(api_key_esc);
