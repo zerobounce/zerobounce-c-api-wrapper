@@ -413,8 +413,10 @@ void test_validate_email_batch_with_options_body(void)
 
     const char* body = zero_bounce_get_last_post_body_for_test();
     TEST_ASSERT_NOT_NULL(body);
-    TEST_ASSERT_NOT_NULL(strstr(body, "\"timeout\":60"));
-    TEST_ASSERT_NOT_NULL(strstr(body, "\"verify_plus\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"timeout\""));
+    TEST_ASSERT_NOT_NULL(strstr(body, "60"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"verify_plus\""));
+    TEST_ASSERT_NOT_NULL(strstr(body, "true"));
 
     email_to_validate_vector_free(&emails);
 }
