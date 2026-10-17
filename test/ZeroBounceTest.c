@@ -367,6 +367,58 @@ void test_validate_email_batch_invalid(void)
     validate_email_batch(zb, emails, on_success_validate_batch_invalid, on_error_invalid);
 }
 
+void test_validate_email_with_options_query_params(void)
+{
+    response_json = "{\"address\":\"valid@example.com\",\"status\":\"valid\",\"sub_status\":\"\",\"processed_at\":\"2023-04-05 13:29:47.553\"}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_response = zb_validate_response_from_json(json_tokener_parse(response_json));
+
+    ZBValidateOptions options = new_validate_options();
+    options.timeout = 30;
+    options.activity_data = 1;
+    options.verify_plus = 0;
+
+    validate_email_with_options(
+        zb, "valid@example.com", "", &options, on_success_validate_valid, on_error_valid
+    );
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "timeout=30"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "activity_data=true"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "verify_plus=false"));
+}
+
+void test_validate_email_batch_with_options_body(void)
+{
+    response_json = "{\"email_batch\":[],\"errors\":[]}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_batch_response = zb_validate_batch_response_from_json(json_tokener_parse(response_json));
+
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"valid@example.com", "1.1.1.1"};
+    email_to_validate_vector_append(&emails, email);
+
+    ZBValidateOptions options = new_validate_options();
+    options.timeout = 60;
+    options.verify_plus = 1;
+
+    validate_email_batch_with_options(
+        zb, emails, &options, on_success_validate_batch_valid, on_error_valid
+    );
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"timeout\":60"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"verify_plus\":true"));
+
+    email_to_validate_vector_free(&emails);
+}
+
 void test_validate_email_batch_uses_api_url(void)
 {
     response_json = "{\"email_batch\":[],\"errors\":[]}";
@@ -921,8 +973,10 @@ int main(void)
     RUN_TEST(test_get_api_usage_response_parse_and_compare);
     RUN_TEST(test_validate_email_invalid);
     RUN_TEST(test_validate_email_valid);
+    RUN_TEST(test_validate_email_with_options_query_params);
     RUN_TEST(test_validate_email_batch_invalid);
     RUN_TEST(test_validate_email_batch_uses_api_url);
+    RUN_TEST(test_validate_email_batch_with_options_body);
     RUN_TEST(test_validate_email_batch_valid);
     RUN_TEST(test_send_file_invalid);
     RUN_TEST(test_send_file_valid);

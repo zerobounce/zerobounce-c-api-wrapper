@@ -22,6 +22,7 @@
 
 static ZBHttpPerformFn s_http_perform = NULL;
 static char s_last_request_url_for_test[1024] = {0};
+static char s_last_post_body_for_test[4096] = {0};
 
 void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
     s_http_perform = fn;
@@ -29,6 +30,10 @@ void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
 
 const char* zero_bounce_get_last_request_url_for_test(void) {
     return s_last_request_url_for_test[0] ? s_last_request_url_for_test : NULL;
+}
+
+const char* zero_bounce_get_last_post_body_for_test(void) {
+    return s_last_post_body_for_test[0] ? s_last_post_body_for_test : NULL;
 }
 
 static void zero_bounce_record_request_url_for_test(const char* url) {
@@ -140,6 +145,31 @@ SendFileOptions new_send_file_options() {
 GetFileOptions new_get_file_options(void) {
     GetFileOptions o = { NULL, -1 };
     return o;
+}
+
+ZBValidateOptions new_validate_options(void) {
+    ZBValidateOptions o = { -1, -1, -1 };
+    return o;
+}
+
+static bool zb_check_validate_timeout(int timeout, OnErrorCallback error_callback) {
+    if (timeout < 0 || (timeout >= 3 && timeout <= 60)) {
+        return true;
+    }
+    if (error_callback) {
+        error_callback(parse_error("Invalid parameter: timeout (must be between 3 and 60 seconds)"));
+    }
+    return false;
+}
+
+static bool zb_check_validate_batch_timeout(int timeout, OnErrorCallback error_callback) {
+    if (timeout < 0 || (timeout >= 10 && timeout <= 120)) {
+        return true;
+    }
+    if (error_callback) {
+        error_callback(parse_error("Invalid parameter: timeout (must be between 10 and 120 seconds)"));
+    }
+    return false;
 }
 
 
@@ -1152,18 +1182,40 @@ void validate_email(
     OnSuccessCallbackValidate success_callback,
     OnErrorCallback error_callback
 ) {
+    validate_email_with_options(zb, email, ip_address, NULL, success_callback, error_callback);
+}
+
+void validate_email_with_options(
+    ZeroBounce *zb,
+    char* email,
+    char* ip_address,
+    const ZBValidateOptions *options,
+    OnSuccessCallbackValidate success_callback,
+    OnErrorCallback error_callback
+) {
     if (zero_bounce_invalid_api_key(zb, error_callback)) return;
 
-    const char *url_pattern = "%s/validate?api_key=%s&email=%s&ip_address=%s";
+    ZBValidateOptions default_options = new_validate_options();
+    if (!options) {
+        options = &default_options;
+    }
+    if (!zb_check_validate_timeout(options->timeout, error_callback)) {
+        return;
+    }
 
     char* api_key_esc = zb_url_escape(zb->api_key);
     char* email_esc = zb_url_escape(email ? email : "");
     char* ip_esc = zb_url_escape(ip_address ? ip_address : "");
-    int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->api_base_url, api_key_esc, email_esc, ip_esc
-    );
 
-    char *url_path = malloc(url_path_len + 1);
+    size_t url_cap = strlen(zb->api_base_url) + strlen(api_key_esc) + strlen(email_esc) + strlen(ip_esc) + 256;
+    if (options->timeout >= 0) {
+        url_cap += 32;
+    }
+    if (options->activity_data >= 0 || options->verify_plus >= 0) {
+        url_cap += 64;
+    }
+
+    char *url_path = malloc(url_cap);
     if (!url_path) {
         free(api_key_esc);
         free(email_esc);
@@ -1173,11 +1225,40 @@ void validate_email(
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, email_esc, ip_esc
+        url_path, url_cap, "%s/validate?api_key=%s&email=%s&ip_address=%s",
+        zb->api_base_url, api_key_esc, email_esc, ip_esc
     );
+    if (options->timeout >= 0) {
+        char timeout_buf[16];
+        snprintf(timeout_buf, sizeof(timeout_buf), "%d", options->timeout);
+        char* timeout_esc = zb_url_escape(timeout_buf);
+        char* extended = realloc(url_path, strlen(url_path) + strlen(timeout_esc) + 32);
+        if (!extended) {
+            free(timeout_esc);
+            free(api_key_esc);
+            free(email_esc);
+            free(ip_esc);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        url_path = extended;
+        strcat(url_path, "&timeout=");
+        strcat(url_path, timeout_esc);
+        free(timeout_esc);
+    }
+    if (options->activity_data >= 0) {
+        strcat(url_path, options->activity_data ? "&activity_data=true" : "&activity_data=false");
+    }
+    if (options->verify_plus >= 0) {
+        strcat(url_path, options->verify_plus ? "&verify_plus=true" : "&verify_plus=false");
+    }
+
     free(api_key_esc);
     free(email_esc);
     free(ip_esc);
+
+    zero_bounce_record_request_url_for_test(url_path);
 
     memory response_data = {0};
     long http_code;
@@ -1208,14 +1289,31 @@ void validate_email(
     free(response_data.response);
 }
 
-
 void validate_email_batch(
     ZeroBounce *zb,
     EmailToValidateVector email_batch,
     OnSuccessCallbackValidateBatch success_callback,
     OnErrorCallback error_callback
 ) {
+    validate_email_batch_with_options(zb, email_batch, NULL, success_callback, error_callback);
+}
+
+void validate_email_batch_with_options(
+    ZeroBounce *zb,
+    EmailToValidateVector email_batch,
+    const ZBValidateOptions *options,
+    OnSuccessCallbackValidateBatch success_callback,
+    OnErrorCallback error_callback
+) {
     if (zero_bounce_invalid_api_key(zb, error_callback)) return;
+
+    ZBValidateOptions default_options = new_validate_options();
+    if (!options) {
+        options = &default_options;
+    }
+    if (!zb_check_validate_batch_timeout(options->timeout, error_callback)) {
+        return;
+    }
 
     const char *url_pattern = "%s/validatebatch";
 
@@ -1247,6 +1345,27 @@ void validate_email_batch(
 
     json_object_object_add(payload, "api_key", json_object_new_string(zb->api_key));
     json_object_object_add(payload, "email_batch", email_batch_json);
+    if (options->timeout >= 0) {
+        json_object_object_add(payload, "timeout", json_object_new_int(options->timeout));
+    }
+    if (options->activity_data >= 0) {
+        json_object_object_add(
+            payload,
+            "activity_data",
+            json_object_new_boolean(options->activity_data ? 1 : 0)
+        );
+    }
+    if (options->verify_plus >= 0) {
+        json_object_object_add(
+            payload,
+            "verify_plus",
+            json_object_new_boolean(options->verify_plus ? 1 : 0)
+        );
+    }
+
+    const char* payload_str = json_object_to_json_string(payload);
+    strncpy(s_last_post_body_for_test, payload_str, sizeof(s_last_post_body_for_test) - 1);
+    s_last_post_body_for_test[sizeof(s_last_post_body_for_test) - 1] = '\0';
 
     memory response_data = {0};
     long http_code = 0;

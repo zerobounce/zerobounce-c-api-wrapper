@@ -79,6 +79,8 @@ typedef struct {
     char* domain;
     char* did_you_mean;
     char* domain_age_days;
+    char* active_in_days;
+    char* active_first_seen;
     bool free_email;
     bool mx_found;
     char* mx_record;

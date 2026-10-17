@@ -81,6 +81,21 @@ SendFileOptions new_send_file_options();
 GetFileOptions new_get_file_options(void);
 
 /**
+ * Optional query/body parameters for GET /validate and POST /validatebatch.
+ * timeout: -1 to omit. activity_data / verify_plus: -1 omit, 0 false, 1 true.
+ */
+typedef struct {
+    int timeout;
+    int activity_data;
+    int verify_plus;
+} ZBValidateOptions;
+
+/**
+ * @brief Default ZBValidateOptions (all parameters omitted).
+ */
+ZBValidateOptions new_validate_options(void);
+
+/**
  * @brief Whether a getfile response body looks like a JSON error payload (including HTTP 200).
  */
 bool zb_get_file_json_indicates_error(const char *body);
@@ -370,6 +385,18 @@ void validate_email(
 );
 
 /**
+ * @brief Validates the given email with optional v2 query parameters.
+ */
+void validate_email_with_options(
+    ZeroBounce *zb,
+    char* email,
+    char* ip_address,
+    const ZBValidateOptions *options,
+    OnSuccessCallbackValidate success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
  * @brief Validates a batch of emails.
  *
  * @param zb                ZeroBounce pointer
@@ -380,6 +407,17 @@ void validate_email(
 void validate_email_batch(
     ZeroBounce *zb,
     EmailToValidateVector email_batch,
+    OnSuccessCallbackValidateBatch success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Validates a batch of emails with optional v2 body parameters.
+ */
+void validate_email_batch_with_options(
+    ZeroBounce *zb,
+    EmailToValidateVector email_batch,
+    const ZBValidateOptions *options,
     OnSuccessCallbackValidateBatch success_callback,
     OnErrorCallback error_callback
 );
@@ -739,5 +777,10 @@ void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn);
  * @brief Test hook: returns the URL of the most recent validatebatch request.
  */
 const char* zero_bounce_get_last_request_url_for_test(void);
+
+/**
+ * @brief Test hook: returns the JSON body of the most recent validatebatch request.
+ */
+const char* zero_bounce_get_last_post_body_for_test(void);
 
 #endif
