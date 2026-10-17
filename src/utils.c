@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ZeroBounce/utils.h"
@@ -137,4 +138,16 @@ void* get_json_value(const json_object* obj, json_type type, const char* key, vo
         }
     }
     return default_value;
+}
+
+char* get_json_string_copy(const json_object* obj, const char* key, const char* default_value) {
+    const char* def = default_value ? default_value : "";
+    json_object* value_obj = NULL;
+
+    if (obj && json_object_object_get_ex(obj, key, &value_obj)) {
+        if (json_object_is_type(value_obj, json_type_string)) {
+            return strdup(json_object_get_string(value_obj));
+        }
+    }
+    return strdup(def);
 }

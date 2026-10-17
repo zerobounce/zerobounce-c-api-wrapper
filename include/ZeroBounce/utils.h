@@ -63,4 +63,9 @@ char* concatenate_strings(const StringVector* vec, char* separator) ;
  */
 void* get_json_value(const json_object* obj, json_type type, const char* key, void* default_value);
 
+/**
+ * @brief Heap-allocated copy of a JSON string field (or default). Caller must free().
+ */
+char* get_json_string_copy(const json_object* obj, const char* key, const char* default_value);
+
 #endif

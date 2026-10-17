@@ -63,12 +63,12 @@ char* zb_find_email_response_to_string(ZBFindEmailResponse* response) {
 
 ZBFindEmailResponse zb_find_email_response_from_json(const json_object* j) {
     ZBFindEmailResponse response = zb_find_email_response_init();
-    response.email = *(char**)get_json_value(j, json_type_string, "email", &(char*){""});
-    response.email_confidence = *(char**)get_json_value(j, json_type_string, "email_confidence", &(char*){""});
-    response.domain = *(char**)get_json_value(j, json_type_string, "domain", &(char*){""});
-    response.company_name = *(char**)get_json_value(j, json_type_string, "company_name", &(char*){""});
-    response.did_you_mean = *(char**)get_json_value(j, json_type_string, "did_you_mean", &(char*){""});
-    response.failure_reason = *(char**)get_json_value(j, json_type_string, "failure_reason", &(char*){""});
+    response.email = get_json_string_copy(j, "email", "");
+    response.email_confidence = get_json_string_copy(j, "email_confidence", "");
+    response.domain = get_json_string_copy(j, "domain", "");
+    response.company_name = get_json_string_copy(j, "company_name", "");
+    response.did_you_mean = get_json_string_copy(j, "did_you_mean", "");
+    response.failure_reason = get_json_string_copy(j, "failure_reason", "");
 
     return response;
 }

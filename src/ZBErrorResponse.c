@@ -43,7 +43,7 @@ ZBErrorResponse parse_error(const char* error) {
 
     json_object* hash_map = json_tokener_parse(error);
 
-    if (hash_map != NULL) {
+    if (hash_map != NULL && json_object_is_type(hash_map, json_type_object)) {
         json_object_object_foreach(hash_map, key, val) {
             if (strstr(key, "error") != NULL || strstr(key, "message") != NULL) {
                 if (json_object_is_type(val, json_type_array)) {
@@ -82,7 +82,9 @@ ZBErrorResponse parse_error(const char* error) {
     }
 
     response.errors = errors;
-    json_object_put(hash_map);
+    if (hash_map != NULL) {
+        json_object_put(hash_map);
+    }
 
     return response;
 }
