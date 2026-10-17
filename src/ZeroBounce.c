@@ -44,33 +44,44 @@ static char* zb_url_escape(const char* value) {
     char* escaped = curl_easy_escape(NULL, value ? value : "", 0);
     char* copy = escaped ? strdup(escaped) : NULL;
     curl_free(escaped);
-    if (!copy) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        exit(EXIT_FAILURE);
-    }
     return copy;
 }
 
-static void zb_append_query_param(StringVector* vector, const char* name, const char* value) {
+static bool zb_append_query_param(StringVector* vector, const char* name, const char* value) {
     if (!value || !strlen(value)) {
-        return;
+        return true;
     }
     size_t prefix_len = strlen(name) + 3;
     char* prefix = (char*)malloc(prefix_len);
     if (!prefix) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        exit(EXIT_FAILURE);
+        return false;
     }
     snprintf(prefix, prefix_len, "&%s=", name);
     string_vector_append(vector, prefix);
     char* escaped = zb_url_escape(value);
+    if (!escaped) {
+        return false;
+    }
     string_vector_append(vector, escaped);
     free(escaped);
+    return true;
+}
+
+static size_t zb_response_max_bytes(const memory *mem) {
+    if (mem->max_bytes != 0) {
+        return mem->max_bytes;
+    }
+    return ZB_MAX_JSON_RESPONSE_BYTES;
 }
 
 static size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp) {
   size_t real_size = size * nmemb;
   memory *mem = (memory*)clientp;
+  size_t cap = zb_response_max_bytes(mem);
+
+  if (mem->size + real_size > cap) {
+    return 0;
+  }
 
   char *ptr = realloc(mem->response, mem->size + real_size + 1);
   if(ptr == NULL)
@@ -710,6 +721,7 @@ static void get_file_internal(
     }
 
     memory response_data = {0};
+    response_data.max_bytes = ZB_MAX_GETFILE_BYTES;
     long http_code = 0;
     char* content_type = NULL;
 

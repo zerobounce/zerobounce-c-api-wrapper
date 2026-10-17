@@ -91,12 +91,19 @@ bool zb_get_file_json_indicates_error(const char *body);
 char *zb_format_get_file_error_message(const char *body);
 
 
+/** Cap JSON API responses so error pages cannot exhaust memory (F-01). */
+#define ZB_MAX_JSON_RESPONSE_BYTES (16u * 1024u * 1024u)
+/** Cap bulk getfile downloads (F-01). */
+#define ZB_MAX_GETFILE_BYTES (256u * 1024u * 1024u)
+
 /**
  * Struct used to store the response data of a request.
+ * max_bytes: 0 uses ZB_MAX_JSON_RESPONSE_BYTES; set ZB_MAX_GETFILE_BYTES for getfile.
  */
 typedef struct {
   char *response;
   size_t size;
+  size_t max_bytes;
 } memory;
 
 
