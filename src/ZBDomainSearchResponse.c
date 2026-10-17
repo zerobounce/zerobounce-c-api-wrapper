@@ -41,8 +41,8 @@ char* zb_domain_format_to_string(ZBDomainFormat* domain_format) {
 
 ZBDomainFormat zb_domain_format_from_json(const json_object* j) {
     ZBDomainFormat domain_format = zb_domain_format_init();
-    domain_format.format = *(char**)get_json_value(j, json_type_string, "format", &(char*){""});
-    domain_format.confidence = *(char**)get_json_value(j, json_type_string, "confidence", &(char*){""});
+    domain_format.format = get_json_string_copy(j, "format", "");
+    domain_format.confidence = get_json_string_copy(j, "confidence", "");
     return domain_format;
 }
 
@@ -135,19 +135,20 @@ char* zb_domain_format_vector_to_string(ZBDomainFormatVector* vector){
 }
 
 ZBDomainFormatVector zb_domain_format_vector_from_json(const json_object* j) {
-    if (json_object_get_type(j) != json_type_array) {
-        fprintf(
-            stderr,
-            "Invalid json type found for domain format vector.\n"
-            "Expected 'json_type_array', found '%s'.\n",
-            json_type_to_name(json_object_get_type(j))
-        );
-        exit(EXIT_FAILURE);
+    ZBDomainFormatVector vector = zb_domain_format_vector_init();
+    if (!j || json_object_get_type(j) != json_type_array) {
+        return vector;
     }
 
     size_t vector_size = json_object_array_length(j);
-    ZBDomainFormatVector vector = zb_domain_format_vector_init();
+    if (vector_size == 0) {
+        return vector;
+    }
     vector.data = malloc(vector_size * sizeof(ZBDomainFormat));
+    if (!vector.data) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
     vector.size = vector_size;
     for (int index = 0; index < vector_size; index ++) {
         vector.data[index] = zb_domain_format_from_json(
@@ -237,12 +238,12 @@ char* zb_domain_search_response_to_string(ZBDomainSearchResponse* response) {
 
 ZBDomainSearchResponse zb_domain_search_response_from_json(const json_object* j) {
     ZBDomainSearchResponse response = zb_domain_search_response_init();
-    response.domain = *(char**)get_json_value(j, json_type_string, "domain", &(char*){""});
-    response.company_name = *(char**)get_json_value(j, json_type_string, "company_name", &(char*){""});
-    response.format = *(char**)get_json_value(j, json_type_string, "format", &(char*){""});
-    response.confidence = *(char**)get_json_value(j, json_type_string, "confidence", &(char*){""});
-    response.did_you_mean = *(char**)get_json_value(j, json_type_string, "did_you_mean", &(char*){""});
-    response.failure_reason = *(char**)get_json_value(j, json_type_string, "failure_reason", &(char*){""});
+    response.domain = get_json_string_copy(j, "domain", "");
+    response.company_name = get_json_string_copy(j, "company_name", "");
+    response.format = get_json_string_copy(j, "format", "");
+    response.confidence = get_json_string_copy(j, "confidence", "");
+    response.did_you_mean = get_json_string_copy(j, "did_you_mean", "");
+    response.failure_reason = get_json_string_copy(j, "failure_reason", "");
 
     json_object * domain_formats_json = json_object_object_get(j, "other_domain_formats");
     response.other_domain_formats = zb_domain_format_vector_from_json(domain_formats_json);

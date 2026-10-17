@@ -26,10 +26,15 @@ FetchContent_Declare(
 FetchContent_Declare(
   libcurl
   GIT_REPOSITORY https://github.com/curl/curl.git
-  GIT_TAG curl-8_0_1
+  GIT_TAG curl-8_11_1
 )
 set(CURL_DISABLE_NTLM ON CACHE BOOL "" FORCE)
 set(CURL_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+if(APPLE)
+  set(CURL_USE_SECTRANSP ON CACHE BOOL "" FORCE)
+endif()
 # Download and build unity
 FetchContent_Declare(
   unity

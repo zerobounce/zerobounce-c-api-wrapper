@@ -40,6 +40,34 @@ static void zero_bounce_record_request_url_for_test(const char* url) {
     s_last_request_url_for_test[sizeof(s_last_request_url_for_test) - 1] = '\0';
 }
 
+static char* zb_url_escape(const char* value) {
+    char* escaped = curl_easy_escape(NULL, value ? value : "", 0);
+    char* copy = escaped ? strdup(escaped) : NULL;
+    curl_free(escaped);
+    if (!copy) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    return copy;
+}
+
+static void zb_append_query_param(StringVector* vector, const char* name, const char* value) {
+    if (!value || !strlen(value)) {
+        return;
+    }
+    size_t prefix_len = strlen(name) + 3;
+    char* prefix = (char*)malloc(prefix_len);
+    if (!prefix) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    snprintf(prefix, prefix_len, "&%s=", name);
+    string_vector_append(vector, prefix);
+    char* escaped = zb_url_escape(value);
+    string_vector_append(vector, escaped);
+    free(escaped);
+}
+
 static size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp) {
   size_t real_size = size * nmemb;
   memory *mem = (memory*)clientp;
@@ -71,8 +99,11 @@ long get_http_code(CURL* curl) {
 }
 
 char* get_content_type_value(CURL* curl) {
-    struct curl_header *content_type_header;
-    curl_easy_header(curl, "Content-Type", 0, CURLH_HEADER, -1, &content_type_header);
+    struct curl_header *content_type_header = NULL;
+    if (curl_easy_header(curl, "Content-Type", 0, CURLH_HEADER, -1, &content_type_header) != CURLHE_OK ||
+        !content_type_header) {
+        return NULL;
+    }
 
     return content_type_header->value;
 }
@@ -604,19 +635,25 @@ static void file_status_internal(
     const char *url_pattern = "%s/filestatus?api_key=%s&file_id=%s";
     const char* base_url = scoring ? zb->bulk_api_scoring_base_url : zb->bulk_api_base_url;
 
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* file_id_esc = zb_url_escape(file_id);
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, base_url, zb->api_key, file_id
+        NULL, 0, url_pattern, base_url, api_key_esc, file_id_esc
     );
 
     char *url_path = malloc(url_path_len + 1);
     if (!url_path) {
+        free(api_key_esc);
+        free(file_id_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, base_url, zb->api_key, file_id
+        url_path, url_path_len + 1, url_pattern, base_url, api_key_esc, file_id_esc
     );
+    free(api_key_esc);
+    free(file_id_esc);
 
     memory response_data = {0};
     long http_code;
@@ -805,19 +842,25 @@ static void delete_file_internal(
     const char *url_pattern = "%s/deletefile?api_key=%s&file_id=%s";
     const char* base_url = scoring ? zb->bulk_api_scoring_base_url : zb->bulk_api_base_url;
 
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* file_id_esc = zb_url_escape(file_id);
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, base_url, zb->api_key, file_id
+        NULL, 0, url_pattern, base_url, api_key_esc, file_id_esc
     );
 
     char *url_path = malloc(url_path_len + 1);
     if (!url_path) {
+        free(api_key_esc);
+        free(file_id_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, base_url, zb->api_key, file_id
+        url_path, url_path_len + 1, url_pattern, base_url, api_key_esc, file_id_esc
     );
+    free(api_key_esc);
+    free(file_id_esc);
 
     memory response_data = {0};
     long http_code;
@@ -863,28 +906,14 @@ static void find_email_internal(
     StringVector string_vector = string_vector_init();
     string_vector_append(&string_vector, zb->api_base_url);
     string_vector_append(&string_vector, strdup("/guessformat?api_key="));
-    string_vector_append(&string_vector, zb->api_key);
-
-    if (domain != NULL && strlen(domain)) {
-        string_vector_append(&string_vector, strdup("&domain="));
-        string_vector_append(&string_vector, domain);
-    }
-    if (company_name != NULL && strlen(company_name)) {
-        string_vector_append(&string_vector, strdup("&company_name="));
-        string_vector_append(&string_vector, company_name);
-    }
-    if (first_name != NULL && strlen(first_name)) {
-        string_vector_append(&string_vector, strdup("&first_name="));
-        string_vector_append(&string_vector, first_name);
-    }
-    if (middle_name != NULL && strlen(middle_name)) {
-        string_vector_append(&string_vector, strdup("&middle_name="));
-        string_vector_append(&string_vector, middle_name);
-    }
-    if (last_name != NULL && strlen(last_name)) {
-        string_vector_append(&string_vector, strdup("&last_name="));
-        string_vector_append(&string_vector, last_name);
-    }
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    string_vector_append(&string_vector, api_key_esc);
+    free(api_key_esc);
+    zb_append_query_param(&string_vector, "domain", domain);
+    zb_append_query_param(&string_vector, "company_name", company_name);
+    zb_append_query_param(&string_vector, "first_name", first_name);
+    zb_append_query_param(&string_vector, "middle_name", middle_name);
+    zb_append_query_param(&string_vector, "last_name", last_name);
     char *url_path = concatenate_strings(&string_vector, "");
     if (!url_path) {
         fprintf(stderr, "Memory allocation failed.\n");
@@ -934,16 +963,11 @@ static void search_domain_internal(
     StringVector string_vector = string_vector_init();
     string_vector_append(&string_vector, zb->api_base_url);
     string_vector_append(&string_vector, strdup("/guessformat?api_key="));
-    string_vector_append(&string_vector, zb->api_key);
-
-    if (domain != NULL && strlen(domain)) {
-        string_vector_append(&string_vector, strdup("&domain="));
-        string_vector_append(&string_vector, domain);
-    }
-    if (company_name != NULL && strlen(company_name)) {
-        string_vector_append(&string_vector, strdup("&company_name="));
-        string_vector_append(&string_vector, company_name);
-    }
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    string_vector_append(&string_vector, api_key_esc);
+    free(api_key_esc);
+    zb_append_query_param(&string_vector, "domain", domain);
+    zb_append_query_param(&string_vector, "company_name", company_name);
     char *url_path = concatenate_strings(&string_vector, "");
     if (!url_path) {
         fprintf(stderr, "Memory allocation failed.\n");
@@ -991,19 +1015,22 @@ void get_credits(
 
     const char *url_pattern = "%s/getcredits?api_key=%s";
 
+    char* api_key_esc = zb_url_escape(zb->api_key);
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->api_base_url, zb->api_key
+        NULL, 0, url_pattern, zb->api_base_url, api_key_esc
     );
 
     char *url_path = malloc(url_path_len + 1);
     if (!url_path) {
+        free(api_key_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->api_base_url, zb->api_key
+        url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc
     );
+    free(api_key_esc);
 
     memory response_data = {0};
     long http_code;
@@ -1053,21 +1080,28 @@ void get_api_usage(
 
     const char *url_pattern = "%s/getapiusage?api_key=%s&start_date=%s&end_date=%s";
 
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* start_esc = zb_url_escape(start_date_str);
+    char* end_esc = zb_url_escape(end_date_str);
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->api_base_url, zb->api_key,
-        start_date_str, end_date_str
+        NULL, 0, url_pattern, zb->api_base_url, api_key_esc, start_esc, end_esc
     );
 
     char *url_path = malloc(url_path_len + 1);
     if (!url_path) {
+        free(api_key_esc);
+        free(start_esc);
+        free(end_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->api_base_url, zb->api_key,
-        start_date_str, end_date_str
+        url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, start_esc, end_esc
     );
+    free(api_key_esc);
+    free(start_esc);
+    free(end_esc);
 
     memory response_data = {0};
     long http_code;
@@ -1110,19 +1144,28 @@ void validate_email(
 
     const char *url_pattern = "%s/validate?api_key=%s&email=%s&ip_address=%s";
 
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* email_esc = zb_url_escape(email ? email : "");
+    char* ip_esc = zb_url_escape(ip_address ? ip_address : "");
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->api_base_url, zb->api_key, email, ip_address
+        NULL, 0, url_pattern, zb->api_base_url, api_key_esc, email_esc, ip_esc
     );
 
     char *url_path = malloc(url_path_len + 1);
     if (!url_path) {
+        free(api_key_esc);
+        free(email_esc);
+        free(ip_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->api_base_url, zb->api_key, email, ip_address
+        url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, email_esc, ip_esc
     );
+    free(api_key_esc);
+    free(email_esc);
+    free(ip_esc);
 
     memory response_data = {0};
     long http_code;
@@ -1387,19 +1430,25 @@ void get_activity_data(
 
     const char *url_pattern = "%s/activity?api_key=%s&email=%s";
 
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* email_esc = zb_url_escape(email ? email : "");
     int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->api_base_url, zb->api_key, email
+        NULL, 0, url_pattern, zb->api_base_url, api_key_esc, email_esc
     );
 
     char *url_path = malloc(url_path_len + 1);
     if (!url_path) {
+        free(api_key_esc);
+        free(email_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->api_base_url, zb->api_key, email
+        url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, email_esc
     );
+    free(api_key_esc);
+    free(email_esc);
 
     memory response_data = {0};
     long http_code;
@@ -1530,24 +1579,13 @@ void find_email(
     StringVector string_vector = string_vector_init();
     string_vector_append(&string_vector, zb->api_base_url);
     string_vector_append(&string_vector, strdup("/guessformat?api_key="));
-    string_vector_append(&string_vector, zb->api_key);
-
-    if (domain != NULL && strlen(domain)) {
-        string_vector_append(&string_vector, strdup("&domain="));
-        string_vector_append(&string_vector, domain);
-    }
-    if (first_name != NULL && strlen(first_name)) {
-        string_vector_append(&string_vector, strdup("&first_name="));
-        string_vector_append(&string_vector, first_name);
-    }
-    if (middle_name != NULL && strlen(middle_name)) {
-        string_vector_append(&string_vector, strdup("&middle_name="));
-        string_vector_append(&string_vector, middle_name);
-    }
-    if (last_name != NULL && strlen(last_name)) {
-        string_vector_append(&string_vector, strdup("&last_name="));
-        string_vector_append(&string_vector, last_name);
-    }
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    string_vector_append(&string_vector, api_key_esc);
+    free(api_key_esc);
+    zb_append_query_param(&string_vector, "domain", domain);
+    zb_append_query_param(&string_vector, "first_name", first_name);
+    zb_append_query_param(&string_vector, "middle_name", middle_name);
+    zb_append_query_param(&string_vector, "last_name", last_name);
     char *url_path = concatenate_strings(&string_vector, "");
     if (!url_path) {
         fprintf(stderr, "Memory allocation failed.\n");

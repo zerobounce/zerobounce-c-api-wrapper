@@ -119,6 +119,8 @@ void validate_response_vector_append(ValidateResponseVector* vector, const ZBVal
     vector->data[vector->size].domain_age_days = strdup(response.domain_age_days);
     vector->data[vector->size].free_email = response.free_email;
     vector->data[vector->size].mx_found = response.mx_found;
+    vector->data[vector->size].catchall_domain = response.catchall_domain;
+    vector->data[vector->size].catchall_domain_set = response.catchall_domain_set;
     vector->data[vector->size].mx_record = strdup(response.mx_record);
     vector->data[vector->size].smtp_provider = strdup(response.smtp_provider);
     vector->data[vector->size].first_name = strdup(response.first_name);
@@ -280,8 +282,10 @@ ZBValidateBatchResponse zb_validate_batch_response_from_json(const json_object* 
         return r;
     }
 
-    size_t email_batch_size = json_object_array_length(j_email_batch);
-    size_t errors_size = json_object_array_length(j_errors);
+    size_t email_batch_size = json_object_is_type(j_email_batch, json_type_array)
+        ? json_object_array_length(j_email_batch) : 0;
+    size_t errors_size = json_object_is_type(j_errors, json_type_array)
+        ? json_object_array_length(j_errors) : 0;
 
     for (size_t i = 0; i < email_batch_size; i++) {
         json_object* j_response = json_object_array_get_idx(j_email_batch, i);
