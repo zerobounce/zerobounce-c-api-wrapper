@@ -448,6 +448,63 @@ static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_ca
 }
 
 
+static int make_request_with_post_body(
+    char* url_path,
+    char* body,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+) {
+    strncpy(s_last_post_body_for_test, body ? body : "", sizeof(s_last_post_body_for_test) - 1);
+    s_last_post_body_for_test[sizeof(s_last_post_body_for_test) - 1] = '\0';
+    zero_bounce_record_request_url_for_test(url_path);
+
+    if (s_http_perform) {
+        return s_http_perform(response_data, http_code, NULL);
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        error_callback(parse_error("Failed to initialize libcurl"));
+        curl_easy_cleanup(curl);
+        return 0;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
+    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body);
+
+    set_write_callback(curl, response_data);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        char error_message[300];
+        sprintf(
+            error_message,
+            "Failed to perform request. CURLcode: %d. Error: %s",
+            res,
+            curl_easy_strerror(res)
+        );
+        error_callback(parse_error(error_message));
+
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+        return 0;
+    }
+
+    *http_code = get_http_code(curl);
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+
+    return 1;
+}
+
 static int make_request(
     char* url_path,
     char* request_type,
@@ -1633,6 +1690,114 @@ void get_activity_data(
     cleanup:
     free(url_path);
     free(response_data.response);
+}
+
+static void score_email_internal(
+    ZeroBounce *zb,
+    bool use_post,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) return;
+
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* email_esc = zb_url_escape(email ? email : "");
+
+    char *url_path = NULL;
+    char *post_body = NULL;
+
+    if (use_post) {
+        const char *url_pattern = "%s/scoring";
+        int url_path_len = snprintf(NULL, 0, url_pattern, zb->api_base_url);
+        url_path = malloc(url_path_len + 1);
+        if (!url_path) {
+            goto alloc_fail;
+        }
+        snprintf(url_path, url_path_len + 1, url_pattern, zb->api_base_url);
+
+        const char *body_pattern = "api_key=%s&email=%s";
+        int body_len = snprintf(NULL, 0, body_pattern, api_key_esc, email_esc);
+        post_body = malloc(body_len + 1);
+        if (!post_body) {
+            goto alloc_fail;
+        }
+        snprintf(post_body, body_len + 1, body_pattern, api_key_esc, email_esc);
+    } else {
+        const char *url_pattern = "%s/scoring?api_key=%s&email=%s";
+        int url_path_len = snprintf(
+            NULL, 0, url_pattern, zb->api_base_url, api_key_esc, email_esc
+        );
+        url_path = malloc(url_path_len + 1);
+        if (!url_path) {
+            goto alloc_fail;
+        }
+        snprintf(
+            url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, email_esc
+        );
+        zero_bounce_record_request_url_for_test(url_path);
+    }
+
+    free(api_key_esc);
+    api_key_esc = NULL;
+    free(email_esc);
+    email_esc = NULL;
+
+    memory response_data = {0};
+    long http_code = 0;
+    int ok = use_post
+        ? make_request_with_post_body(url_path, post_body, &response_data, &http_code, error_callback)
+        : make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback);
+
+    if (!ok) {
+        goto cleanup;
+    }
+
+    if (http_code > 299) {
+        if (error_callback) {
+            error_callback(parse_error(response_data.response));
+        }
+    } else if (success_callback) {
+        json_object *j_obj = json_tokener_parse(response_data.response);
+        if (j_obj == NULL) {
+            error_callback(parse_error("Failed to parse json string"));
+            goto cleanup;
+        }
+
+        success_callback(zb_score_email_response_from_json(j_obj));
+        json_object_put(j_obj);
+    }
+
+    goto cleanup;
+
+alloc_fail:
+    free(api_key_esc);
+    free(email_esc);
+    fprintf(stderr, "Memory allocation failed.\n");
+    exit(EXIT_FAILURE);
+
+cleanup:
+    free(url_path);
+    free(post_body);
+    free(response_data.response);
+}
+
+void score_email(
+    ZeroBounce *zb,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    score_email_internal(zb, false, email, success_callback, error_callback);
+}
+
+void score_email_post(
+    ZeroBounce *zb,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    score_email_internal(zb, true, email, success_callback, error_callback);
 }
 
 

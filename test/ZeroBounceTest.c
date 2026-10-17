@@ -18,6 +18,7 @@ static ZBFileStatusResponse expected_file_status_response;
 static ZBGetFileResponse expected_get_file_response;
 static ZBDeleteFileResponse expected_delete_file_response;
 static ZBActivityDataResponse expected_activity_data_response;
+static ZBScoreEmailResponse expected_score_email_response;
 static ZBFindEmailResponse expected_find_email_response;
 static ZBDomainSearchResponse expected_domain_search_response;
 
@@ -102,6 +103,14 @@ void on_success_activity_data_valid(ZBActivityDataResponse response) {
 
 void on_success_activity_data_invalid(ZBActivityDataResponse response) {
     TEST_FAIL_MESSAGE(zb_activity_data_response_to_string(&response));
+}
+
+void on_success_score_email_valid(ZBScoreEmailResponse response) {
+    TEST_ASSERT_EQUAL_INT(1, compare_zb_score_email_response(&expected_score_email_response, &response));
+}
+
+void on_success_score_email_invalid(ZBScoreEmailResponse response) {
+    TEST_FAIL_MESSAGE(zb_score_email_response_to_string(&response));
 }
 
 void on_success_find_email_valid(ZBFindEmailResponse response) {
@@ -919,6 +928,42 @@ void test_search_domain_status_valid_payload(void) {
 }
 
 
+void test_score_email_valid(void) {
+    response_json = "{\"email\":\"mark@gmail.com\",\"score\":10}";
+
+    expected_score_email_response = zb_score_email_response_from_json(
+        json_tokener_parse(response_json)
+    );
+
+    get_http_code_fake.return_val = 200;
+    score_email(zb, "mark@gmail.com", on_success_score_email_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/scoring?"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "email="));
+}
+
+void test_score_email_post_valid(void) {
+    response_json = "{\"email\":\"mark@gmail.com\",\"score\":10}";
+
+    expected_score_email_response = zb_score_email_response_from_json(
+        json_tokener_parse(response_json)
+    );
+
+    get_http_code_fake.return_val = 200;
+    score_email_post(zb, "mark@gmail.com", on_success_score_email_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/scoring"));
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "api_key="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "email="));
+}
+
 void test_search_domain_status_serialize_functions() {
     response_json = "{\n"
         "    \"domain\": \"example.com\",\n"
@@ -999,6 +1044,8 @@ int main(void)
     RUN_TEST(test_scoring_get_file_valid);
     RUN_TEST(test_scoring_delete_file_invalid);
     RUN_TEST(test_scoring_delete_file_valid);
+    RUN_TEST(test_score_email_valid);
+    RUN_TEST(test_score_email_post_valid);
     RUN_TEST(test_find_email_status_invalid_payload);
     RUN_TEST(test_find_email_status_valid_payload);
     RUN_TEST(test_search_domain_status_invalid_payload);

@@ -19,6 +19,7 @@
 #include "ZeroBounce/ZBGetFileResponse.h"
 #include "ZeroBounce/ZBDeleteFileResponse.h"
 #include "ZeroBounce/ZBActivityDataResponse.h"
+#include "ZeroBounce/ZBScoreEmailResponse.h"
 #include "ZeroBounce/ZBFindEmailResponse.h"
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
@@ -33,6 +34,7 @@ typedef void (*OnSuccessCallbackFileStatus)(ZBFileStatusResponse response);
 typedef void (*OnSuccessCallbackGetFile)(ZBGetFileResponse response);
 typedef void (*OnSuccessCallbackDeleteFile)(ZBDeleteFileResponse response);
 typedef void (*OnSuccessCallbackActivityData)(ZBActivityDataResponse response);
+typedef void (*OnSuccessCallbackScoreEmail)(ZBScoreEmailResponse response);
 typedef void (*OnSuccessCallbackFindEmail)(ZBFindEmailResponse response);
 typedef void (*OnSuccessCallbackDomainSearch)(ZBDomainSearchResponse response);
 
@@ -592,6 +594,26 @@ void get_activity_data(
     ZeroBounce *zb,
     char* email,
     OnSuccessCallbackActivityData success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Real-time AI scoring for a single email (GET /scoring).
+ */
+void score_email(
+    ZeroBounce *zb,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
+ * @brief Real-time AI scoring for a single email (POST /scoring, form-encoded).
+ */
+void score_email_post(
+    ZeroBounce *zb,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
     OnErrorCallback error_callback
 );
 
