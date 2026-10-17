@@ -1285,6 +1285,114 @@ void validate_email_with_options(
         return;
     }
 
+    if (options->use_post == 1) {
+        char *url_path = malloc(strlen(zb->api_base_url) + 16);
+        if (!url_path) {
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        snprintf(url_path, strlen(zb->api_base_url) + 16, "%s/validate", zb->api_base_url);
+
+        char *api_key_esc = zb_url_escape(zb->api_key);
+        char *email_esc = zb_url_escape(email ? email : "");
+        char *ip_esc = zb_url_escape(ip_address ? ip_address : "");
+        if (!api_key_esc || !email_esc || !ip_esc) {
+            free(api_key_esc);
+            free(email_esc);
+            free(ip_esc);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        size_t body_cap = strlen(api_key_esc) + strlen(email_esc) + strlen(ip_esc) + 128;
+        if (options->timeout >= 0) {
+            body_cap += 32;
+        }
+        if (options->activity_data >= 0 || options->verify_plus >= 0) {
+            body_cap += 64;
+        }
+        char *post_body = malloc(body_cap);
+        if (!post_body) {
+            free(api_key_esc);
+            free(email_esc);
+            free(ip_esc);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        snprintf(
+            post_body, body_cap, "api_key=%s&email=%s&ip_address=%s",
+            api_key_esc, email_esc, ip_esc
+        );
+        free(api_key_esc);
+        free(email_esc);
+        free(ip_esc);
+
+        if (options->timeout >= 0) {
+            char timeout_buf[16];
+            snprintf(timeout_buf, sizeof(timeout_buf), "%d", options->timeout);
+            char *timeout_esc = zb_url_escape(timeout_buf);
+            if (!timeout_esc || !zb_url_append_suffix(&post_body, "&timeout=") ||
+                !zb_url_append_suffix(&post_body, timeout_esc)) {
+                free(timeout_esc);
+                free(post_body);
+                free(url_path);
+                fprintf(stderr, "Memory allocation failed.\n");
+                exit(EXIT_FAILURE);
+            }
+            free(timeout_esc);
+        }
+        if (options->activity_data >= 0) {
+            const char *suffix = options->activity_data ? "&activity_data=true" : "&activity_data=false";
+            if (!zb_url_append_suffix(&post_body, suffix)) {
+                free(post_body);
+                free(url_path);
+                fprintf(stderr, "Memory allocation failed.\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        if (options->verify_plus >= 0) {
+            const char *suffix = options->verify_plus ? "&verify_plus=true" : "&verify_plus=false";
+            if (!zb_url_append_suffix(&post_body, suffix)) {
+                free(post_body);
+                free(url_path);
+                fprintf(stderr, "Memory allocation failed.\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        zero_bounce_record_request_url_for_test(url_path);
+
+        memory response_data = {0};
+        long http_code;
+
+        if (!zb_make_request_with_post_body(url_path, post_body, &response_data, &http_code, error_callback)) {
+            free(url_path);
+            free(post_body);
+            return;
+        }
+
+        if (http_code > 299) {
+            if (error_callback) {
+                error_callback(parse_error(response_data.response));
+            }
+        } else if (success_callback) {
+            json_object *j_obj = json_tokener_parse(response_data.response);
+            if (j_obj == NULL) {
+                error_callback(parse_error("Failed to parse json string"));
+            } else {
+                success_callback(zb_validate_response_from_json(j_obj));
+                json_object_put(j_obj);
+            }
+        }
+
+        free(url_path);
+        free(post_body);
+        free(response_data.response);
+        return;
+    }
+
     char* api_key_esc = zb_url_escape(zb->api_key);
     char* email_esc = zb_url_escape(email ? email : "");
     char* ip_esc = zb_url_escape(ip_address ? ip_address : "");

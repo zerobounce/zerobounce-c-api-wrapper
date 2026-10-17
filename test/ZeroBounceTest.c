@@ -109,6 +109,19 @@ void on_success_score_email_valid(ZBScoreEmailResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_score_email_response(&expected_score_email_response, &response));
 }
 
+static char last_raw_json_buffer[4096];
+static const char *last_raw_json_response = NULL;
+
+void on_success_raw_json(const char *json_response) {
+    if (!json_response) {
+        last_raw_json_buffer[0] = '\0';
+    } else {
+        strncpy(last_raw_json_buffer, json_response, sizeof(last_raw_json_buffer) - 1);
+        last_raw_json_buffer[sizeof(last_raw_json_buffer) - 1] = '\0';
+    }
+    last_raw_json_response = last_raw_json_buffer;
+}
+
 void on_success_score_email_invalid(ZBScoreEmailResponse response) {
     TEST_FAIL_MESSAGE(zb_score_email_response_to_string(&response));
 }
@@ -398,6 +411,51 @@ void test_validate_email_with_options_query_params(void)
     TEST_ASSERT_NOT_NULL(strstr(url, "timeout=30"));
     TEST_ASSERT_NOT_NULL(strstr(url, "activity_data=true"));
     TEST_ASSERT_NOT_NULL(strstr(url, "verify_plus=false"));
+}
+
+void test_validate_email_with_options_post_form(void)
+{
+    response_json = "{\"address\":\"valid@example.com\",\"status\":\"valid\",\"sub_status\":\"\",\"processed_at\":\"2023-04-05 13:29:47.553\"}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_response = zb_validate_response_from_json(json_tokener_parse(response_json));
+
+    ZBValidateOptions options = new_validate_options();
+    options.use_post = 1;
+    options.timeout = 30;
+
+    validate_email_with_options(
+        zb, "valid@example.com", "", &options, on_success_validate_valid, on_error_valid
+    );
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/validate"));
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "api_key="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "email="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "timeout=30"));
+}
+
+void test_list_s3_files_valid(void)
+{
+    response_json = "[{\"name\":\"uploads/list.csv\",\"size\":100,\"last_modified\":\"2024-01-01T00:00:00Z\"}]";
+    last_raw_json_response = NULL;
+
+    get_http_code_fake.return_val = 200;
+
+    list_s3_files(zb, "my-bucket", "list", on_success_raw_json, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/listS3files"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "bucket=my-bucket"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "search=list"));
+    TEST_ASSERT_NOT_NULL(last_raw_json_response);
+    TEST_ASSERT_NOT_NULL(strstr(last_raw_json_response, "uploads/list.csv"));
 }
 
 void test_validate_email_batch_with_options_body(void)
@@ -1042,6 +1100,7 @@ int main(void)
     RUN_TEST(test_validate_email_invalid);
     RUN_TEST(test_validate_email_valid);
     RUN_TEST(test_validate_email_with_options_query_params);
+    RUN_TEST(test_validate_email_with_options_post_form);
     RUN_TEST(test_validate_email_batch_invalid);
     RUN_TEST(test_validate_email_batch_uses_api_url);
     RUN_TEST(test_validate_email_batch_with_options_body);
@@ -1068,6 +1127,7 @@ int main(void)
     RUN_TEST(test_score_email_valid);
     RUN_TEST(test_score_email_post_valid);
     RUN_TEST(test_validate_s3_file_valid);
+    RUN_TEST(test_list_s3_files_valid);
     RUN_TEST(test_find_email_status_invalid_payload);
     RUN_TEST(test_find_email_status_valid_payload);
     RUN_TEST(test_search_domain_status_invalid_payload);

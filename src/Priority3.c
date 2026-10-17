@@ -857,6 +857,68 @@ void score_s3_file(
     p3_post_send_file_form(zb, url, body, success_callback, error_callback);
 }
 
+void list_s3_files(
+    ZeroBounce *zb,
+    const char *bucket,
+    const char *search,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+    char *api_key_esc = zb_url_escape(zb->api_key);
+    char *bucket_esc = (bucket && bucket[0]) ? zb_url_escape(bucket) : NULL;
+    char *search_esc = (search && search[0]) ? zb_url_escape(search) : NULL;
+    if (!api_key_esc) {
+        free(bucket_esc);
+        free(search_esc);
+        if (error_callback) {
+            error_callback(parse_error("Memory allocation failed"));
+        }
+        return;
+    }
+    const char *url_pattern = "%s/listS3files?api_key=%s%s%s%s%s";
+    const char *bucket_part = bucket_esc ? "&bucket=" : "";
+    const char *search_part = search_esc ? "&search=" : "";
+    int url_path_len = snprintf(
+        NULL,
+        0,
+        url_pattern,
+        zb->bulk_api_root_url,
+        api_key_esc,
+        bucket_part,
+        bucket_esc ? bucket_esc : "",
+        search_part,
+        search_esc ? search_esc : ""
+    );
+    char *url_path = malloc((size_t)url_path_len + 1);
+    if (!url_path) {
+        free(api_key_esc);
+        free(bucket_esc);
+        free(search_esc);
+        if (error_callback) {
+            error_callback(parse_error("Memory allocation failed"));
+        }
+        return;
+    }
+    snprintf(
+        url_path,
+        (size_t)url_path_len + 1,
+        url_pattern,
+        zb->bulk_api_root_url,
+        api_key_esc,
+        bucket_part,
+        bucket_esc ? bucket_esc : "",
+        search_part,
+        search_esc ? search_esc : ""
+    );
+    free(api_key_esc);
+    free(bucket_esc);
+    free(search_esc);
+    p3_raw_json_get(zb, url_path, success_callback, error_callback);
+}
+
 void export_s3_file(
     ZeroBounce *zb,
     char *file_id,

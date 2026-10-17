@@ -902,6 +902,14 @@ void export_s3_file(
     OnErrorCallback error_callback
 );
 
+void list_s3_files(
+    ZeroBounce *zb,
+    const char *bucket,
+    const char *search,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+);
+
 /**
  * @brief Email Address Search - Identifies and validates a person’s primary email address
  *
