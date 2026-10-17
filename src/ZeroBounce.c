@@ -171,7 +171,7 @@ GetFileOptions new_get_file_options(void) {
 }
 
 ZBValidateOptions new_validate_options(void) {
-    ZBValidateOptions o = { -1, -1, -1 };
+    ZBValidateOptions o = { -1, -1, -1, -1 };
     return o;
 }
 

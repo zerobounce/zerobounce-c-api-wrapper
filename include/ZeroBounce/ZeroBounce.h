@@ -93,6 +93,8 @@ typedef struct {
     int timeout;
     int activity_data;
     int verify_plus;
+    /** -1 omit, 1 use form-encoded POST for /validate */
+    int use_post;
 } ZBValidateOptions;
 
 /**
