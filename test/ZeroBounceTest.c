@@ -5,6 +5,8 @@
 
 #include "ZeroBounce/ZeroBounce.h"
 
+void offline_run_tests(void);
+
 DEFINE_FFF_GLOBALS;
 
 static ZeroBounce* zb;
@@ -1133,6 +1135,8 @@ int main(void)
     RUN_TEST(test_search_domain_status_invalid_payload);
     RUN_TEST(test_search_domain_status_valid_payload);
     RUN_TEST(test_search_domain_status_serialize_functions);
+
+    offline_run_tests();
 
     return UNITY_END();
 }

@@ -951,4 +951,15 @@ const char* zero_bounce_get_last_request_url_for_test(void);
  */
 const char* zero_bounce_get_last_post_body_for_test(void);
 
+/**
+ * Thread-local snapshot of the request about to be performed.
+ * Safe to read from the HTTP test hook on the same thread.
+ */
+const char *zero_bounce_test_method(void);
+const char *zero_bounce_test_url(void);
+const char *zero_bounce_test_body(void);
+int zero_bounce_test_field_count(void);
+const char *zero_bounce_test_field_name(int index);
+const char *zero_bounce_test_field_value(int index);
+
 #endif

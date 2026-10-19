@@ -5,7 +5,7 @@
 
 /**
  * Optional columns for bulk email finder sendfile.
- * Column indexes start at 1. has_header_row: -1 omit, 1 sends "true".
+ * Column indexes start at 1. has_header_row: -1 omit, 0 sends "false", 1 sends "true".
  */
 typedef struct {
     int first_name_column;

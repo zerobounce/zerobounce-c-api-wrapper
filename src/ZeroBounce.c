@@ -53,6 +53,67 @@ void zero_bounce_record_request_url_for_test(const char* url) {
     s_last_request_url_for_test[sizeof(s_last_request_url_for_test) - 1] = '\0';
 }
 
+#define ZB_TEST_FIELD_MAX 48
+
+typedef struct {
+    char method[16];
+    char url[8192];
+    char body[32768];
+    struct {
+        char name[64];
+        char value[1024];
+    } fields[ZB_TEST_FIELD_MAX];
+    int field_count;
+} ZBTlsRequest;
+
+static _Thread_local ZBTlsRequest zb_tls_request;
+
+static void zb_copy_cap(char *dest, size_t dest_len, const char *src) {
+    if (!dest || dest_len == 0) {
+        return;
+    }
+    if (!src) {
+        dest[0] = '\0';
+        return;
+    }
+    snprintf(dest, dest_len, "%s", src);
+}
+
+void zb_note_http_request(const char *method, const char *url, const char *body) {
+    memset(&zb_tls_request, 0, sizeof(zb_tls_request));
+    zb_copy_cap(zb_tls_request.method, sizeof(zb_tls_request.method), method ? method : "");
+    zb_copy_cap(zb_tls_request.url, sizeof(zb_tls_request.url), url ? url : "");
+    zb_copy_cap(zb_tls_request.body, sizeof(zb_tls_request.body), body ? body : "");
+    zero_bounce_record_request_url_for_test(url);
+    if (body) {
+        strncpy(s_last_post_body_for_test, body, sizeof(s_last_post_body_for_test) - 1);
+        s_last_post_body_for_test[sizeof(s_last_post_body_for_test) - 1] = '\0';
+    }
+}
+
+void zb_note_http_field(const char *name, const char *value) {
+    int index;
+    if (zb_tls_request.field_count >= ZB_TEST_FIELD_MAX) {
+        return;
+    }
+    index = zb_tls_request.field_count++;
+    zb_copy_cap(zb_tls_request.fields[index].name, sizeof(zb_tls_request.fields[index].name), name);
+    zb_copy_cap(zb_tls_request.fields[index].value, sizeof(zb_tls_request.fields[index].value), value);
+}
+
+const char *zero_bounce_test_method(void) { return zb_tls_request.method; }
+const char *zero_bounce_test_url(void) { return zb_tls_request.url; }
+const char *zero_bounce_test_body(void) { return zb_tls_request.body; }
+int zero_bounce_test_field_count(void) { return zb_tls_request.field_count; }
+const char *zero_bounce_test_field_name(int index) {
+    if (index < 0 || index >= zb_tls_request.field_count) return "";
+    return zb_tls_request.fields[index].name;
+}
+const char *zero_bounce_test_field_value(int index) {
+    if (index < 0 || index >= zb_tls_request.field_count) return "";
+    return zb_tls_request.fields[index].value;
+}
+
 char* zb_url_escape(const char* value) {
     char* escaped = curl_easy_escape(NULL, value ? value : "", 0);
     char* copy = escaped ? strdup(escaped) : NULL;
@@ -464,9 +525,7 @@ int zb_make_request_with_post_body(
     long* http_code,
     OnErrorCallback error_callback
 ) {
-    strncpy(s_last_post_body_for_test, body ? body : "", sizeof(s_last_post_body_for_test) - 1);
-    s_last_post_body_for_test[sizeof(s_last_post_body_for_test) - 1] = '\0';
-    zero_bounce_record_request_url_for_test(url_path);
+    zb_note_http_request("POST", url_path, body ? body : "");
 
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
@@ -522,7 +581,7 @@ int zb_make_request(
     long* http_code,
     OnErrorCallback error_callback
 ) {
-    zero_bounce_record_request_url_for_test(url_path);
+    zb_note_http_request(request_type ? request_type : "GET", url_path, NULL);
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
     }
@@ -567,6 +626,45 @@ int zb_make_request(
     return 1;
 }
 
+static void note_send_file_fields(
+    ZeroBounce *zb,
+    bool scoring,
+    int email_address_column_index,
+    SendFileOptions options
+) {
+    char int_str_option[16];
+    zb_note_http_field("api_key", zb->api_key ? zb->api_key : "");
+    zb_note_http_field("file", "<file>");
+    snprintf(int_str_option, sizeof(int_str_option), "%d", email_address_column_index);
+    zb_note_http_field("email_address_column", int_str_option);
+    if (!scoring) {
+        if (options.first_name_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.first_name_column);
+            zb_note_http_field("first_name_column", int_str_option);
+        }
+        if (options.last_name_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.last_name_column);
+            zb_note_http_field("last_name_column", int_str_option);
+        }
+        if (options.gender_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.gender_column);
+            zb_note_http_field("gender_column", int_str_option);
+        }
+        if (options.ip_address_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.ip_address_column);
+            zb_note_http_field("ip_address_column", int_str_option);
+        }
+    }
+    if (options.return_url && strlen(options.return_url) != 0) {
+        zb_note_http_field("return_url", options.return_url);
+    }
+    zb_note_http_field("has_header_row", options.has_header_row ? "true" : "false");
+    zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
+    if (!scoring && options.allow_phase_2_is_set) {
+        zb_note_http_field("allow_phase_2", options.allow_phase_2 ? "true" : "false");
+    }
+}
+
 static void send_file_internal(
     ZeroBounce *zb,
     bool scoring,
@@ -597,6 +695,9 @@ static void send_file_internal(
 
     memory response_data = {0};
 
+    zb_note_http_request("POST", url_path, NULL);
+    note_send_file_fields(zb, scoring, email_address_column_index, options);
+
     if (s_http_perform) {
         long http_code = 0;
         if (!s_http_perform(&response_data, &http_code, NULL)) {
@@ -604,11 +705,11 @@ static void send_file_internal(
             goto cleanup;
         }
         if (http_code > 299) {
-            if (error_callback) error_callback(parse_error(response_data.response));
+            zb_report_body_error(response_data.response, http_code, error_callback);
         } else if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+                goto cleanup;
             } else {
                 success_callback(zb_send_file_response_from_json(j_obj));
                 json_object_put(j_obj);
@@ -724,14 +825,11 @@ static void send_file_internal(
     curl_mime_free(multipart);
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -786,14 +884,11 @@ static void file_status_internal(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -836,6 +931,8 @@ static void get_file_internal(
     response_data.max_bytes = ZB_MAX_GETFILE_BYTES;
     long http_code = 0;
     char* content_type = NULL;
+
+    zb_note_http_request("GET", url_path, NULL);
 
     if (s_http_perform) {
         if (!s_http_perform(&response_data, &http_code, &content_type)) {
@@ -891,15 +988,8 @@ static void get_file_internal(
 
     const char *body = response_data.response ? response_data.response : "";
 
-    if (http_code > 299) {
-        if (error_callback) {
-            char *fmt = NULL;
-            if (body[0] == '{') {
-                fmt = zb_format_get_file_error_message(body);
-            }
-            error_callback(parse_error(fmt && fmt[0] ? fmt : body));
-            free(fmt);
-        }
+    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0') {
+        zb_report_body_error(body, http_code, error_callback);
     } else if (success_callback) {
         if (zb_should_treat_getfile_body_as_error(body, content_type)) {
             if (error_callback) {
@@ -994,14 +1084,11 @@ static void delete_file_internal(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1052,14 +1139,11 @@ static void find_email_internal(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
@@ -1106,14 +1190,11 @@ static void search_domain_internal(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(j_obj);
@@ -1164,14 +1245,11 @@ void get_credits(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1235,14 +1313,11 @@ void get_api_usage(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1374,13 +1449,11 @@ void validate_email_with_options(
         }
 
         if (http_code > 299) {
-            if (error_callback) {
-                error_callback(parse_error(response_data.response));
-            }
+            zb_report_body_error(response_data.response, http_code, error_callback);
         } else if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+                /* reported */
             } else {
                 success_callback(zb_validate_response_from_json(j_obj));
                 json_object_put(j_obj);
@@ -1468,14 +1541,11 @@ void validate_email_with_options(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1538,8 +1608,12 @@ void validate_email_batch_with_options(
 
     for(size_t i = 0; i < email_batch.size; i++) {
         json_object *email_obj = json_object_new_object();
-        json_object_object_add(email_obj, "email_address", json_object_new_string(email_batch.data[i].email_address));
-        json_object_object_add(email_obj, "ip_address", json_object_new_string(email_batch.data[i].ip_address));
+        json_object_object_add(email_obj, "email_address", json_object_new_string(email_batch.data[i].email_address ? email_batch.data[i].email_address : ""));
+        if (!email_batch.data[i].ip_address || !email_batch.data[i].ip_address[0]) {
+            json_object_object_add(email_obj, "ip_address", json_object_new_null());
+        } else {
+            json_object_object_add(email_obj, "ip_address", json_object_new_string(email_batch.data[i].ip_address));
+        }
         json_object_array_add(email_batch_json, email_obj);
     }
 
@@ -1564,8 +1638,7 @@ void validate_email_batch_with_options(
     }
 
     const char* payload_str = json_object_to_json_string(payload);
-    strncpy(s_last_post_body_for_test, payload_str, sizeof(s_last_post_body_for_test) - 1);
-    s_last_post_body_for_test[sizeof(s_last_post_body_for_test) - 1] = '\0';
+    zb_note_http_request("POST", url_path, payload_str);
 
     memory response_data = {0};
     long http_code = 0;
@@ -1623,18 +1696,23 @@ void validate_email_batch_with_options(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
-            success_callback(zb_validate_batch_response_from_json(j_obj));
+            char *account_error = NULL;
+            if (zb_batch_has_account_error(j_obj, &account_error)) {
+                if (error_callback) {
+                    error_callback(parse_error(account_error));
+                }
+                free(account_error);
+            } else {
+                success_callback(zb_validate_batch_response_from_json(j_obj));
+            }
             json_object_put(j_obj);
         }
     }
@@ -1789,14 +1867,11 @@ void get_activity_data(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1872,13 +1947,10 @@ static void score_email_internal(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else if (success_callback) {
-        json_object *j_obj = json_tokener_parse(response_data.response);
-        if (j_obj == NULL) {
-            error_callback(parse_error("Failed to parse json string"));
+        json_object *j_obj = NULL;
+        if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
             goto cleanup;
         }
 
@@ -2039,14 +2111,11 @@ void find_email(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);

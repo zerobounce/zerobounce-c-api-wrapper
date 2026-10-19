@@ -100,14 +100,24 @@ static void p3_send_json_success(
     OnSuccessCallbackRawJson success_callback,
     OnErrorCallback error_callback
 ) {
-    if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data->response));
+    const char *body = response_data->response ? response_data->response : "";
+    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0') {
+        zb_report_body_error(body, http_code, error_callback);
+        return;
+    }
+    if (body[0] == '{' || body[0] == '[') {
+        json_object *parsed = json_tokener_parse(body);
+        if (!parsed) {
+            zb_report_body_error(body, http_code, error_callback);
+            return;
         }
+        json_object_put(parsed);
+    } else {
+        zb_report_body_error(body, http_code, error_callback);
         return;
     }
     if (success_callback) {
-        success_callback(response_data->response ? response_data->response : "");
+        success_callback(body);
     }
 }
 
@@ -156,14 +166,11 @@ static void p3_send_file_json_success(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data->response));
-        }
+    json_object *j_obj = NULL;
+    if (!zb_read_success_json(response_data->response, http_code, &j_obj, error_callback)) {
         return;
     }
     if (success_callback) {
-        json_object *j_obj = json_tokener_parse(response_data->response);
         if (j_obj == NULL) {
             if (error_callback) {
                 error_callback(parse_error("Failed to parse json string"));
@@ -203,17 +210,23 @@ static void p3_post_send_file_form(
 static void p3_mime_add_int(curl_mime *multipart, const char *name, int value) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%d", value);
+    zb_note_http_field(name, buf);
     curl_mimepart *part = curl_mime_addpart(multipart);
     curl_mime_name(part, name);
     curl_mime_data(part, buf, CURL_ZERO_TERMINATED);
 }
 
 static void p3_mime_add_optional_bool(curl_mime *multipart, const char *name, int tri_state) {
-    if (tri_state == 1) {
-        curl_mimepart *part = curl_mime_addpart(multipart);
-        curl_mime_name(part, name);
-        curl_mime_data(part, "true", CURL_ZERO_TERMINATED);
+    const char *text;
+    curl_mimepart *part;
+    if (tri_state < 0) {
+        return;
     }
+    text = tri_state ? "true" : "false";
+    zb_note_http_field(name, text);
+    part = curl_mime_addpart(multipart);
+    curl_mime_name(part, name);
+    curl_mime_data(part, text, CURL_ZERO_TERMINATED);
 }
 
 static void p3_bulk_root_multipart(
@@ -237,7 +250,20 @@ static void p3_bulk_root_multipart(
     }
 
     long http_code = 0;
-    zero_bounce_record_request_url_for_test(url_path);
+    zb_note_http_request("POST", url_path, NULL);
+    zb_note_http_field("api_key", zb->api_key ? zb->api_key : "");
+    zb_note_http_field("file", "<file>");
+    if (add_fields) {
+        CURL *note_curl = curl_easy_init();
+        if (note_curl) {
+            curl_mime *note_mime = curl_mime_init(note_curl);
+            if (note_mime) {
+                add_fields(note_mime, fields_ctx);
+                curl_mime_free(note_mime);
+            }
+            curl_easy_cleanup(note_curl);
+        }
+    }
     if (zb_http_perform_if_mock(&response_data, &http_code, NULL)) {
         p3_send_file_json_success(&response_data, http_code, success_callback, error_callback);
         goto cleanup;
@@ -336,7 +362,7 @@ static void p3_bulk_root_get_file(
     long http_code = 0;
     char *content_type = NULL;
 
-    zero_bounce_record_request_url_for_test(url_path);
+    zb_note_http_request("GET", url_path, NULL);
     if (!zb_http_perform_if_mock(&response_data, &http_code, &content_type)) {
         CURL *curl = curl_easy_init();
         if (!curl) {
@@ -366,14 +392,10 @@ static void p3_bulk_root_get_file(
         curl_slist_free_all(headers);
     }
 
-    if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
-    } else if (zb_get_file_json_indicates_error(response_data.response)) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+    const char *body = response_data.response ? response_data.response : "";
+    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' ||
+        zb_get_file_json_indicates_error(body)) {
+        zb_report_body_error(body, http_code, error_callback);
     } else if (success_callback) {
         FILE *file_stream = fopen(local_download_path, "wb");
         if (file_stream == NULL) {
@@ -422,17 +444,9 @@ static void p3_bulk_root_file_status(
         free(url_path);
         return;
     }
-    if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
-    } else if (success_callback) {
-        json_object *j_obj = json_tokener_parse(response_data.response);
-        if (j_obj == NULL) {
-            if (error_callback) {
-                error_callback(parse_error("Failed to parse json string"));
-            }
-        } else {
+    {
+        json_object *j_obj = NULL;
+        if (zb_read_success_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
             success_callback(zb_file_status_response_from_json(j_obj));
             json_object_put(j_obj);
         }
@@ -467,17 +481,9 @@ static void p3_bulk_root_delete_file(
         free(url_path);
         return;
     }
-    if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
-    } else if (success_callback) {
-        json_object *j_obj = json_tokener_parse(response_data.response);
-        if (j_obj == NULL) {
-            if (error_callback) {
-                error_callback(parse_error("Failed to parse json string"));
-            }
-        } else {
+    {
+        json_object *j_obj = NULL;
+        if (zb_read_success_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
             success_callback(zb_delete_file_response_from_json(j_obj));
             json_object_put(j_obj);
         }
@@ -775,7 +781,7 @@ static char *p3_build_validate_s3_body(ZeroBounce *zb, const ValidateS3FileOptio
     p3_append_optional_bool_form(&body, &cap, "has_header_row", options->has_header_row);
     p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
     p3_append_optional_bool_form(&body, &cap, "remove_duplicate", options->remove_duplicate);
-    if (options->email_address_column > 0) {
+    if (options->email_address_column >= 0) {
         char col[16];
         snprintf(col, sizeof(col), "%d", options->email_address_column);
         p3_append_form_field(&body, &cap, "email_address_column", col);
@@ -816,6 +822,9 @@ void validate_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
     if (!options || !options->file_name || !options->file_name[0]) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: file_name"));
@@ -834,6 +843,9 @@ void score_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
     if (!options || !options->file_name || !options->file_name[0]) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: file_name"));
@@ -847,7 +859,7 @@ void score_s3_file(
     p3_append_optional_bool_form(&body, &cap, "has_header_row", options->has_header_row);
     p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
     p3_append_optional_bool_form(&body, &cap, "remove_duplicate", options->remove_duplicate);
-    if (options->email_address_column > 0) {
+    if (options->email_address_column >= 0) {
         char col[16];
         snprintf(col, sizeof(col), "%d", options->email_address_column);
         p3_append_form_field(&body, &cap, "email_address_column", col);
@@ -926,6 +938,9 @@ void export_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
     if (!file_id || !file_id[0]) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: file_id"));
