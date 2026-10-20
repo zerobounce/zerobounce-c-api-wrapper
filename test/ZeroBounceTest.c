@@ -347,6 +347,41 @@ void test_validate_email_invalid(void)
     validate_email(zb, "valid@example.com", "127.0.0.1", on_success_validate_invalid, on_error_invalid);
 }
 
+void test_sub_status_ai_agent_mailbox(void)
+{
+    // Returned under both valid and catch-all; the mapping is status-independent.
+    TEST_ASSERT_EQUAL_INT(AiAgentMailbox, sub_status_from_string("ai_agent_mailbox"));
+}
+
+void test_sub_status_ai_agent_mailbox_parsed_from_response(void)
+{
+    const char* valid_json =
+        "{\n"
+        "    \"address\": \"agent@example.com\",\n"
+        "    \"status\": \"valid\",\n"
+        "    \"sub_status\": \"ai_agent_mailbox\"\n"
+        "}";
+    ZBValidateResponse parsed = zb_validate_response_from_json(json_tokener_parse(valid_json));
+    TEST_ASSERT_EQUAL_INT(AiAgentMailbox, parsed.sub_status);
+
+    const char* catch_all_json =
+        "{\n"
+        "    \"address\": \"agent@example.com\",\n"
+        "    \"status\": \"catch-all\",\n"
+        "    \"sub_status\": \"ai_agent_mailbox\"\n"
+        "}";
+    ZBValidateResponse parsed_catch_all = zb_validate_response_from_json(json_tokener_parse(catch_all_json));
+    TEST_ASSERT_EQUAL_INT(AiAgentMailbox, parsed_catch_all.sub_status);
+}
+
+void test_sub_status_unknown_falls_back_to_none(void)
+{
+    // sub_status_from_string ends in `return None`, so a sub_status added to
+    // the API after this SDK shipped maps to None rather than reading past the
+    // end of the chain or leaving the field uninitialised.
+    TEST_ASSERT_EQUAL_INT(None, sub_status_from_string("some_future_sub_status"));
+}
+
 void test_validate_email_valid(void)
 {
     response_json = "{\n"
@@ -1094,6 +1129,9 @@ int main(void)
 {
     UNITY_BEGIN();
 
+    RUN_TEST(test_sub_status_ai_agent_mailbox);
+    RUN_TEST(test_sub_status_ai_agent_mailbox_parsed_from_response);
+    RUN_TEST(test_sub_status_unknown_falls_back_to_none);
     RUN_TEST(test_get_credits_invalid);
     RUN_TEST(test_get_credits_valid);
     RUN_TEST(test_get_api_usage_invalid);

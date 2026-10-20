@@ -71,6 +71,8 @@ ZBValidateSubStatus sub_status_from_string(const char* string) {
         return Toxic;
     } else if (strcmp(string, "accept_all") == 0) {
         return AcceptAll;
+    } else if (strcmp(string, "ai_agent_mailbox") == 0) {
+        return AiAgentMailbox;
     }
 
     return None;

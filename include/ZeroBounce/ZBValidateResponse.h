@@ -55,7 +55,8 @@ typedef enum {
     RoleBasedCatchAll,
     Disposable,
     Toxic,
-    AcceptAll
+    AcceptAll,
+    AiAgentMailbox
 } ZBValidateSubStatus;
 
 /**
