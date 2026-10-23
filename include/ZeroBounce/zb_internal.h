@@ -13,6 +13,21 @@ int zb_make_request(
     long *http_code,
     OnErrorCallback error_callback
 );
+/*
+ * A request with an explicit method and an optional body. Needed by the Inbox
+ * Placement Tester, which uses PUT and DELETE and sends JSON rather than a
+ * form body.
+ */
+int zb_make_request_with_method_and_body(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+);
+
 int zb_make_request_with_post_body(
     char *url_path,
     char *body,

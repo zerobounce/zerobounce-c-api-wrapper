@@ -179,6 +179,11 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
         set_body(response_data,
             "{\"type\":\"https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1020/\","
             "\"title\":\"Error 1020: Access denied\",\"status\":403,\"error_code\":1020,\"cloudflare_error\":true}");
+    } else if (strncmp(key, "ipt-detail", 10) == 0) {
+        /* The Inbox Placement Tester is a Django REST framework app and
+           reports errors under "detail". */
+        *http_code = 404;
+        set_body(response_data, "{\"detail\":\"Inbox placement test not found.\"}");
     } else if (strncmp(key, "double-error-", 13) == 0) {
         *http_code = 400;
         set_body(response_data, "Error: Error: api_key is invalid");
@@ -710,6 +715,275 @@ void test_offline_priority3(void) {
     TEST_ASSERT_NOT_NULL(strstr(request.query, "search=csv"));
 }
 
+void test_offline_validate_new_options(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("validate-key");
+    ZBValidateOptions options = new_validate_options();
+
+    validate_email_with_options(zb, "a@example.com", "", &options, on_validate, on_error);
+    OfflineRequest request = only_request();
+    TEST_ASSERT_NULL(strstr(request.query, "domain_info"));
+    TEST_ASSERT_NULL(strstr(request.query, "greylist_processing"));
+    TEST_ASSERT_NULL(strstr(request.query, "callback_url"));
+
+    reset_offline();
+    options.domain_info = 1;
+    options.greylist_processing = 1;
+    options.callback_url = "https://example.com/greylist";
+    validate_email_with_options(zb, "a@example.com", "", &options, on_validate, on_error);
+    request = only_request();
+    /* Booleans go on the wire as the strings "true"/"false". */
+    TEST_ASSERT_NOT_NULL(strstr(request.query, "domain_info=true"));
+    TEST_ASSERT_NOT_NULL(strstr(request.query, "greylist_processing=true"));
+    TEST_ASSERT_NOT_NULL(strstr(request.query, "callback_url="));
+
+    reset_offline();
+    options.use_post = 1;
+    options.domain_info = 0;
+    validate_email_with_options(zb, "a@example.com", "", &options, on_validate, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("POST", request.method);
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "domain_info=false"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "callback_url="));
+}
+
+void test_offline_callback_url_requires_greylist(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("validate-key");
+    ZBValidateOptions options = new_validate_options();
+
+    options.callback_url = "https://example.com/greylist";
+    validate_email_with_options(zb, "a@example.com", "", &options, on_validate, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "greylist_processing"));
+
+    reset_offline();
+    options.greylist_processing = 0;
+    validate_email_with_options(zb, "a@example.com", "", &options, on_validate, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "greylist_processing"));
+
+    reset_offline();
+    options.greylist_processing = 1;
+    options.callback_url = "   ";
+    validate_email_with_options(zb, "a@example.com", "", &options, on_validate, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "callback_url"));
+
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+}
+
+void test_offline_s3_and_sftp_jobs(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("bulk-key");
+    ZBBulkFileJobOptions options = new_bulk_file_job_options();
+
+    options.file_name = "lists/leads.csv";
+    email_finder_s3_file(zb, &options, on_send, on_error);
+    OfflineRequest request = only_request();
+    TEST_ASSERT_EQUAL_STRING("POST", request.method);
+    TEST_ASSERT_EQUAL_STRING("bulkapi.zerobounce.net", request.host);
+    /* The S3 and SFTP jobs live on the bulkapi root, WITHOUT /v2. */
+    TEST_ASSERT_EQUAL_STRING("/emailFinderS3file", request.path);
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "file_name=lists%2Fleads.csv"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "has_header_row=true"));
+    /* Unset options stay off the request entirely. */
+    TEST_ASSERT_NULL(strstr(request.body, "remove_duplicates"));
+    TEST_ASSERT_NULL(strstr(request.body, "return_url"));
+
+    reset_offline();
+    options.has_header_row = false;
+    options.remove_duplicates = 1;
+    options.return_url = "https://example.com/done";
+    domain_search_s3_file(zb, &options, on_send, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("/domainSearchS3file", request.path);
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "has_header_row=false"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "remove_duplicates=true"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "return_url="));
+
+    /* file_name is optional for validateSFTPfile alone: without it the input
+       bucket from the account's settings is used. */
+    reset_offline();
+    options = new_bulk_file_job_options();
+    validate_sftp_file(zb, &options, on_send, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("/validateSFTPfile", request.path);
+    TEST_ASSERT_NULL(strstr(request.body, "file_name"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "has_header_row=true"));
+
+    reset_offline();
+    options.file_name = "my_file.txt";
+    score_sftp_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_EQUAL_STRING("/scoreSFTPfile", only_request().path);
+    reset_offline();
+    email_finder_sftp_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_EQUAL_STRING("/emailFinderSFTPfile", only_request().path);
+    reset_offline();
+    domain_search_sftp_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_EQUAL_STRING("/domainSearchSFTPfile", only_request().path);
+
+    /* exportSFTPfile takes export_path, not the export_bucket exportS3file uses. */
+    reset_offline();
+    export_sftp_file(zb, "fid", "/exports", on_send, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("/exportSFTPfile", request.path);
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "file_id=fid"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "export_path=%2Fexports"));
+    TEST_ASSERT_NULL(strstr(request.body, "export_bucket"));
+
+    reset_offline();
+    export_sftp_file(zb, "fid", NULL, on_send, on_error);
+    TEST_ASSERT_NULL(strstr(only_request().body, "export_path"));
+}
+
+void test_offline_bulk_jobs_reject_before_request(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("bulk-key");
+    ZBBulkFileJobOptions options = new_bulk_file_job_options();
+
+    email_finder_s3_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_name"));
+
+    /* An unset name is allowed for validateSFTPfile, but a blank one is not. */
+    g_error_called = 0;
+    options.file_name = "   ";
+    validate_sftp_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_name"));
+
+    g_error_called = 0;
+    export_sftp_file(zb, "  ", NULL, on_send, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_id"));
+
+    g_error_called = 0;
+    export_sftp_file(zb, "fid", " ", on_send, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "export_path"));
+
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+}
+
+void test_offline_list_evaluator_base_url(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("eval-key");
+
+    get_list_evaluator_result(zb, "a b/c", on_raw, on_error);
+    OfflineRequest request = only_request();
+    TEST_ASSERT_EQUAL_STRING("bulkapi.zerobounce.net", request.host);
+    /* The file id is one path segment, so a slash in it must stay encoded and
+       a space must not become a plus. */
+    TEST_ASSERT_EQUAL_STRING("/v2/listevaluator/a%20b%2Fc/", request.path);
+
+    reset_offline();
+    get_list_evaluator_result(zb, "   ", on_raw, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_id"));
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+
+    /* It is a separate host, not a path built from the bulk base. */
+    reset_offline();
+    zero_bounce_set_list_evaluator_base_url(zb, "https://bulk.example.test/v2/listevaluator");
+    get_list_evaluator_result(zb, "fid", on_raw, on_error);
+    TEST_ASSERT_EQUAL_STRING("bulk.example.test", only_request().host);
+    zero_bounce_set_list_evaluator_base_url(zb, "https://bulkapi.zerobounce.net/v2/listevaluator");
+}
+
+void test_offline_inbox_placement(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("ipt-key");
+
+    get_inbox_placement_providers(zb, on_raw, on_error);
+    OfflineRequest request = only_request();
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/providers", request.path);
+    /* The API key goes on the query string here, not in the body. */
+    TEST_ASSERT_EQUAL_STRING("ipt-key", request.api_key);
+
+    reset_offline();
+    get_inbox_placement_test_types(zb, on_raw, on_error);
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/test-types", only_request().path);
+
+    reset_offline();
+    ZBCreateInboxPlacementTestOptions create = new_create_inbox_placement_test_options();
+    create.test_type = 1;
+    create.sender_email = "news@example.com";
+    create.webhook_url = "https://example.com/ipt";
+    create_inbox_placement_test(zb, "Launch", &create, on_raw, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("POST", request.method);
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/test", request.path);
+    /* Bodies are camelCase JSON, and unset fields are left out. */
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"name\":\"Launch\",\"testType\":1,\"senderEmail\":\"news@example.com\","
+        "\"webhookUrl\":\"https://example.com/ipt\"}",
+        request.body
+    );
+
+    reset_offline();
+    create_inbox_placement_test(zb, "Launch", NULL, on_raw, on_error);
+    TEST_ASSERT_EQUAL_STRING("{\"name\":\"Launch\"}", only_request().body);
+
+    reset_offline();
+    ZBListInboxPlacementTestsOptions list = new_list_inbox_placement_tests_options();
+    list.status = "finished";
+    list.page = 1;
+    list.page_size = 25;
+    list_inbox_placement_tests(zb, &list, on_raw, on_error);
+    request = only_request();
+    TEST_ASSERT_NOT_NULL(strstr(request.query, "status=finished"));
+    TEST_ASSERT_NOT_NULL(strstr(request.query, "page=1"));
+    TEST_ASSERT_NOT_NULL(strstr(request.query, "pageSize=25"));
+
+    reset_offline();
+    list_inbox_placement_tests(zb, NULL, on_raw, on_error);
+    request = only_request();
+    TEST_ASSERT_NULL(strstr(request.query, "status="));
+    TEST_ASSERT_NULL(strstr(request.query, "page="));
+
+    reset_offline();
+    delete_inbox_placement_test(zb, "a b/c", on_raw, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("DELETE", request.method);
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/test/a%20b%2Fc", request.path);
+
+    reset_offline();
+    set_inbox_placement_webhook(zb, "https://example.com/ipt", on_raw, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("PUT", request.method);
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/webhook", request.path);
+    TEST_ASSERT_EQUAL_STRING("{\"webhookUrl\":\"https://example.com/ipt\"}", request.body);
+
+    reset_offline();
+    get_inbox_placement_webhook(zb, on_raw, on_error);
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/webhook", only_request().path);
+
+    reset_offline();
+    get_inbox_placement_test(zb, "   ", on_raw, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "test_id"));
+    g_error_called = 0;
+    create_inbox_placement_test(zb, " ", NULL, on_raw, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "name"));
+    g_error_called = 0;
+    set_inbox_placement_webhook(zb, "", on_raw, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "webhook_url"));
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+}
+
+void test_offline_inbox_placement_detail_error(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("ipt-detail");
+
+    get_inbox_placement_test(zb, "123", on_raw, on_error);
+
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "Inbox placement test not found."));
+}
+
 void test_offline_rejects_before_request(void) {
     reset_offline();
     ZeroBounce *zb = client_with("");
@@ -896,6 +1170,13 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_activity_usage_score);
     RUN_TEST(test_offline_finder_and_domain);
     RUN_TEST(test_offline_priority3);
+    RUN_TEST(test_offline_validate_new_options);
+    RUN_TEST(test_offline_callback_url_requires_greylist);
+    RUN_TEST(test_offline_s3_and_sftp_jobs);
+    RUN_TEST(test_offline_bulk_jobs_reject_before_request);
+    RUN_TEST(test_offline_list_evaluator_base_url);
+    RUN_TEST(test_offline_inbox_placement);
+    RUN_TEST(test_offline_inbox_placement_detail_error);
     RUN_TEST(test_offline_rejects_before_request);
     RUN_TEST(test_offline_html_403);
     RUN_TEST(test_offline_html_200_validate);

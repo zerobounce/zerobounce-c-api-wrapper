@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +8,9 @@
 
 #include "ZeroBounce/ZeroBounce.h"
 #include "ZeroBounce/zb_internal.h"
+
+static bool p3_is_blank(const char *value);
+static char *p3_escape_path_segment(const char *value);
 
 typedef void (*p3_mime_fields_fn)(curl_mime *multipart, void *ctx);
 
@@ -681,12 +685,25 @@ void get_list_evaluator_result(
     if (zero_bounce_invalid_api_key(zb, error_callback)) {
         return;
     }
-    char *api_key_esc = zb_url_escape(zb->api_key);
-    char *file_id_esc = zb_url_escape(file_id);
-    const char *url_pattern = "%s/listevaluator/%s/?api_key=%s";
-    int url_path_len = snprintf(NULL, 0, url_pattern, zb->bulk_api_base_url, file_id_esc, api_key_esc);
-    char *url_path = malloc((size_t)url_path_len + 1);
-    snprintf(url_path, (size_t)url_path_len + 1, url_pattern, zb->bulk_api_base_url, file_id_esc, api_key_esc);
+    char *api_key_esc;
+    char *file_id_esc;
+    const char *url_pattern = "%s/%s/?api_key=%s";
+    int url_path_len;
+    char *url_path;
+
+    if (p3_is_blank(file_id)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: file_id"));
+        }
+        return;
+    }
+
+    api_key_esc = zb_url_escape(zb->api_key);
+    /* The file id is one path segment, so a slash in it must stay encoded. */
+    file_id_esc = p3_escape_path_segment(file_id);
+    url_path_len = snprintf(NULL, 0, url_pattern, zb->list_evaluator_base_url, file_id_esc, api_key_esc);
+    url_path = malloc((size_t)url_path_len + 1);
+    snprintf(url_path, (size_t)url_path_len + 1, url_pattern, zb->list_evaluator_base_url, file_id_esc, api_key_esc);
     free(api_key_esc);
     free(file_id_esc);
     p3_raw_json_get(zb, url_path, success_callback, error_callback);
@@ -961,4 +978,481 @@ void export_s3_file(
     char url[512];
     snprintf(url, sizeof(url), "%s/exportS3file", zb->bulk_api_root_url);
     p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+}
+
+/* ------------------------------------------------------------------ */
+/* S3 email finder / domain search, SFTP/FTP bulk, Inbox Placement     */
+/* Ported from the Python SDK (b0444f8 and 407f0a8).                    */
+/* ------------------------------------------------------------------ */
+
+void zero_bounce_set_list_evaluator_base_url(ZeroBounce *zb, const char *url) {
+    if (zb && url) {
+        zb->list_evaluator_base_url = url;
+    }
+}
+
+void zero_bounce_set_inbox_placement_base_url(ZeroBounce *zb, const char *url) {
+    if (zb && url) {
+        zb->inbox_placement_base_url = url;
+    }
+}
+
+ZBBulkFileJobOptions new_bulk_file_job_options(void) {
+    ZBBulkFileJobOptions o;
+    o.file_name = NULL;
+    o.has_header_row = true;
+    o.remove_duplicates = -1;
+    o.return_url = NULL;
+    return o;
+}
+
+ZBCreateInboxPlacementTestOptions new_create_inbox_placement_test_options(void) {
+    ZBCreateInboxPlacementTestOptions o;
+    o.test_type = -1;
+    o.sender_email = NULL;
+    o.webhook_url = NULL;
+    return o;
+}
+
+ZBListInboxPlacementTestsOptions new_list_inbox_placement_tests_options(void) {
+    ZBListInboxPlacementTestsOptions o;
+    o.status = NULL;
+    o.page = -1;
+    o.page_size = -1;
+    return o;
+}
+
+static bool p3_is_blank(const char *value) {
+    const char *p;
+    if (!value) {
+        return true;
+    }
+    for (p = value; *p; p++) {
+        if (!isspace((unsigned char)*p)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * POSTs one of the six documented S3 / SFTP file jobs on the bulkapi root.
+ *
+ * Booleans go on the wire as the strings "true"/"false", and an option the
+ * caller left unset is not sent at all. file_name_required is false only for
+ * validateSFTPfile, where the docs make the name optional.
+ */
+static void p3_bulk_root_file_job(
+    ZeroBounce *zb,
+    const char *path,
+    const ZBBulkFileJobOptions *options,
+    bool file_name_required,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    char *body = NULL;
+    size_t cap = 0;
+    char url[512];
+    bool blank;
+
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+    if (!options) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: file_name"));
+        }
+        return;
+    }
+    blank = options->file_name != NULL && p3_is_blank(options->file_name);
+    if ((options->file_name == NULL && file_name_required) || blank) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: file_name"));
+        }
+        return;
+    }
+
+    p3_append_form_field(&body, &cap, "api_key", zb->api_key);
+    p3_append_form_field(&body, &cap, "has_header_row", options->has_header_row ? "true" : "false");
+    if (options->file_name) {
+        p3_append_form_field(&body, &cap, "file_name", options->file_name);
+    }
+    p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
+    if (options->return_url) {
+        p3_append_form_field(&body, &cap, "return_url", options->return_url);
+    }
+
+    snprintf(url, sizeof(url), "%s%s", zb->bulk_api_root_url, path);
+    p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+}
+
+static void p3_export_bulk_file(
+    ZeroBounce *zb,
+    const char *path,
+    const char *destination_field,
+    const char *file_id,
+    const char *destination,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    char *body = NULL;
+    size_t cap = 0;
+    char url[512];
+
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+    if (p3_is_blank(file_id)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: file_id"));
+        }
+        return;
+    }
+    if (destination && p3_is_blank(destination)) {
+        if (error_callback) {
+            char message[64];
+            snprintf(message, sizeof(message), "Empty parameter: %s", destination_field);
+            error_callback(parse_error(message));
+        }
+        return;
+    }
+
+    p3_append_form_field(&body, &cap, "api_key", zb->api_key);
+    p3_append_form_field(&body, &cap, "file_id", file_id);
+    if (destination) {
+        p3_append_form_field(&body, &cap, destination_field, destination);
+    }
+
+    snprintf(url, sizeof(url), "%s%s", zb->bulk_api_root_url, path);
+    p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+}
+
+void email_finder_s3_file(
+    ZeroBounce *zb,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_bulk_root_file_job(zb, "/emailFinderS3file", options, true, success_callback, error_callback);
+}
+
+void domain_search_s3_file(
+    ZeroBounce *zb,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_bulk_root_file_job(zb, "/domainSearchS3file", options, true, success_callback, error_callback);
+}
+
+void validate_sftp_file(
+    ZeroBounce *zb,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    /* The one job whose file_name the docs make optional. */
+    p3_bulk_root_file_job(zb, "/validateSFTPfile", options, false, success_callback, error_callback);
+}
+
+void score_sftp_file(
+    ZeroBounce *zb,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_bulk_root_file_job(zb, "/scoreSFTPfile", options, true, success_callback, error_callback);
+}
+
+void email_finder_sftp_file(
+    ZeroBounce *zb,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_bulk_root_file_job(zb, "/emailFinderSFTPfile", options, true, success_callback, error_callback);
+}
+
+void domain_search_sftp_file(
+    ZeroBounce *zb,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_bulk_root_file_job(zb, "/domainSearchSFTPfile", options, true, success_callback, error_callback);
+}
+
+void export_sftp_file(
+    ZeroBounce *zb,
+    const char *file_id,
+    const char *export_path,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_export_bulk_file(
+        zb, "/exportSFTPfile", "export_path", file_id, export_path,
+        success_callback, error_callback
+    );
+}
+
+/*
+ * One Inbox Placement Tester call.
+ *
+ * Unlike the rest of the SDK this one puts the API key on the query string,
+ * sends camelCase JSON bodies, and uses PUT and DELETE as well as GET and
+ * POST, so it builds the request itself.
+ */
+static void p3_inbox_placement_request(
+    ZeroBounce *zb,
+    const char *method,
+    const char *path,
+    const char *extra_query,
+    const char *body,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    char *api_key_esc;
+    char *url_path;
+    int url_len;
+    memory response_data = {0};
+    long http_code = 0;
+
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+
+    api_key_esc = zb_url_escape(zb->api_key);
+    url_len = snprintf(
+        NULL, 0, "%s%s?api_key=%s%s",
+        zb->inbox_placement_base_url, path, api_key_esc, extra_query ? extra_query : ""
+    );
+    url_path = malloc((size_t)url_len + 1);
+    if (!url_path) {
+        free(api_key_esc);
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    snprintf(
+        url_path, (size_t)url_len + 1, "%s%s?api_key=%s%s",
+        zb->inbox_placement_base_url, path, api_key_esc, extra_query ? extra_query : ""
+    );
+    free(api_key_esc);
+
+    if (!zb_make_request_with_method_and_body(
+            url_path, method, body, "Content-Type: application/json",
+            &response_data, &http_code, error_callback)) {
+        free(response_data.response);
+        free(url_path);
+        return;
+    }
+
+    /* DELETE answers with an empty body. */
+    if (http_code <= 299 && (!response_data.response || response_data.response[0] == '\0')) {
+        if (success_callback) {
+            success_callback("{}");
+        }
+    } else {
+        p3_send_json_success(&response_data, http_code, success_callback, error_callback);
+    }
+    free(response_data.response);
+    free(url_path);
+}
+
+/*
+ * URL-encodes a value as a single path segment.
+ *
+ * zb_url_escape is a query encoder and turns a space into '+', which is a
+ * literal plus inside a path, so each one becomes %20 here.
+ */
+static char *p3_escape_path_segment(const char *value) {
+    char *escaped = zb_url_escape(value);
+    size_t len = strlen(escaped);
+    char *out = malloc(len * 3 + 1);
+    size_t i;
+    size_t j = 0;
+
+    if (!out) {
+        free(escaped);
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (i = 0; i < len; i++) {
+        if (escaped[i] == '+') {
+            out[j++] = '%';
+            out[j++] = '2';
+            out[j++] = '0';
+        } else {
+            out[j++] = escaped[i];
+        }
+    }
+    out[j] = '\0';
+    free(escaped);
+    return out;
+}
+
+static char *p3_inbox_placement_test_segment(const char *test_id, OnErrorCallback error_callback) {
+    if (p3_is_blank(test_id)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: test_id"));
+        }
+        return NULL;
+    }
+    return p3_escape_path_segment(test_id);
+}
+
+static void p3_json_append(char **body, size_t *cap, const char *fragment) {
+    size_t needed = (*body ? strlen(*body) : 0) + strlen(fragment) + 1;
+    if (needed > *cap) {
+        size_t new_cap = needed * 2;
+        char *grown = realloc(*body, new_cap);
+        if (!grown) {
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        if (!*body) {
+            grown[0] = '\0';
+        }
+        *body = grown;
+        *cap = new_cap;
+    }
+    strcat(*body, fragment);
+}
+
+void get_inbox_placement_providers(
+    ZeroBounce *zb,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_inbox_placement_request(zb, "GET", "/providers", NULL, NULL, success_callback, error_callback);
+}
+
+void get_inbox_placement_test_types(
+    ZeroBounce *zb,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_inbox_placement_request(zb, "GET", "/test-types", NULL, NULL, success_callback, error_callback);
+}
+
+void create_inbox_placement_test(
+    ZeroBounce *zb,
+    const char *name,
+    const ZBCreateInboxPlacementTestOptions *options,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    char *body = NULL;
+    size_t cap = 0;
+    char buf[1024];
+
+    if (p3_is_blank(name)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: name"));
+        }
+        return;
+    }
+
+    /* camelCase JSON, with unset fields left out. */
+    snprintf(buf, sizeof(buf), "{\"name\":\"%s\"", name);
+    p3_json_append(&body, &cap, buf);
+    if (options) {
+        if (options->test_type >= 0) {
+            snprintf(buf, sizeof(buf), ",\"testType\":%d", options->test_type);
+            p3_json_append(&body, &cap, buf);
+        }
+        if (options->sender_email) {
+            snprintf(buf, sizeof(buf), ",\"senderEmail\":\"%s\"", options->sender_email);
+            p3_json_append(&body, &cap, buf);
+        }
+        if (options->webhook_url) {
+            snprintf(buf, sizeof(buf), ",\"webhookUrl\":\"%s\"", options->webhook_url);
+            p3_json_append(&body, &cap, buf);
+        }
+    }
+    p3_json_append(&body, &cap, "}");
+
+    p3_inbox_placement_request(zb, "POST", "/test", NULL, body, success_callback, error_callback);
+    free(body);
+}
+
+void get_inbox_placement_test(
+    ZeroBounce *zb,
+    const char *test_id,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    char path[512];
+    char *segment = p3_inbox_placement_test_segment(test_id, error_callback);
+    if (!segment) {
+        return;
+    }
+    snprintf(path, sizeof(path), "/test/%s", segment);
+    free(segment);
+    p3_inbox_placement_request(zb, "GET", path, NULL, NULL, success_callback, error_callback);
+}
+
+void list_inbox_placement_tests(
+    ZeroBounce *zb,
+    const ZBListInboxPlacementTestsOptions *options,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    char query[512];
+    size_t used = 0;
+    query[0] = '\0';
+    if (options) {
+        if (options->status) {
+            char *escaped = zb_url_escape(options->status);
+            used += (size_t)snprintf(query + used, sizeof(query) - used, "&status=%s", escaped);
+            free(escaped);
+        }
+        if (options->page >= 0) {
+            used += (size_t)snprintf(query + used, sizeof(query) - used, "&page=%d", options->page);
+        }
+        if (options->page_size >= 0) {
+            snprintf(query + used, sizeof(query) - used, "&pageSize=%d", options->page_size);
+        }
+    }
+    p3_inbox_placement_request(zb, "GET", "/test", query, NULL, success_callback, error_callback);
+}
+
+void delete_inbox_placement_test(
+    ZeroBounce *zb,
+    const char *test_id,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    char path[512];
+    char *segment = p3_inbox_placement_test_segment(test_id, error_callback);
+    if (!segment) {
+        return;
+    }
+    snprintf(path, sizeof(path), "/test/%s", segment);
+    free(segment);
+    p3_inbox_placement_request(zb, "DELETE", path, NULL, NULL, success_callback, error_callback);
+}
+
+void get_inbox_placement_webhook(
+    ZeroBounce *zb,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_inbox_placement_request(zb, "GET", "/webhook", NULL, NULL, success_callback, error_callback);
+}
+
+void set_inbox_placement_webhook(
+    ZeroBounce *zb,
+    const char *webhook_url,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    char body[1024];
+    if (p3_is_blank(webhook_url)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: webhook_url"));
+        }
+        return;
+    }
+    snprintf(body, sizeof(body), "{\"webhookUrl\":\"%s\"}", webhook_url);
+    p3_inbox_placement_request(zb, "PUT", "/webhook", NULL, body, success_callback, error_callback);
 }

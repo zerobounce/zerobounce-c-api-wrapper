@@ -349,6 +349,101 @@ search_domain_by_company_name(
 ```
 
 
+## Validate options
+
+`validate_email_with_options` takes a `ZBValidateOptions`. A tri-state field is
+`-1` to omit, `0` false and `1` true; booleans go on the wire as the strings
+`"true"`/`"false"`.
+
+```c
+ZBValidateOptions options = new_validate_options();
+options.timeout = 30;                 /* 3-60 seconds */
+options.activity_data = 1;            /* fills active_in_days / active_first_seen */
+options.domain_info = 1;              /* fills domain_website_exists / domain_registrant_company_name */
+options.greylist_processing = 1;
+options.callback_url = "https://example.com/greylist";
+options.use_post = 1;                 /* form-encoded POST /v2/validate instead of GET */
+
+validate_email_with_options(zb, "<EMAIL>", "", &options, on_validate, on_error);
+```
+
+`callback_url` is where the greylist retry posts its result, so it is rejected
+without `greylist_processing = 1` — before any request is sent. While that retry
+is still running the API answers with a `Message` instead of a result, which
+lands on `response.message`.
+
+## S3 and SFTP/FTP bulk
+
+Queue a job on a file that already sits in your Amazon S3 bucket, or on your
+SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/amazon-s3-bulk-api)
+and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
+These live on the bulkapi host *without* the `/v2` path.
+
+```c
+ZBBulkFileJobOptions options = new_bulk_file_job_options();
+
+/* Amazon S3. file_name is the full path, as returned by list_s3_files. */
+options.file_name = "lists/leads.csv";
+email_finder_s3_file(zb, &options, on_send, on_error);
+
+options.remove_duplicates = 1;
+options.return_url = "https://example.com/zerobounce-done";
+domain_search_s3_file(zb, &options, on_send, on_error);
+
+/* SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
+   file_name may be left NULL for validate_sftp_file alone, which then uses the
+   input bucket from those settings. */
+options = new_bulk_file_job_options();
+validate_sftp_file(zb, &options, on_send, on_error);
+
+options.file_name = "my_file.txt";
+score_sftp_file(zb, &options, on_send, on_error);
+email_finder_sftp_file(zb, &options, on_send, on_error);
+domain_search_sftp_file(zb, &options, on_send, on_error);
+
+/* Note the field: this one takes export_path, not export_bucket.
+   NULL uses the export path from your settings. */
+export_sftp_file(zb, "<FILE_ID>", "/exports", on_send, on_error);
+```
+
+## Inbox Placement Tester
+
+Runs on its own host, takes the API key on the query string, and sends camelCase
+JSON bodies. It spends the account's inbox-test credits.
+
+```c
+get_inbox_placement_providers(zb, on_raw, on_error);
+get_inbox_placement_test_types(zb, on_raw, on_error);
+
+ZBCreateInboxPlacementTestOptions create = new_create_inbox_placement_test_options();
+create.test_type = 1;
+create.sender_email = "news@example.com";
+create.webhook_url = "https://example.com/ipt-webhook";
+create_inbox_placement_test(zb, "Launch", &create, on_raw, on_error);
+
+/* Send your campaign to the seeds you got back, then read the results. */
+get_inbox_placement_test(zb, "<TEST_ID>", on_raw, on_error);
+
+ZBListInboxPlacementTestsOptions list = new_list_inbox_placement_tests_options();
+list.status = "finished";
+list.page = 1;
+list_inbox_placement_tests(zb, &list, on_raw, on_error);
+
+set_inbox_placement_webhook(zb, "https://example.com/ipt-webhook", on_raw, on_error);
+get_inbox_placement_webhook(zb, on_raw, on_error);
+delete_inbox_placement_test(zb, "<TEST_ID>", on_raw, on_error);
+```
+
+## Per-API base URLs
+
+The list evaluator and the Inbox Placement Tester are separate hosts, so
+`zero_bounce_initialize_with_base_url` alone leaves them pointing at the live API.
+
+```c
+zero_bounce_set_list_evaluator_base_url(zb, "https://bulkapi.zerobounce.net/v2/listevaluator");
+zero_bounce_set_inbox_placement_base_url(zb, "https://bulkapi.zerobounce.net/api/ipt");
+```
+
 ## DEVELOPMENT
 
 It is recommended that the development should be done on Linux.

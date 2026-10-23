@@ -10,7 +10,7 @@ Guidance for AI coding agents working in this repository.
 
 - `include/ZeroBounce/`: public headers. `ZeroBounce.h` is the client.
 - `src/ZeroBounce.c`: validation, bulk file, credits, activity, scoring, and the libcurl write callback.
-- `src/Priority3.c`: bulk email finder, domain search, list evaluator, filters, S3.
+- `src/Priority3.c`: bulk email finder, domain search, list evaluator, filters, the S3 / SFTP bulk jobs, and the Inbox Placement Tester. The six file jobs share `ZBBulkFileJobOptions` and `p3_bulk_root_file_job`.
 - `src/ZBErrorResponse.c`: turns HTTP failures, HTML pages, and empty or non-JSON bodies into a short `ZBErrorResponse`.
 - `test/ZeroBounceTest.c`: existing Unity tests.
 - `test/OfflineApiTest.c`: offline suite. `zero_bounce_set_http_perform_for_test` replaces libcurl and records every request.
@@ -29,6 +29,11 @@ CI (`.github/workflows/sdk_ci.yml`) configures, builds, and runs `./build/bin/Ze
 ## Conventions
 
 - **One `ZeroBounce` per API key.** `zero_bounce_get_instance()` is a process-wide singleton. Construct a separate object with `new_zero_bounce_instance` per key. The offline concurrency test does this.
+- **Only endpoints documented at https://www.zerobounce.net/docs/.** Do not add a function for an endpoint the public docs do not describe. Check before concluding something is undocumented: the S3 and SFTP bulk endpoints live under https://www.zerobounce.net/docs/api-integrations, not the main API reference.
+- **Four base URLs on `ZeroBounce`.** `api_base_url`, `bulk_api_base_url` (ends in `/v2`), `bulk_api_root_url` (the S3/SFTP jobs, **no** `/v2`), and `list_evaluator_base_url` / `inbox_placement_base_url`. The last two are separate hosts rather than paths built from the bulk base, so `zero_bounce_initialize_with_base_url` alone leaves them on the live API — use the two setters in tests.
+- **`zb_url_escape` is a query encoder.** It turns a space into `+`, which is correct in a query string but a literal plus in a path. Use `p3_escape_path_segment` for anything that goes into a path, such as the list evaluator file id and the Inbox Placement test id.
+- **Two bulk shapes are easy to get wrong.** `validate_sftp_file`'s `file_name` is optional — leaving it `NULL` uses the input bucket from the account's settings, and every other job requires it. `export_sftp_file` sends `export_path`, not the `export_bucket` that `export_s3_file` sends.
+- **`p3_append_form_field` does not call `zb_note_http_field`.** The offline tests assert on the recorded request body (`OfflineRequest.body`), not on `has_field`, for anything built with it.
 - **Column indexes are 1-based** on bulk send-file name, gender, and IP columns. `0` means the field is left out. `send_file`'s email column is required and is sent as given, including `0`. `ValidateS3FileOptions.email_address_column` uses `-1` for omit, and `0` is sent.
 - **Tri-state ints are `-1` omit, `0` false, `1` true.** `timeout`, `activity_data`, `verify_plus`, `has_header_row`, and `allow_phase_2` follow that. Explicit `0` is sent as `false`.
 - **Booleans on multipart and form bodies are the strings `true` and `false`.**

@@ -16,9 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bulk domain search (`send_domain_search_file`, `domain_search_file_status`, `domain_search_get_file`, `domain_search_delete_file`).
 - List evaluator (`send_list_evaluator_file`, `get_list_evaluator_result`, `send_evaluated_file`).
 - Filters (`add_filter`, `list_filters`, `delete_filter`).
-- S3 bulk (`validate_s3_file`, `score_s3_file`, `export_s3_file`, `list_s3_files`).
+- S3 bulk (`validate_s3_file`, `score_s3_file`, `export_s3_file`, `list_s3_files`, `email_finder_s3_file`, `domain_search_s3_file`).
+- SFTP/FTP bulk (`validate_sftp_file`, `score_sftp_file`, `email_finder_sftp_file`, `domain_search_sftp_file`, `export_sftp_file`), sharing the new `ZBBulkFileJobOptions`. The server, path and protocol come from your ZeroBounce settings. `validate_sftp_file`'s `file_name` is optional; `export_sftp_file` takes `export_path` rather than the `export_bucket` `export_s3_file` sends.
+- `ZBValidateOptions` accepts `domain_info`, `greylist_processing` and `callback_url`. `callback_url` needs `greylist_processing` set to 1 and is rejected without it, and when blank, before a request is sent.
+- `ZBValidateResponse` reads `domain_website_exists`, `domain_registrant_company_name` and `message`. `message` is the API's `Message` key, returned instead of a result while a greylist retry is still running.
+- Inbox Placement Tester on `https://bulkapi.zerobounce.net/api/ipt`: `get_inbox_placement_providers`, `get_inbox_placement_test_types`, `create_inbox_placement_test`, `get_inbox_placement_test`, `list_inbox_placement_tests`, `delete_inbox_placement_test`, `get_inbox_placement_webhook`, `set_inbox_placement_webhook`. The API key goes on the query string, bodies are camelCase JSON, and unset fields are left out.
+- `zero_bounce_set_list_evaluator_base_url` and `zero_bounce_set_inbox_placement_base_url`.
+- `zb_make_request_with_method_and_body`, for the Tester's PUT and DELETE.
 
 ### Changed
+
+- The list evaluator uses its own base URL (`.../v2/listevaluator`) instead of building the path from the bulk base, and the file id is encoded as a single path segment. `send_evaluated_file` stays on the bulk base.
 
 - API requests time out after 120 seconds.
 - Query values, including the API key, email, and file id, are percent-encoded.

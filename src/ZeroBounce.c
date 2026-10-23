@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -232,8 +233,73 @@ GetFileOptions new_get_file_options(void) {
 }
 
 ZBValidateOptions new_validate_options(void) {
-    ZBValidateOptions o = { -1, -1, -1, -1 };
+    ZBValidateOptions o = { -1, -1, -1, -1, -1, NULL, -1 };
     return o;
+}
+
+/*
+ * The callback is where the greylist retry posts its result, so it is
+ * meaningless - and rejected by the API - without the retry itself. Checked
+ * before any request is sent.
+ */
+static bool zb_check_callback_url(
+    const ZBValidateOptions *options, OnErrorCallback error_callback
+) {
+    const char *url;
+    const char *p;
+    if (!options || !options->callback_url) {
+        return true;
+    }
+    url = options->callback_url;
+    for (p = url; *p; p++) {
+        if (!isspace((unsigned char)*p)) {
+            break;
+        }
+    }
+    if (*p == '\0') {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: callback_url"));
+        }
+        return false;
+    }
+    if (options->greylist_processing != 1) {
+        if (error_callback) {
+            error_callback(parse_error(
+                "Invalid parameter: callback_url requires greylist_processing to be true"
+            ));
+        }
+        return false;
+    }
+    return true;
+}
+
+/* Appends the three options this port adds to a query string or a form body. */
+static bool zb_append_validate_extras(char **target, const ZBValidateOptions *options) {
+    if (options->domain_info >= 0) {
+        if (!zb_url_append_suffix(
+                target, options->domain_info ? "&domain_info=true" : "&domain_info=false")) {
+            return false;
+        }
+    }
+    if (options->greylist_processing >= 0) {
+        if (!zb_url_append_suffix(
+                target,
+                options->greylist_processing
+                    ? "&greylist_processing=true"
+                    : "&greylist_processing=false")) {
+            return false;
+        }
+    }
+    if (options->callback_url) {
+        char *escaped = zb_url_escape(options->callback_url);
+        bool ok = zb_url_append_suffix(target, "&callback_url=")
+            && zb_url_append_suffix(target, escaped);
+        free(escaped);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool zb_check_validate_timeout(int timeout, OnErrorCallback error_callback) {
@@ -473,6 +539,8 @@ ZeroBounce* new_zero_bounce_instance() {
     zb->api_key = NULL;
     zb->api_base_url = "https://api.zerobounce.net/v2";
     zb->bulk_api_root_url = "https://bulkapi.zerobounce.net";
+    zb->list_evaluator_base_url = "https://bulkapi.zerobounce.net/v2/listevaluator";
+    zb->inbox_placement_base_url = "https://bulkapi.zerobounce.net/api/ipt";
     zb->bulk_api_base_url = "https://bulkapi.zerobounce.net/v2";
     zb->bulk_api_scoring_base_url = "https://bulkapi.zerobounce.net/v2/scoring";
 
@@ -517,6 +585,62 @@ bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback)
     return false;
 }
 
+
+int zb_make_request_with_method_and_body(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+) {
+    zb_note_http_request(method, url_path, body);
+
+    if (s_http_perform) {
+        return s_http_perform(response_data, http_code, NULL);
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        error_callback(parse_error("Failed to initialize libcurl"));
+        return 0;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Accept: application/json");
+    if (body && content_type_header) {
+        headers = curl_slist_append(headers, content_type_header);
+    }
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (body) {
+        curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body);
+    }
+
+    set_write_callback(curl, response_data);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        char error_message[300];
+        snprintf(
+            error_message, sizeof(error_message),
+            "Failed to perform request. CURLcode: %d. Error: %s",
+            res, curl_easy_strerror(res)
+        );
+        error_callback(parse_error(error_message));
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+        return 0;
+    }
+
+    *http_code = get_http_code(curl);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return 1;
+}
 
 int zb_make_request_with_post_body(
     char* url_path,
@@ -1359,6 +1483,9 @@ void validate_email_with_options(
     if (!zb_check_validate_timeout(options->timeout, error_callback)) {
         return;
     }
+    if (!zb_check_callback_url(options, error_callback)) {
+        return;
+    }
 
     if (options->use_post == 1) {
         char *url_path = malloc(strlen(zb->api_base_url) + 16);
@@ -1435,6 +1562,12 @@ void validate_email_with_options(
                 fprintf(stderr, "Memory allocation failed.\n");
                 exit(EXIT_FAILURE);
             }
+        }
+        if (!zb_append_validate_extras(&post_body, options)) {
+            free(post_body);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
         }
 
         zero_bounce_record_request_url_for_test(url_path);
@@ -1525,6 +1658,11 @@ void validate_email_with_options(
             fprintf(stderr, "Memory allocation failed.\n");
             exit(EXIT_FAILURE);
         }
+    }
+    if (!zb_append_validate_extras(&url_path, options)) {
+        free(url_path);
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
     }
 
     free(api_key_esc);
