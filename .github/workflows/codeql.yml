@@ -106,12 +106,17 @@ jobs:
         output: sarif-results
         upload: never
 
-    # Exclude alerts in fetched dependencies (e.g. libcurl curl_log.c) from code scanning results
+    # Exclude alerts in fetched dependencies (e.g. libcurl curl_log.c) from code scanning results.
+    # The second pattern drops one rule in one file: test_offline_safety_rails sets a
+    # plain-http base URL on purpose and asserts the client refuses to dial it, so the
+    # "http://" literal there is the assertion, not a vulnerability. Scoped to that rule
+    # so the rest of the test file stays analysed.
     - name: Filter dependency alerts from SARIF
       uses: advanced-security/filter-sarif@f3b8118a9349d88f7b1c0c488476411145b6270d # v1.0.1
       with:
         patterns: |
           -**/libcurl-src/**
+          -**/OfflineApiTest.c:cpp/non-https-url
         input: sarif-results/cpp.sarif
         output: sarif-results/cpp.sarif
 
