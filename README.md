@@ -200,6 +200,18 @@ get_file(zb, file_id, local_download_path, on_success_get_file, on_error);
 
 Bulk validation uses the [v2 bulk API](https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-send-file). Optional [v2 get file](https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-get-file) query parameters are passed with `get_file_with_options` / `scoring_get_file_with_options` and a `GetFileOptions` value from `new_get_file_options()`. Set `download_type` to `ZB_DOWNLOAD_TYPE_PHASE_1`, `ZB_DOWNLOAD_TYPE_PHASE_2`, or `ZB_DOWNLOAD_TYPE_COMBINED`; set `activity_data` to `0` or `1` when you want `activity_data=false` or `true` (validation `get_file_with_options` only; scoring omits this parameter). On `SendFileOptions`, set `allow_phase_2_is_set` to `true` and `allow_phase_2` to the desired value to send `allow_phase_2` for validation `send_file` only (not `scoring_send_file`).
 
+A result file is downloaded into memory first, which is fine for an ordinary
+list. For one too large to buffer, `get_file_streaming` (and its AI scoring
+counterpart `scoring_get_file_streaming`) writes the body straight to disk as
+it arrives. It is opt-in because a streamed body cannot be inspected as a
+whole, and getfile answers an unknown or deleted file id with a JSON error
+rather than a file: the first 4 KB are held back and checked, so an error still
+reaches the error callback and no partial file is left behind.
+
+```c
+get_file_streaming(zb, file_id, local_download_path, NULL, on_success_get_file, on_error);
+```
+
 If the HTTP status is an error, or the body is a JSON error (including some HTTP 200 responses with `"success": false`), the error callback runs with a parsed message—not the get-file success callback. To inspect a raw body string yourself, use `zb_get_file_json_indicates_error(body)`; use `zb_format_get_file_error_message(body)` for a human-readable line (caller must `free()` the returned pointer).
 
 `ZBFileStatusResponse` includes `file_phase_2_status` when the API returns it.
@@ -379,24 +391,26 @@ SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/a
 and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
 These live on the bulkapi host *without* the `/v2` path.
 
+Every one of these jobs needs both `file_name` and `return_url`. The docs call
+`validate_sftp_file`'s `file_name` optional, but the live API answers
+`Empty parameter: file_name` without it, so the SDK checks both before sending.
+
 ```c
 ZBBulkFileJobOptions options = new_bulk_file_job_options();
 
 /* Amazon S3. file_name is the full path, as returned by list_s3_files. */
 options.file_name = "lists/leads.csv";
+options.return_url = "https://example.com/zerobounce-done";
 email_finder_s3_file(zb, &options, on_send, on_error);
 
 options.remove_duplicates = 1;
-options.return_url = "https://example.com/zerobounce-done";
 domain_search_s3_file(zb, &options, on_send, on_error);
 
-/* SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
-   file_name may be left NULL for validate_sftp_file alone, which then uses the
-   input bucket from those settings. */
+/* SFTP/FTP. The server, path and protocol come from your ZeroBounce settings. */
 options = new_bulk_file_job_options();
-validate_sftp_file(zb, &options, on_send, on_error);
-
 options.file_name = "my_file.txt";
+options.return_url = "https://example.com/zerobounce-done";
+validate_sftp_file(zb, &options, on_send, on_error);
 score_sftp_file(zb, &options, on_send, on_error);
 email_finder_sftp_file(zb, &options, on_send, on_error);
 domain_search_sftp_file(zb, &options, on_send, on_error);
@@ -408,8 +422,9 @@ export_sftp_file(zb, "<FILE_ID>", "/exports", on_send, on_error);
 
 ## Inbox Placement Tester
 
-Runs on its own host, takes the API key on the query string, and sends camelCase
-JSON bodies. It spends the account's inbox-test credits.
+Runs on its own host and sends camelCase JSON bodies. It authenticates with an
+`Authorization: Bearer` header rather than the `api_key` parameter the rest of
+the API takes, and it spends the account's inbox-test credits.
 
 ```c
 get_inbox_placement_providers(zb, on_raw, on_error);
@@ -433,6 +448,67 @@ set_inbox_placement_webhook(zb, "https://example.com/ipt-webhook", on_raw, on_er
 get_inbox_placement_webhook(zb, on_raw, on_error);
 delete_inbox_placement_test(zb, "<TEST_ID>", on_raw, on_error);
 ```
+
+## List evaluator
+
+Upload a list for evaluation, read the result, and hand a finished evaluation
+back for bulk validation. The evaluator has its own base URL, and the file id
+is one path segment, so a slash in it stays encoded.
+
+```c
+send_list_evaluator_file(zb, "emails.csv", 1, on_send, on_error);
+get_list_evaluator_result(zb, "<FILE_ID>", on_raw, on_error);
+
+/* The id of a finished evaluation, not a path: the live endpoint takes it as
+   a form field. */
+send_evaluated_file(zb, "<FILE_ID>", on_send, on_error);
+```
+
+## Warmup API
+
+The [Warmup API](https://www.zerobounce.net/docs/warmup-api) is a separate
+product: its own host, its own team-scoped key, and an `API-Key` header instead
+of an `api_key` parameter. Use `ZeroBounceWarmup` with a Warmup API key;
+`ZeroBounce` stays for the validation key.
+
+Every call hands the raw JSON body to its callback, or an empty string for the
+documented empty successes (HTTP 204 and an empty 200). The two download
+endpoints hand over CSV text and write it to a path when one is given.
+
+```c
+#include "ZeroBounce/ZeroBounceWarmup.h"
+
+ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+zero_bounce_warmup_initialize(zbw, "<YOUR_WARMUP_API_KEY>");
+
+warmup_list_sending_accounts(zbw, on_raw, on_error);
+warmup_get_engagement_rules(zbw, on_raw, on_error);
+warmup_get_progress_today(zbw, on_raw, on_error);
+
+/* Add a from-address you run yourself. A standard rule is 0 to 4. */
+ZBWarmupAddSendingAccountOptions add = new_warmup_add_sending_account_options();
+add.engagement_rule_id = 0;
+add.ignore_conflict = 1;
+warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_SELF_MANAGED, &add,
+                           on_raw, on_error);
+
+/* A custom rule: reply_pct 5-45, important_pct 5-40, click_pct 0-70 and at
+   most important_pct x 1.75. All of it is checked before anything is sent. */
+warmup_create_custom_engagement(zbw, "sender@example.com", 10, 20, 30, on_raw, on_error);
+
+/* CSV, and saved to the path as well. */
+warmup_download_seeds(zbw, "seeds.csv", on_raw, on_error);
+
+/* Pass an email address, not a bare domain: that is what the live API wants. */
+warmup_check_domain_dmarc(zbw, "sender@example.com", NULL, on_raw, on_error);
+
+zero_bounce_warmup_free(zbw);
+```
+
+`warmup_test_smtp_configuration` stores nothing and sends its test message to a
+ZeroBounce test recipient, not to `from_address`. The live API answers a failed
+SMTP login with HTTP 500, which arrives as an error with
+`ZBErrorResponse.status_code` 500; the password never appears in that message.
 
 ## Per-API base URLs
 
