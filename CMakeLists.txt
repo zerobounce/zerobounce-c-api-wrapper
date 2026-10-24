@@ -57,6 +57,6 @@ target_include_directories(${PROJECT_NAME} PUBLIC include ${json-c_SOURCE_DIR})
 target_link_libraries(${PROJECT_NAME} PUBLIC json-c libcurl)
 
 enable_testing()
-add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c)
+add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
 target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
