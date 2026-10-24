@@ -16,6 +16,8 @@ typedef struct {
     char api_key[256];
     char body[8192];
     char query[4096];
+    /* The one extra header the request carried, "Name: value", or "". */
+    char extra_header[512];
 } OfflineRequest;
 
 static OfflineRequest g_requests[OFFLINE_MAX];
@@ -23,6 +25,7 @@ static int g_count;
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_error_text[1024];
 static int g_error_called;
+static long g_error_status;
 static int g_success_called;
 static char g_echo[256];
 static _Thread_local char tls_echo[256];
@@ -154,6 +157,22 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
     if (!key[0]) {
         field_value("api_key", key, sizeof(key));
     }
+    snprintf(request.extra_header, sizeof(request.extra_header), "%s",
+             zero_bounce_test_extra_header() ? zero_bounce_test_extra_header() : "");
+    if (!key[0]) {
+        /* The Inbox Placement Tester and the Warmup API carry the key in a
+           header instead of a parameter. */
+        const char *header = request.extra_header;
+        const char *value = NULL;
+        if (strncmp(header, "Authorization: Bearer ", 22) == 0) {
+            value = header + 22;
+        } else if (strncmp(header, "API-Key: ", 9) == 0) {
+            value = header + 9;
+        }
+        if (value) {
+            snprintf(key, sizeof(key), "%s", value);
+        }
+    }
     snprintf(request.api_key, sizeof(request.api_key), "%s", key);
     remember(&request);
 
@@ -174,6 +193,11 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
         junk[5014] = '\0';
         set_body(response_data, junk);
         free(junk);
+    } else if (strncmp(key, "success-false-str", 17) == 0) {
+        /* The API also sends "success" as the string "false". */
+        set_body(response_data, "{\"success\":\"False\",\"message\":\"File cannot be found.\"}");
+    } else if (strncmp(key, "success-false", 13) == 0) {
+        set_body(response_data, "{\"success\":false,\"message\":\"File cannot be found.\"}");
     } else if (strncmp(key, "cf-json-", 8) == 0) {
         *http_code = 403;
         set_body(response_data,
@@ -263,6 +287,7 @@ static ZeroBounce *client_with(const char *key) {
 static void on_error(ZBErrorResponse error) {
     size_t used = 0;
     g_error_called = 1;
+    g_error_status = error.status_code;
     g_error_text[0] = '\0';
     for (size_t i = 0; i < error.errors.size; i++) {
         const char *part = error.errors.data[i] ? error.errors.data[i] : "";
@@ -659,8 +684,13 @@ void test_offline_priority3(void) {
     TEST_ASSERT_NOT_NULL(strstr(g_raw, "p3-key"));
     TEST_ASSERT_EQUAL_STRING("/v2/listevaluator/fid/", only_request().path);
     reset_offline();
-    send_evaluated_file(zb, "email_file.csv", on_send, on_error);
-    TEST_ASSERT_EQUAL_STRING("/v2/send-evaluated-file/", only_request().path);
+    /* LIVE: send-evaluated-file takes the file id as a form field, not an
+       upload, and the trailing slash is part of the endpoint. */
+    send_evaluated_file(zb, "fid-1", on_send, on_error);
+    request = only_request();
+    TEST_ASSERT_EQUAL_STRING("POST", request.method);
+    TEST_ASSERT_EQUAL_STRING("/v2/send-evaluated-file/", request.path);
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "file_id=fid-1"));
     reset_offline();
     add_filter(zb, "exclude", "domain", "example.com", on_raw, on_error);
     request = only_request();
@@ -779,6 +809,7 @@ void test_offline_s3_and_sftp_jobs(void) {
     ZBBulkFileJobOptions options = new_bulk_file_job_options();
 
     options.file_name = "lists/leads.csv";
+    options.return_url = "https://example.com/done";
     email_finder_s3_file(zb, &options, on_send, on_error);
     OfflineRequest request = only_request();
     TEST_ASSERT_EQUAL_STRING("POST", request.method);
@@ -786,34 +817,46 @@ void test_offline_s3_and_sftp_jobs(void) {
     /* The S3 and SFTP jobs live on the bulkapi root, WITHOUT /v2. */
     TEST_ASSERT_EQUAL_STRING("/emailFinderS3file", request.path);
     TEST_ASSERT_NOT_NULL(strstr(request.body, "file_name=lists%2Fleads.csv"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "return_url="));
     TEST_ASSERT_NOT_NULL(strstr(request.body, "has_header_row=true"));
-    /* Unset options stay off the request entirely. */
+    /* Options that were never set stay off the request entirely. */
     TEST_ASSERT_NULL(strstr(request.body, "remove_duplicates"));
-    TEST_ASSERT_NULL(strstr(request.body, "return_url"));
 
     reset_offline();
     options.has_header_row = false;
     options.remove_duplicates = 1;
-    options.return_url = "https://example.com/done";
     domain_search_s3_file(zb, &options, on_send, on_error);
     request = only_request();
     TEST_ASSERT_EQUAL_STRING("/domainSearchS3file", request.path);
     TEST_ASSERT_NOT_NULL(strstr(request.body, "has_header_row=false"));
     TEST_ASSERT_NOT_NULL(strstr(request.body, "remove_duplicates=true"));
-    TEST_ASSERT_NOT_NULL(strstr(request.body, "return_url="));
 
-    /* file_name is optional for validateSFTPfile alone: without it the input
-       bucket from the account's settings is used. */
+    /* LIVE: the docs call file_name optional for validateSFTPfile, but the
+       API answers "Empty parameter: file_name" without it, and every job
+       needs a return_url as well. Both are checked before sending. */
     reset_offline();
     options = new_bulk_file_job_options();
+    options.return_url = "https://example.com/done";
+    validate_sftp_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_name"));
+
+    reset_offline();
+    options = new_bulk_file_job_options();
+    options.file_name = "my_file.txt";
+    validate_sftp_file(zb, &options, on_send, on_error);
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "return_url"));
+
+    reset_offline();
+    options.return_url = "https://example.com/done";
     validate_sftp_file(zb, &options, on_send, on_error);
     request = only_request();
     TEST_ASSERT_EQUAL_STRING("/validateSFTPfile", request.path);
-    TEST_ASSERT_NULL(strstr(request.body, "file_name"));
-    TEST_ASSERT_NOT_NULL(strstr(request.body, "has_header_row=true"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "file_name=my_file.txt"));
+    TEST_ASSERT_NOT_NULL(strstr(request.body, "return_url="));
 
     reset_offline();
-    options.file_name = "my_file.txt";
     score_sftp_file(zb, &options, on_send, on_error);
     TEST_ASSERT_EQUAL_STRING("/scoreSFTPfile", only_request().path);
     reset_offline();
@@ -846,12 +889,17 @@ void test_offline_bulk_jobs_reject_before_request(void) {
     TEST_ASSERT_TRUE(g_error_called);
     TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_name"));
 
-    /* An unset name is allowed for validateSFTPfile, but a blank one is not. */
+    /* A blank name is rejected just like a missing one. */
     g_error_called = 0;
     options.file_name = "   ";
     validate_sftp_file(zb, &options, on_send, on_error);
     TEST_ASSERT_TRUE(g_error_called);
     TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_name"));
+
+    g_error_called = 0;
+    send_evaluated_file(zb, "  ", on_send, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_id"));
 
     g_error_called = 0;
     export_sftp_file(zb, "  ", NULL, on_send, on_error);
@@ -898,8 +946,12 @@ void test_offline_inbox_placement(void) {
     get_inbox_placement_providers(zb, on_raw, on_error);
     OfflineRequest request = only_request();
     TEST_ASSERT_EQUAL_STRING("/api/ipt/providers", request.path);
-    /* The API key goes on the query string here, not in the body. */
-    TEST_ASSERT_EQUAL_STRING("ipt-key", request.api_key);
+    /* LIVE: the key travels in an Authorization: Bearer header. Sent as an
+       api_key query parameter the request is rejected as unauthorized, and
+       the key would end up in whatever logs the query string. */
+    TEST_ASSERT_EQUAL_STRING("Authorization: Bearer ipt-key", request.extra_header);
+    TEST_ASSERT_NULL(strstr(request.query, "api_key="));
+    TEST_ASSERT_NULL(strstr(request.body, "api_key="));
 
     reset_offline();
     get_inbox_placement_test_types(zb, on_raw, on_error);
@@ -932,6 +984,9 @@ void test_offline_inbox_placement(void) {
     list.page_size = 25;
     list_inbox_placement_tests(zb, &list, on_raw, on_error);
     request = only_request();
+    /* LIVE: the listing is GET /tests (plural). /test is the single-test path
+       and answers 'Method "GET" not allowed'. */
+    TEST_ASSERT_EQUAL_STRING("/api/ipt/tests", request.path);
     TEST_ASSERT_NOT_NULL(strstr(request.query, "status=finished"));
     TEST_ASSERT_NOT_NULL(strstr(request.query, "page=1"));
     TEST_ASSERT_NOT_NULL(strstr(request.query, "pageSize=25"));
@@ -982,6 +1037,44 @@ void test_offline_inbox_placement_detail_error(void) {
 
     TEST_ASSERT_TRUE(g_error_called);
     TEST_ASSERT_NOT_NULL(strstr(g_error_text, "Inbox placement test not found."));
+}
+
+void test_offline_batch_timeout_is_a_string(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("batch-timeout");
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate a = {"a@example.com", ""};
+    ZBValidateOptions options = new_validate_options();
+
+    email_to_validate_vector_append(&emails, a);
+    options.timeout = 30;
+    validate_email_batch_with_options(zb, emails, &options, on_batch, on_error);
+
+    /* LIVE: validatebatch takes timeout as a JSON *string*. Sent as a number
+       the API rejects the whole batch with the account-level "Invalid API Key
+       or your account ran out of credits". */
+    TEST_ASSERT_NOT_NULL(strstr(only_request().body, "\"timeout\": \"30\""));
+    TEST_ASSERT_NULL(strstr(only_request().body, "\"timeout\": 30"));
+    email_to_validate_vector_free(&emails);
+}
+
+void test_offline_success_false_on_200_is_an_error(void) {
+    reset_offline();
+    /* LIVE: getfile and deletefile report an unknown or deleted file id with
+       HTTP 200 and a "success": false field. That is a failure, not a result,
+       and the status is kept on the error. */
+    ZeroBounce *zb = client_with("success-false");
+
+    delete_file(zb, "fid", on_delete, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "File cannot be found"));
+    TEST_ASSERT_EQUAL_INT(200, (int)g_error_status);
+
+    g_error_called = 0;
+    reset_offline();
+    zb = client_with("success-false-str");
+    delete_file(zb, "fid", on_delete, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
 }
 
 void test_offline_rejects_before_request(void) {
@@ -1174,6 +1267,8 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_callback_url_requires_greylist);
     RUN_TEST(test_offline_s3_and_sftp_jobs);
     RUN_TEST(test_offline_bulk_jobs_reject_before_request);
+    RUN_TEST(test_offline_batch_timeout_is_a_string);
+    RUN_TEST(test_offline_success_false_on_200_is_an_error);
     RUN_TEST(test_offline_list_evaluator_base_url);
     RUN_TEST(test_offline_inbox_placement);
     RUN_TEST(test_offline_inbox_placement_detail_error);

@@ -28,6 +28,22 @@ int zb_make_request_with_method_and_body(
     OnErrorCallback error_callback
 );
 
+/*
+ * As zb_make_request_with_method_and_body, plus one extra request header.
+ * The Inbox Placement Tester needs Authorization: Bearer, and the Warmup API
+ * an API-Key header.
+ */
+int zb_make_request_with_extra_header(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    const char* extra_header,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+);
+
 int zb_make_request_with_post_body(
     char *url_path,
     char *body,
@@ -38,6 +54,7 @@ int zb_make_request_with_post_body(
 void zero_bounce_record_request_url_for_test(const char *url);
 void zb_note_http_request(const char *method, const char *url, const char *body);
 void zb_note_http_field(const char *name, const char *value);
+void zb_note_http_header(const char *header);
 int zb_http_perform_if_mock(memory *response_data, long *http_code, char **content_type_out);
 
 char *zb_message_from_body(const char *body, long status_code);

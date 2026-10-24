@@ -65,6 +65,8 @@ typedef struct {
         char value[1024];
     } fields[ZB_TEST_FIELD_MAX];
     int field_count;
+    /* The one extra header the request carried, "Name: value", or "". */
+    char extra_header[512];
 } ZBTlsRequest;
 
 static _Thread_local ZBTlsRequest zb_tls_request;
@@ -92,6 +94,10 @@ void zb_note_http_request(const char *method, const char *url, const char *body)
     }
 }
 
+void zb_note_http_header(const char *header) {
+    zb_copy_cap(zb_tls_request.extra_header, sizeof(zb_tls_request.extra_header), header ? header : "");
+}
+
 void zb_note_http_field(const char *name, const char *value) {
     int index;
     if (zb_tls_request.field_count >= ZB_TEST_FIELD_MAX) {
@@ -105,6 +111,7 @@ void zb_note_http_field(const char *name, const char *value) {
 const char *zero_bounce_test_method(void) { return zb_tls_request.method; }
 const char *zero_bounce_test_url(void) { return zb_tls_request.url; }
 const char *zero_bounce_test_body(void) { return zb_tls_request.body; }
+const char *zero_bounce_test_extra_header(void) { return zb_tls_request.extra_header; }
 int zero_bounce_test_field_count(void) { return zb_tls_request.field_count; }
 const char *zero_bounce_test_field_name(int index) {
     if (index < 0 || index >= zb_tls_request.field_count) return "";
@@ -595,7 +602,24 @@ int zb_make_request_with_method_and_body(
     long* http_code,
     OnErrorCallback error_callback
 ) {
+    return zb_make_request_with_extra_header(
+        url_path, method, body, content_type_header, NULL,
+        response_data, http_code, error_callback
+    );
+}
+
+int zb_make_request_with_extra_header(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    const char* extra_header,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+) {
     zb_note_http_request(method, url_path, body);
+    zb_note_http_header(extra_header);
 
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
@@ -614,6 +638,9 @@ int zb_make_request_with_method_and_body(
     headers = curl_slist_append(headers, "Accept: application/json");
     if (body && content_type_header) {
         headers = curl_slist_append(headers, content_type_header);
+    }
+    if (extra_header) {
+        headers = curl_slist_append(headers, extra_header);
     }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     if (body) {
@@ -1758,7 +1785,14 @@ void validate_email_batch_with_options(
     json_object_object_add(payload, "api_key", json_object_new_string(zb->api_key));
     json_object_object_add(payload, "email_batch", email_batch_json);
     if (options->timeout >= 0) {
-        json_object_object_add(payload, "timeout", json_object_new_int(options->timeout));
+        /*
+         * LIVE: validatebatch takes timeout as a JSON *string*. Sent as a
+         * number the API rejects the whole batch with the account-level
+         * "Invalid API Key or your account ran out of credits".
+         */
+        char timeout_text[16];
+        snprintf(timeout_text, sizeof(timeout_text), "%d", options->timeout);
+        json_object_object_add(payload, "timeout", json_object_new_string(timeout_text));
     }
     if (options->activity_data >= 0) {
         json_object_object_add(

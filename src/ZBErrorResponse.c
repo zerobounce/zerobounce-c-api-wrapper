@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "ZeroBounce/zb_internal.h"
 
@@ -10,6 +11,7 @@ ZBErrorResponse new_zb_error_response() {
 
     response.success = false;
     response.errors = string_vector_init();
+    response.status_code = 0;
 
     return response;
 }
@@ -34,7 +36,12 @@ char* zb_error_response_to_string(ZBErrorResponse* response) {
 }
 
 ZBErrorResponse parse_error(const char* error) {
+    return parse_error_with_status(error, 0);
+}
+
+ZBErrorResponse parse_error_with_status(const char* error, long status_code) {
     ZBErrorResponse response = new_zb_error_response();
+    response.status_code = status_code;
 
     if (!error || strlen(error) == 0) {
         return response;
@@ -277,8 +284,33 @@ void zb_report_body_error(const char *body, long status_code, OnErrorCallback er
         return;
     }
     message = zb_message_from_body(body, status_code);
-    error_callback(parse_error(message));
+    error_callback(parse_error_with_status(message, status_code));
     free(message);
+}
+
+bool zb_success_means_failure(const char *body) {
+    const char *text = zb_skip_ws(body ? body : "");
+    json_object *parsed;
+    json_object *success;
+    bool failed = false;
+
+    if (text[0] != '{') {
+        return false;
+    }
+    parsed = json_tokener_parse(text);
+    if (!parsed) {
+        return false;
+    }
+    if (json_object_object_get_ex(parsed, "success", &success)) {
+        if (json_object_is_type(success, json_type_boolean)) {
+            failed = !json_object_get_boolean(success);
+        } else if (json_object_is_type(success, json_type_string)) {
+            const char *value = json_object_get_string(success);
+            failed = value && (strcasecmp(value, "false") == 0);
+        }
+    }
+    json_object_put(parsed);
+    return failed;
 }
 
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback) {
@@ -288,7 +320,13 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
         return false;
     }
     *out = NULL;
-    if (status_code > 299 || zb_body_looks_like_html(text) || zb_skip_ws(text)[0] == '\0') {
+    /*
+     * LIVE: a "success": false field on an HTTP 200 is a failure, not a
+     * result. getfile and deletefile report an unknown or deleted file id
+     * that way, and the caller should not have to inspect a flag to notice.
+     */
+    if (status_code > 299 || zb_body_looks_like_html(text) ||
+        zb_skip_ws(text)[0] == '\0' || zb_success_means_failure(text)) {
         zb_report_body_error(text, status_code, error_callback);
         return false;
     }

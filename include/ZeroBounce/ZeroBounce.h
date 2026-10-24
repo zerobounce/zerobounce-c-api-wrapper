@@ -1145,6 +1145,7 @@ const char* zero_bounce_get_last_post_body_for_test(void);
 const char *zero_bounce_test_method(void);
 const char *zero_bounce_test_url(void);
 const char *zero_bounce_test_body(void);
+const char *zero_bounce_test_extra_header(void);
 int zero_bounce_test_field_count(void);
 const char *zero_bounce_test_field_name(int index);
 const char *zero_bounce_test_field_value(int index);

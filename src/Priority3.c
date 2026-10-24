@@ -711,13 +711,32 @@ void get_list_evaluator_result(
 
 void send_evaluated_file(
     ZeroBounce *zb,
-    char *file_path,
+    char *file_id,
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
+    char *body = NULL;
+    size_t cap = 0;
     char url[512];
+
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+    if (p3_is_blank(file_id)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: file_id"));
+        }
+        return;
+    }
+
+    /*
+     * LIVE: send-evaluated-file takes the id of a finished evaluation as a
+     * form field, not an upload. The trailing slash is part of the endpoint.
+     */
+    p3_append_form_field(&body, &cap, "api_key", zb->api_key);
+    p3_append_form_field(&body, &cap, "file_id", file_id);
     snprintf(url, sizeof(url), "%s/send-evaluated-file/", zb->bulk_api_base_url);
-    p3_bulk_root_multipart(zb, url, file_path, NULL, NULL, success_callback, error_callback);
+    p3_post_send_file_form(zb, url, body, success_callback, error_callback);
 }
 
 void add_filter(
@@ -1039,48 +1058,45 @@ static bool p3_is_blank(const char *value) {
  * POSTs one of the six documented S3 / SFTP file jobs on the bulkapi root.
  *
  * Booleans go on the wire as the strings "true"/"false", and an option the
- * caller left unset is not sent at all. file_name_required is false only for
- * validateSFTPfile, where the docs make the name optional.
+ * caller left unset is not sent at all.
+ *
+ * LIVE: file_name and return_url are required on every one of these jobs,
+ * validateSFTPfile included, although the docs call its file_name optional.
+ * Without either the API answers "Empty parameter: file_name" /
+ * "Empty parameter: return_url", so both are checked before sending.
  */
 static void p3_bulk_root_file_job(
     ZeroBounce *zb,
     const char *path,
     const ZBBulkFileJobOptions *options,
-    bool file_name_required,
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
     char *body = NULL;
     size_t cap = 0;
     char url[512];
-    bool blank;
 
     if (zero_bounce_invalid_api_key(zb, error_callback)) {
         return;
     }
-    if (!options) {
+    if (!options || p3_is_blank(options->file_name)) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: file_name"));
         }
         return;
     }
-    blank = options->file_name != NULL && p3_is_blank(options->file_name);
-    if ((options->file_name == NULL && file_name_required) || blank) {
+    if (p3_is_blank(options->return_url)) {
         if (error_callback) {
-            error_callback(parse_error("Empty parameter: file_name"));
+            error_callback(parse_error("Empty parameter: return_url"));
         }
         return;
     }
 
     p3_append_form_field(&body, &cap, "api_key", zb->api_key);
     p3_append_form_field(&body, &cap, "has_header_row", options->has_header_row ? "true" : "false");
-    if (options->file_name) {
-        p3_append_form_field(&body, &cap, "file_name", options->file_name);
-    }
+    p3_append_form_field(&body, &cap, "file_name", options->file_name);
     p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
-    if (options->return_url) {
-        p3_append_form_field(&body, &cap, "return_url", options->return_url);
-    }
+    p3_append_form_field(&body, &cap, "return_url", options->return_url);
 
     snprintf(url, sizeof(url), "%s%s", zb->bulk_api_root_url, path);
     p3_post_send_file_form(zb, url, body, success_callback, error_callback);
@@ -1133,7 +1149,7 @@ void email_finder_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    p3_bulk_root_file_job(zb, "/emailFinderS3file", options, true, success_callback, error_callback);
+    p3_bulk_root_file_job(zb, "/emailFinderS3file", options, success_callback, error_callback);
 }
 
 void domain_search_s3_file(
@@ -1142,7 +1158,7 @@ void domain_search_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    p3_bulk_root_file_job(zb, "/domainSearchS3file", options, true, success_callback, error_callback);
+    p3_bulk_root_file_job(zb, "/domainSearchS3file", options, success_callback, error_callback);
 }
 
 void validate_sftp_file(
@@ -1152,7 +1168,7 @@ void validate_sftp_file(
     OnErrorCallback error_callback
 ) {
     /* The one job whose file_name the docs make optional. */
-    p3_bulk_root_file_job(zb, "/validateSFTPfile", options, false, success_callback, error_callback);
+    p3_bulk_root_file_job(zb, "/validateSFTPfile", options, success_callback, error_callback);
 }
 
 void score_sftp_file(
@@ -1161,7 +1177,7 @@ void score_sftp_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    p3_bulk_root_file_job(zb, "/scoreSFTPfile", options, true, success_callback, error_callback);
+    p3_bulk_root_file_job(zb, "/scoreSFTPfile", options, success_callback, error_callback);
 }
 
 void email_finder_sftp_file(
@@ -1170,7 +1186,7 @@ void email_finder_sftp_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    p3_bulk_root_file_job(zb, "/emailFinderSFTPfile", options, true, success_callback, error_callback);
+    p3_bulk_root_file_job(zb, "/emailFinderSFTPfile", options, success_callback, error_callback);
 }
 
 void domain_search_sftp_file(
@@ -1179,7 +1195,7 @@ void domain_search_sftp_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    p3_bulk_root_file_job(zb, "/domainSearchSFTPfile", options, true, success_callback, error_callback);
+    p3_bulk_root_file_job(zb, "/domainSearchSFTPfile", options, success_callback, error_callback);
 }
 
 void export_sftp_file(
@@ -1198,9 +1214,12 @@ void export_sftp_file(
 /*
  * One Inbox Placement Tester call.
  *
- * Unlike the rest of the SDK this one puts the API key on the query string,
- * sends camelCase JSON bodies, and uses PUT and DELETE as well as GET and
- * POST, so it builds the request itself.
+ * Unlike the rest of the SDK this one authenticates with an Authorization:
+ * Bearer header, sends camelCase JSON bodies, and uses PUT and DELETE as well
+ * as GET and POST, so it builds the request itself.
+ *
+ * LIVE: sent as an api_key query parameter the request is rejected as
+ * unauthorized, and the key would end up in whatever logs the query string.
  */
 static void p3_inbox_placement_request(
     ZeroBounce *zb,
@@ -1211,9 +1230,11 @@ static void p3_inbox_placement_request(
     OnSuccessCallbackRawJson success_callback,
     OnErrorCallback error_callback
 ) {
-    char *api_key_esc;
     char *url_path;
+    char *auth_header;
     int url_len;
+    int auth_len;
+    const char *query = extra_query ? extra_query : "";
     memory response_data = {0};
     long http_code = 0;
 
@@ -1221,26 +1242,38 @@ static void p3_inbox_placement_request(
         return;
     }
 
-    api_key_esc = zb_url_escape(zb->api_key);
+    /* The caller builds the query with a leading '&'; without an api_key in
+       front of it, the first separator has to become a '?'. */
+    if (query[0] == '&') {
+        query++;
+    }
     url_len = snprintf(
-        NULL, 0, "%s%s?api_key=%s%s",
-        zb->inbox_placement_base_url, path, api_key_esc, extra_query ? extra_query : ""
+        NULL, 0, "%s%s%s%s",
+        zb->inbox_placement_base_url, path, query[0] ? "?" : "", query
     );
     url_path = malloc((size_t)url_len + 1);
     if (!url_path) {
-        free(api_key_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
     snprintf(
-        url_path, (size_t)url_len + 1, "%s%s?api_key=%s%s",
-        zb->inbox_placement_base_url, path, api_key_esc, extra_query ? extra_query : ""
+        url_path, (size_t)url_len + 1, "%s%s%s%s",
+        zb->inbox_placement_base_url, path, query[0] ? "?" : "", query
     );
-    free(api_key_esc);
 
-    if (!zb_make_request_with_method_and_body(
-            url_path, method, body, "Content-Type: application/json",
+    auth_len = snprintf(NULL, 0, "Authorization: Bearer %s", zb->api_key);
+    auth_header = malloc((size_t)auth_len + 1);
+    if (!auth_header) {
+        free(url_path);
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    snprintf(auth_header, (size_t)auth_len + 1, "Authorization: Bearer %s", zb->api_key);
+
+    if (!zb_make_request_with_extra_header(
+            url_path, method, body, "Content-Type: application/json", auth_header,
             &response_data, &http_code, error_callback)) {
+        free(auth_header);
         free(response_data.response);
         free(url_path);
         return;
@@ -1254,6 +1287,7 @@ static void p3_inbox_placement_request(
     } else {
         p3_send_json_success(&response_data, http_code, success_callback, error_callback);
     }
+    free(auth_header);
     free(response_data.response);
     free(url_path);
 }
@@ -1413,7 +1447,11 @@ void list_inbox_placement_tests(
             snprintf(query + used, sizeof(query) - used, "&pageSize=%d", options->page_size);
         }
     }
-    p3_inbox_placement_request(zb, "GET", "/test", query, NULL, success_callback, error_callback);
+    /*
+     * LIVE: the listing is GET /tests (plural). /test is the single-test path
+     * and answers 'Method "GET" not allowed'.
+     */
+    p3_inbox_placement_request(zb, "GET", "/tests", query, NULL, success_callback, error_callback);
 }
 
 void delete_inbox_placement_test(
