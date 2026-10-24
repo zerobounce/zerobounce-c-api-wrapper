@@ -71,6 +71,8 @@ ZBValidateSubStatus sub_status_from_string(const char* string) {
         return Toxic;
     } else if (strcmp(string, "accept_all") == 0) {
         return AcceptAll;
+    } else if (strcmp(string, "ai_agent_mailbox") == 0) {
+        return AiAgentMailbox;
     }
 
     return None;
@@ -86,6 +88,8 @@ ZBValidateResponse new_zb_validate_response() {
     response.domain = "";
     response.did_you_mean = "";
     response.domain_age_days = "";
+    response.active_in_days = "";
+    response.active_first_seen = "";
     response.free_email = false;
     response.mx_found = false;
     response.mx_record = "";
@@ -204,6 +208,8 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
     r.domain = *(char**)get_json_value(j, json_type_string, "domain", &(char*){""});
     r.did_you_mean = *(char**)get_json_value(j, json_type_string, "did_you_mean", &(char*){""});
     r.domain_age_days = *(char**)get_json_value(j, json_type_string, "domain_age_days", &(char*){""});
+    r.active_in_days = *(char**)get_json_value(j, json_type_string, "active_in_days", &(char*){""});
+    r.active_first_seen = *(char**)get_json_value(j, json_type_string, "active_first_seen", &(char*){""});
     r.free_email = *(bool*)get_json_value(j, json_type_boolean, "free_email", &(bool){false});
 
     if (strcasecmp(*(char**)get_json_value(j, json_type_string, "mx_found", &(char*){"false"}), "true") == 0) {
@@ -242,6 +248,8 @@ int compare_zb_validate_response(const ZBValidateResponse* response1, const ZBVa
         strcmp(response1->domain, response2->domain) == 0 &&
         strcmp(response1->did_you_mean, response2->did_you_mean) == 0 &&
         strcmp(response1->domain_age_days, response2->domain_age_days) == 0 &&
+        strcmp(response1->active_in_days, response2->active_in_days) == 0 &&
+        strcmp(response1->active_first_seen, response2->active_first_seen) == 0 &&
         response1->free_email == response2->free_email &&
         response1->mx_found == response2->mx_found &&
         strcmp(response1->mx_record, response2->mx_record) == 0 &&

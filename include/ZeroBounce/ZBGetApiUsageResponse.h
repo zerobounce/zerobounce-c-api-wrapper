@@ -43,6 +43,8 @@ typedef struct {
     int sub_status_accept_all;
     int sub_status_gold;
     int sub_status_role_based_accept_all;
+    int sub_status_leading_period_removed;
+    int sub_status_alias_address;
     char* start_date;
     char* end_date;
     char* error;

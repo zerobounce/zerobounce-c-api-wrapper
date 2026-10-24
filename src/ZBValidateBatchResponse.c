@@ -117,6 +117,8 @@ void validate_response_vector_append(ValidateResponseVector* vector, const ZBVal
     vector->data[vector->size].domain = strdup(response.domain);
     vector->data[vector->size].did_you_mean = strdup(response.did_you_mean);
     vector->data[vector->size].domain_age_days = strdup(response.domain_age_days);
+    vector->data[vector->size].active_in_days = strdup(response.active_in_days);
+    vector->data[vector->size].active_first_seen = strdup(response.active_first_seen);
     vector->data[vector->size].free_email = response.free_email;
     vector->data[vector->size].mx_found = response.mx_found;
     vector->data[vector->size].catchall_domain = response.catchall_domain;
@@ -144,6 +146,8 @@ void validate_response_vector_free(ValidateResponseVector* vector) {
         free(vector->data[i].domain);
         free(vector->data[i].did_you_mean);
         free(vector->data[i].domain_age_days);
+        free(vector->data[i].active_in_days);
+        free(vector->data[i].active_first_seen);
         free(vector->data[i].mx_record);
         free(vector->data[i].smtp_provider);
         free(vector->data[i].first_name);

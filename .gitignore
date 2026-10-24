@@ -33,6 +33,7 @@
 
 # CMake / build
 build/
+build-live/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -57,6 +58,8 @@ _deps/
 # Test artifacts
 downloads/
 test/downloads/
+# written and removed again by the live suite's bulk round trip
+zb-sdk-live.csv
 
 # Misc
 .DS_Store

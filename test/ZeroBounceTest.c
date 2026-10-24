@@ -5,6 +5,9 @@
 
 #include "ZeroBounce/ZeroBounce.h"
 
+void offline_run_tests(void);
+void warmup_run_tests(void);
+
 DEFINE_FFF_GLOBALS;
 
 static ZeroBounce* zb;
@@ -18,6 +21,7 @@ static ZBFileStatusResponse expected_file_status_response;
 static ZBGetFileResponse expected_get_file_response;
 static ZBDeleteFileResponse expected_delete_file_response;
 static ZBActivityDataResponse expected_activity_data_response;
+static ZBScoreEmailResponse expected_score_email_response;
 static ZBFindEmailResponse expected_find_email_response;
 static ZBDomainSearchResponse expected_domain_search_response;
 
@@ -102,6 +106,27 @@ void on_success_activity_data_valid(ZBActivityDataResponse response) {
 
 void on_success_activity_data_invalid(ZBActivityDataResponse response) {
     TEST_FAIL_MESSAGE(zb_activity_data_response_to_string(&response));
+}
+
+void on_success_score_email_valid(ZBScoreEmailResponse response) {
+    TEST_ASSERT_EQUAL_INT(1, compare_zb_score_email_response(&expected_score_email_response, &response));
+}
+
+static char last_raw_json_buffer[4096];
+static const char *last_raw_json_response = NULL;
+
+void on_success_raw_json(const char *json_response) {
+    if (!json_response) {
+        last_raw_json_buffer[0] = '\0';
+    } else {
+        strncpy(last_raw_json_buffer, json_response, sizeof(last_raw_json_buffer) - 1);
+        last_raw_json_buffer[sizeof(last_raw_json_buffer) - 1] = '\0';
+    }
+    last_raw_json_response = last_raw_json_buffer;
+}
+
+void on_success_score_email_invalid(ZBScoreEmailResponse response) {
+    TEST_FAIL_MESSAGE(zb_score_email_response_to_string(&response));
 }
 
 void on_success_find_email_valid(ZBFindEmailResponse response) {
@@ -323,6 +348,41 @@ void test_validate_email_invalid(void)
     validate_email(zb, "valid@example.com", "127.0.0.1", on_success_validate_invalid, on_error_invalid);
 }
 
+void test_sub_status_ai_agent_mailbox(void)
+{
+    // Returned under both valid and catch-all; the mapping is status-independent.
+    TEST_ASSERT_EQUAL_INT(AiAgentMailbox, sub_status_from_string("ai_agent_mailbox"));
+}
+
+void test_sub_status_ai_agent_mailbox_parsed_from_response(void)
+{
+    const char* valid_json =
+        "{\n"
+        "    \"address\": \"agent@example.com\",\n"
+        "    \"status\": \"valid\",\n"
+        "    \"sub_status\": \"ai_agent_mailbox\"\n"
+        "}";
+    ZBValidateResponse parsed = zb_validate_response_from_json(json_tokener_parse(valid_json));
+    TEST_ASSERT_EQUAL_INT(AiAgentMailbox, parsed.sub_status);
+
+    const char* catch_all_json =
+        "{\n"
+        "    \"address\": \"agent@example.com\",\n"
+        "    \"status\": \"catch-all\",\n"
+        "    \"sub_status\": \"ai_agent_mailbox\"\n"
+        "}";
+    ZBValidateResponse parsed_catch_all = zb_validate_response_from_json(json_tokener_parse(catch_all_json));
+    TEST_ASSERT_EQUAL_INT(AiAgentMailbox, parsed_catch_all.sub_status);
+}
+
+void test_sub_status_unknown_falls_back_to_none(void)
+{
+    // sub_status_from_string ends in `return None`, so a sub_status added to
+    // the API after this SDK shipped maps to None rather than reading past the
+    // end of the chain or leaving the field uninitialised.
+    TEST_ASSERT_EQUAL_INT(None, sub_status_from_string("some_future_sub_status"));
+}
+
 void test_validate_email_valid(void)
 {
     response_json = "{\n"
@@ -365,6 +425,105 @@ void test_validate_email_batch_invalid(void)
     EmailToValidateVector emails = email_to_validate_vector_init();
 
     validate_email_batch(zb, emails, on_success_validate_batch_invalid, on_error_invalid);
+}
+
+void test_validate_email_with_options_query_params(void)
+{
+    response_json = "{\"address\":\"valid@example.com\",\"status\":\"valid\",\"sub_status\":\"\",\"processed_at\":\"2023-04-05 13:29:47.553\"}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_response = zb_validate_response_from_json(json_tokener_parse(response_json));
+
+    ZBValidateOptions options = new_validate_options();
+    options.timeout = 30;
+    options.activity_data = 1;
+    options.verify_plus = 0;
+
+    validate_email_with_options(
+        zb, "valid@example.com", "", &options, on_success_validate_valid, on_error_valid
+    );
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "timeout=30"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "activity_data=true"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "verify_plus=false"));
+}
+
+void test_validate_email_with_options_post_form(void)
+{
+    response_json = "{\"address\":\"valid@example.com\",\"status\":\"valid\",\"sub_status\":\"\",\"processed_at\":\"2023-04-05 13:29:47.553\"}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_response = zb_validate_response_from_json(json_tokener_parse(response_json));
+
+    ZBValidateOptions options = new_validate_options();
+    options.use_post = 1;
+    options.timeout = 30;
+
+    validate_email_with_options(
+        zb, "valid@example.com", "", &options, on_success_validate_valid, on_error_valid
+    );
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/validate"));
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "api_key="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "email="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "timeout=30"));
+}
+
+void test_list_s3_files_valid(void)
+{
+    response_json = "[{\"name\":\"uploads/list.csv\",\"size\":100,\"last_modified\":\"2024-01-01T00:00:00Z\"}]";
+    last_raw_json_response = NULL;
+
+    get_http_code_fake.return_val = 200;
+
+    list_s3_files(zb, "my-bucket", "list", on_success_raw_json, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/listS3files"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "bucket=my-bucket"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "search=list"));
+    TEST_ASSERT_NOT_NULL(last_raw_json_response);
+    TEST_ASSERT_NOT_NULL(strstr(last_raw_json_response, "uploads/list.csv"));
+}
+
+void test_validate_email_batch_with_options_body(void)
+{
+    response_json = "{\"email_batch\":[],\"errors\":[]}";
+
+    get_http_code_fake.return_val = 200;
+
+    expected_validate_batch_response = zb_validate_batch_response_from_json(json_tokener_parse(response_json));
+
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"valid@example.com", "1.1.1.1"};
+    email_to_validate_vector_append(&emails, email);
+
+    ZBValidateOptions options = new_validate_options();
+    options.timeout = 60;
+    options.verify_plus = 1;
+
+    validate_email_batch_with_options(
+        zb, emails, &options, on_success_validate_batch_valid, on_error_valid
+    );
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"timeout\""));
+    TEST_ASSERT_NOT_NULL(strstr(body, "60"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"verify_plus\""));
+    TEST_ASSERT_NOT_NULL(strstr(body, "true"));
+
+    email_to_validate_vector_free(&emails);
 }
 
 void test_validate_email_batch_uses_api_url(void)
@@ -865,6 +1024,63 @@ void test_search_domain_status_valid_payload(void) {
 }
 
 
+void test_score_email_valid(void) {
+    response_json = "{\"email\":\"mark@gmail.com\",\"score\":10}";
+
+    expected_score_email_response = zb_score_email_response_from_json(
+        json_tokener_parse(response_json)
+    );
+
+    get_http_code_fake.return_val = 200;
+    score_email(zb, "mark@gmail.com", on_success_score_email_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/scoring?"));
+    TEST_ASSERT_NOT_NULL(strstr(url, "email="));
+}
+
+void test_validate_s3_file_valid(void) {
+    response_json = "{\"success\":true,\"file_id\":\"s3-1\",\"message\":\"\"}";
+
+    expected_send_file_response = zb_send_file_response_from_json(
+        json_tokener_parse(response_json)
+    );
+
+    get_http_code_fake.return_val = 200;
+    ValidateS3FileOptions options = new_validate_s3_file_options();
+    options.file_name = "bucket/key.csv";
+    validate_s3_file(zb, &options, on_success_send_file_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/validateS3file"));
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "file_name="));
+}
+
+void test_score_email_post_valid(void) {
+    response_json = "{\"email\":\"mark@gmail.com\",\"score\":10}";
+
+    expected_score_email_response = zb_score_email_response_from_json(
+        json_tokener_parse(response_json)
+    );
+
+    get_http_code_fake.return_val = 200;
+    score_email_post(zb, "mark@gmail.com", on_success_score_email_valid, on_error_valid);
+
+    const char* url = zero_bounce_get_last_request_url_for_test();
+    TEST_ASSERT_NOT_NULL(url);
+    TEST_ASSERT_NOT_NULL(strstr(url, "/scoring"));
+
+    const char* body = zero_bounce_get_last_post_body_for_test();
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_NOT_NULL(strstr(body, "api_key="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "email="));
+}
+
 void test_search_domain_status_serialize_functions() {
     response_json = "{\n"
         "    \"domain\": \"example.com\",\n"
@@ -914,6 +1130,9 @@ int main(void)
 {
     UNITY_BEGIN();
 
+    RUN_TEST(test_sub_status_ai_agent_mailbox);
+    RUN_TEST(test_sub_status_ai_agent_mailbox_parsed_from_response);
+    RUN_TEST(test_sub_status_unknown_falls_back_to_none);
     RUN_TEST(test_get_credits_invalid);
     RUN_TEST(test_get_credits_valid);
     RUN_TEST(test_get_api_usage_invalid);
@@ -921,8 +1140,11 @@ int main(void)
     RUN_TEST(test_get_api_usage_response_parse_and_compare);
     RUN_TEST(test_validate_email_invalid);
     RUN_TEST(test_validate_email_valid);
+    RUN_TEST(test_validate_email_with_options_query_params);
+    RUN_TEST(test_validate_email_with_options_post_form);
     RUN_TEST(test_validate_email_batch_invalid);
     RUN_TEST(test_validate_email_batch_uses_api_url);
+    RUN_TEST(test_validate_email_batch_with_options_body);
     RUN_TEST(test_validate_email_batch_valid);
     RUN_TEST(test_send_file_invalid);
     RUN_TEST(test_send_file_valid);
@@ -943,11 +1165,18 @@ int main(void)
     RUN_TEST(test_scoring_get_file_valid);
     RUN_TEST(test_scoring_delete_file_invalid);
     RUN_TEST(test_scoring_delete_file_valid);
+    RUN_TEST(test_score_email_valid);
+    RUN_TEST(test_score_email_post_valid);
+    RUN_TEST(test_validate_s3_file_valid);
+    RUN_TEST(test_list_s3_files_valid);
     RUN_TEST(test_find_email_status_invalid_payload);
     RUN_TEST(test_find_email_status_valid_payload);
     RUN_TEST(test_search_domain_status_invalid_payload);
     RUN_TEST(test_search_domain_status_valid_payload);
     RUN_TEST(test_search_domain_status_serialize_functions);
+
+    offline_run_tests();
+    warmup_run_tests();
 
     return UNITY_END();
 }

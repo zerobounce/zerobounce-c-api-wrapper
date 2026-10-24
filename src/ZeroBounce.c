@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -19,19 +20,32 @@
 #include <json.h>
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/zb_internal.h"
 
 static ZBHttpPerformFn s_http_perform = NULL;
 static char s_last_request_url_for_test[1024] = {0};
+static char s_last_post_body_for_test[4096] = {0};
 
 void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
     s_http_perform = fn;
+}
+
+int zb_http_perform_if_mock(memory *response_data, long *http_code, char **content_type_out) {
+    if (!s_http_perform) {
+        return 0;
+    }
+    return s_http_perform(response_data, http_code, content_type_out);
 }
 
 const char* zero_bounce_get_last_request_url_for_test(void) {
     return s_last_request_url_for_test[0] ? s_last_request_url_for_test : NULL;
 }
 
-static void zero_bounce_record_request_url_for_test(const char* url) {
+const char* zero_bounce_get_last_post_body_for_test(void) {
+    return s_last_post_body_for_test[0] ? s_last_post_body_for_test : NULL;
+}
+
+void zero_bounce_record_request_url_for_test(const char* url) {
     if (!url) {
         s_last_request_url_for_test[0] = '\0';
         return;
@@ -40,37 +54,139 @@ static void zero_bounce_record_request_url_for_test(const char* url) {
     s_last_request_url_for_test[sizeof(s_last_request_url_for_test) - 1] = '\0';
 }
 
-static char* zb_url_escape(const char* value) {
+#define ZB_TEST_FIELD_MAX 48
+
+typedef struct {
+    char method[16];
+    char url[8192];
+    char body[32768];
+    struct {
+        char name[64];
+        char value[1024];
+    } fields[ZB_TEST_FIELD_MAX];
+    int field_count;
+    /* The one extra header the request carried, "Name: value", or "". */
+    char extra_header[512];
+} ZBTlsRequest;
+
+static _Thread_local ZBTlsRequest zb_tls_request;
+
+/*
+ * The region of the client making the current call, for the one-time bulk-host
+ * warning. Recorded at the guard every public call already runs, so the
+ * transports do not have to carry the client around.
+ */
+static _Thread_local const char *zb_tls_region = NULL;
+
+
+static void zb_copy_cap(char *dest, size_t dest_len, const char *src) {
+    if (!dest || dest_len == 0) {
+        return;
+    }
+    if (!src) {
+        dest[0] = '\0';
+        return;
+    }
+    snprintf(dest, dest_len, "%s", src);
+}
+
+void zb_note_http_request(const char *method, const char *url, const char *body) {
+    memset(&zb_tls_request, 0, sizeof(zb_tls_request));
+    zb_copy_cap(zb_tls_request.method, sizeof(zb_tls_request.method), method ? method : "");
+    zb_copy_cap(zb_tls_request.url, sizeof(zb_tls_request.url), url ? url : "");
+    zb_copy_cap(zb_tls_request.body, sizeof(zb_tls_request.body), body ? body : "");
+    zero_bounce_record_request_url_for_test(url);
+    if (body) {
+        strncpy(s_last_post_body_for_test, body, sizeof(s_last_post_body_for_test) - 1);
+        s_last_post_body_for_test[sizeof(s_last_post_body_for_test) - 1] = '\0';
+    }
+}
+
+void zb_note_http_header(const char *header) {
+    zb_copy_cap(zb_tls_request.extra_header, sizeof(zb_tls_request.extra_header), header ? header : "");
+}
+
+void zb_note_http_field(const char *name, const char *value) {
+    int index;
+    if (zb_tls_request.field_count >= ZB_TEST_FIELD_MAX) {
+        return;
+    }
+    index = zb_tls_request.field_count++;
+    zb_copy_cap(zb_tls_request.fields[index].name, sizeof(zb_tls_request.fields[index].name), name);
+    zb_copy_cap(zb_tls_request.fields[index].value, sizeof(zb_tls_request.fields[index].value), value);
+}
+
+const char *zero_bounce_test_method(void) { return zb_tls_request.method; }
+const char *zero_bounce_test_url(void) { return zb_tls_request.url; }
+const char *zero_bounce_test_body(void) { return zb_tls_request.body; }
+const char *zero_bounce_test_extra_header(void) { return zb_tls_request.extra_header; }
+int zero_bounce_test_field_count(void) { return zb_tls_request.field_count; }
+const char *zero_bounce_test_field_name(int index) {
+    if (index < 0 || index >= zb_tls_request.field_count) return "";
+    return zb_tls_request.fields[index].name;
+}
+const char *zero_bounce_test_field_value(int index) {
+    if (index < 0 || index >= zb_tls_request.field_count) return "";
+    return zb_tls_request.fields[index].value;
+}
+
+char* zb_url_escape(const char* value) {
     char* escaped = curl_easy_escape(NULL, value ? value : "", 0);
     char* copy = escaped ? strdup(escaped) : NULL;
     curl_free(escaped);
-    if (!copy) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        exit(EXIT_FAILURE);
-    }
     return copy;
 }
 
-static void zb_append_query_param(StringVector* vector, const char* name, const char* value) {
+static bool zb_append_query_param(StringVector* vector, const char* name, const char* value) {
     if (!value || !strlen(value)) {
-        return;
+        return true;
     }
     size_t prefix_len = strlen(name) + 3;
     char* prefix = (char*)malloc(prefix_len);
     if (!prefix) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        exit(EXIT_FAILURE);
+        return false;
     }
     snprintf(prefix, prefix_len, "&%s=", name);
     string_vector_append(vector, prefix);
     char* escaped = zb_url_escape(value);
+    if (!escaped) {
+        return false;
+    }
     string_vector_append(vector, escaped);
     free(escaped);
+    return true;
+}
+
+static bool zb_url_append_suffix(char **url_path, const char *suffix) {
+    if (!url_path || !*url_path || !suffix) {
+        return false;
+    }
+    size_t old_len = strlen(*url_path);
+    size_t suffix_len = strlen(suffix);
+    char *extended = realloc(*url_path, old_len + suffix_len + 1);
+    if (!extended) {
+        return false;
+    }
+    memcpy(extended + old_len, suffix, suffix_len + 1);
+    *url_path = extended;
+    return true;
+}
+
+static size_t zb_response_max_bytes(const memory *mem) {
+    if (mem->max_bytes != 0) {
+        return mem->max_bytes;
+    }
+    return ZB_MAX_JSON_RESPONSE_BYTES;
 }
 
 static size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp) {
   size_t real_size = size * nmemb;
   memory *mem = (memory*)clientp;
+  size_t cap = zb_response_max_bytes(mem);
+
+  if (mem->size + real_size > cap) {
+    return 0;
+  }
 
   char *ptr = realloc(mem->response, mem->size + real_size + 1);
   if(ptr == NULL)
@@ -89,6 +205,14 @@ void set_write_callback(CURL* curl, memory* response_data) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    /* A redirect could send the api_key to another host, so one is reported
+       rather than followed, and only https is ever dialled. */
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
+#endif
 }
 
 long get_http_code(CURL* curl) {
@@ -129,6 +253,96 @@ SendFileOptions new_send_file_options() {
 GetFileOptions new_get_file_options(void) {
     GetFileOptions o = { NULL, -1 };
     return o;
+}
+
+ZBValidateOptions new_validate_options(void) {
+    ZBValidateOptions o = { -1, -1, -1, -1, -1, NULL, -1 };
+    return o;
+}
+
+/*
+ * The callback is where the greylist retry posts its result, so it is
+ * meaningless - and rejected by the API - without the retry itself. Checked
+ * before any request is sent.
+ */
+static bool zb_check_callback_url(
+    const ZBValidateOptions *options, OnErrorCallback error_callback
+) {
+    const char *url;
+    const char *p;
+    if (!options || !options->callback_url) {
+        return true;
+    }
+    url = options->callback_url;
+    for (p = url; *p; p++) {
+        if (!isspace((unsigned char)*p)) {
+            break;
+        }
+    }
+    if (*p == '\0') {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: callback_url"));
+        }
+        return false;
+    }
+    if (options->greylist_processing != 1) {
+        if (error_callback) {
+            error_callback(parse_error(
+                "Invalid parameter: callback_url requires greylist_processing to be true"
+            ));
+        }
+        return false;
+    }
+    return true;
+}
+
+/* Appends the three options this port adds to a query string or a form body. */
+static bool zb_append_validate_extras(char **target, const ZBValidateOptions *options) {
+    if (options->domain_info >= 0) {
+        if (!zb_url_append_suffix(
+                target, options->domain_info ? "&domain_info=true" : "&domain_info=false")) {
+            return false;
+        }
+    }
+    if (options->greylist_processing >= 0) {
+        if (!zb_url_append_suffix(
+                target,
+                options->greylist_processing
+                    ? "&greylist_processing=true"
+                    : "&greylist_processing=false")) {
+            return false;
+        }
+    }
+    if (options->callback_url) {
+        char *escaped = zb_url_escape(options->callback_url);
+        bool ok = zb_url_append_suffix(target, "&callback_url=")
+            && zb_url_append_suffix(target, escaped);
+        free(escaped);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool zb_check_validate_timeout(int timeout, OnErrorCallback error_callback) {
+    if (timeout < 0 || (timeout >= 3 && timeout <= 60)) {
+        return true;
+    }
+    if (error_callback) {
+        error_callback(parse_error("Invalid parameter: timeout (must be between 3 and 60 seconds)"));
+    }
+    return false;
+}
+
+static bool zb_check_validate_batch_timeout(int timeout, OnErrorCallback error_callback) {
+    if (timeout < 0 || (timeout >= 10 && timeout <= 120)) {
+        return true;
+    }
+    if (error_callback) {
+        error_callback(parse_error("Invalid parameter: timeout (must be between 10 and 120 seconds)"));
+    }
+    return false;
 }
 
 
@@ -347,6 +561,9 @@ ZeroBounce* new_zero_bounce_instance() {
 
     zb->api_key = NULL;
     zb->api_base_url = "https://api.zerobounce.net/v2";
+    zb->bulk_api_root_url = "https://bulkapi.zerobounce.net";
+    zb->list_evaluator_base_url = "https://bulkapi.zerobounce.net/v2/listevaluator";
+    zb->inbox_placement_base_url = "https://bulkapi.zerobounce.net/api/ipt";
     zb->bulk_api_base_url = "https://bulkapi.zerobounce.net/v2";
     zb->bulk_api_scoring_base_url = "https://bulkapi.zerobounce.net/v2/scoring";
 
@@ -363,7 +580,36 @@ ZeroBounce* zero_bounce_get_instance() {
 }
 
 
+/*
+ * A key with surrounding whitespace or control characters would otherwise be
+ * quoted, unredacted, in a transport error, so it is refused here. An empty
+ * key stays deferred to zero_bounce_invalid_api_key, which names the call
+ * that initializes the client.
+ */
+bool zb_api_key_is_clean(const char *api_key) {
+    const char *p;
+    if (!api_key || !api_key[0]) {
+        return true;
+    }
+    if (isspace((unsigned char)api_key[0]) ||
+        isspace((unsigned char)api_key[strlen(api_key) - 1])) {
+        return false;
+    }
+    for (p = api_key; *p; p++) {
+        if ((unsigned char)*p < 32 || (unsigned char)*p == 127) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
+    if (!zb_api_key_is_clean(api_key)) {
+        fprintf(stderr,
+            "ZeroBounce: api_key has surrounding whitespace or control characters; "
+            "it was not accepted.\n");
+        return;
+    }
     if (zb->api_key) {
         free(zb->api_key);
     }
@@ -372,6 +618,12 @@ void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
 
 
 void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, ZBApiURL api_base_url) {
+    if (!zb_api_key_is_clean(api_key)) {
+        fprintf(stderr,
+            "ZeroBounce: api_key has surrounding whitespace or control characters; "
+            "it was not accepted.\n");
+        return;
+    }
     if (zb->api_key) {
         free(zb->api_key);
     }
@@ -379,8 +631,58 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
     zb->api_base_url = base_url_string_from_zb_api_url(api_base_url);
 }
 
+/* The host part of a URL, lowercased, or "" when there is none. */
+static void zb_host_of(const char *url, char *out, size_t out_len) {
+    const char *start = url ? strstr(url, "://") : NULL;
+    const char *host = start ? start + 3 : (url ? url : "");
+    const char *end = host;
+    size_t i = 0;
+    while (*end && *end != '/' && *end != '?' && *end != '#') {
+        end++;
+    }
+    while (host + i < end && i + 1 < out_len) {
+        out[i] = (char)tolower((unsigned char)host[i]);
+        i++;
+    }
+    out[i] = '\0';
+}
 
-static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback) {
+bool zb_check_request_url(const char *url, OnErrorCallback error_callback) {
+    static int warned_about_region = 0;
+    char host[256];
+
+    if (!url || strncmp(url, "https://", 8) != 0) {
+        if (error_callback) {
+            error_callback(parse_error("url must be an https:// URL"));
+        }
+        return false;
+    }
+    zb_host_of(url, host, sizeof(host));
+    if (!warned_about_region && zb_tls_region &&
+        strcmp(host, "bulkapi.zerobounce.net") == 0) {
+        warned_about_region = 1;
+        fprintf(stderr,
+            "ZeroBounce warning: the base URL is the %s API, but this request goes to "
+            "bulkapi.zerobounce.net. ZeroBounce documents no regional host for bulk files, "
+            "scoring files, email finder and domain search files, the list evaluator, "
+            "S3/SFTP or the Inbox Placement Tester. Set the matching base URLs with "
+            "zero_bounce_set_bulk_api_base_url and friends if ZeroBounce gave you "
+            "regional ones.\n",
+            zb_tls_region);
+    }
+    return true;
+}
+
+
+bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback) {
+    zb_tls_region = NULL;
+    if (zb && zb->api_base_url) {
+        if (strstr(zb->api_base_url, "api-eu.zerobounce.net")) {
+            zb_tls_region = "EU";
+        } else if (strstr(zb->api_base_url, "api-us.zerobounce.net")) {
+            zb_tls_region = "US";
+        }
+    }
     if (zb->api_key == NULL || strlen(zb->api_key) == 0) {
         ZBErrorResponse error_response = parse_error(
             "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first"
@@ -392,7 +694,146 @@ static bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_ca
 }
 
 
-static int make_request(
+int zb_make_request_with_method_and_body(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+) {
+    return zb_make_request_with_extra_header(
+        url_path, method, body, content_type_header, NULL,
+        response_data, http_code, error_callback
+    );
+}
+
+int zb_make_request_with_extra_header(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    const char* extra_header,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+) {
+    zb_note_http_request(method, url_path, body);
+    zb_note_http_header(extra_header);
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        return 0;
+    }
+
+    if (s_http_perform) {
+        return s_http_perform(response_data, http_code, NULL);
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        error_callback(parse_error("Failed to initialize libcurl"));
+        return 0;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Accept: application/json");
+    if (body && content_type_header) {
+        headers = curl_slist_append(headers, content_type_header);
+    }
+    if (extra_header) {
+        headers = curl_slist_append(headers, extra_header);
+    }
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (body) {
+        curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body);
+    }
+
+    set_write_callback(curl, response_data);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        char error_message[300];
+        snprintf(
+            error_message, sizeof(error_message),
+            "Failed to perform request. CURLcode: %d. Error: %s",
+            res, curl_easy_strerror(res)
+        );
+        error_callback(parse_error(error_message));
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+        return 0;
+    }
+
+    *http_code = get_http_code(curl);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return 1;
+}
+
+int zb_make_request_with_post_body(
+    char* url_path,
+    char* body,
+    memory* response_data,
+    long* http_code,
+    OnErrorCallback error_callback
+) {
+    zb_note_http_request("POST", url_path, body ? body : "");
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        return 0;
+    }
+
+    if (s_http_perform) {
+        return s_http_perform(response_data, http_code, NULL);
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        error_callback(parse_error("Failed to initialize libcurl"));
+        curl_easy_cleanup(curl);
+        return 0;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
+    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body);
+
+    set_write_callback(curl, response_data);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        char error_message[300];
+        sprintf(
+            error_message,
+            "Failed to perform request. CURLcode: %d. Error: %s",
+            res,
+            curl_easy_strerror(res)
+        );
+        error_callback(parse_error(error_message));
+
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+        return 0;
+    }
+
+    *http_code = get_http_code(curl);
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+
+    return 1;
+}
+
+int zb_make_request(
     char* url_path,
     char* request_type,
     char* header,
@@ -400,6 +841,11 @@ static int make_request(
     long* http_code,
     OnErrorCallback error_callback
 ) {
+    zb_note_http_request(request_type ? request_type : "GET", url_path, NULL);
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        return 0;
+    }
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
     }
@@ -444,6 +890,45 @@ static int make_request(
     return 1;
 }
 
+static void note_send_file_fields(
+    ZeroBounce *zb,
+    bool scoring,
+    int email_address_column_index,
+    SendFileOptions options
+) {
+    char int_str_option[16];
+    zb_note_http_field("api_key", zb->api_key ? zb->api_key : "");
+    zb_note_http_field("file", "<file>");
+    snprintf(int_str_option, sizeof(int_str_option), "%d", email_address_column_index);
+    zb_note_http_field("email_address_column", int_str_option);
+    if (!scoring) {
+        if (options.first_name_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.first_name_column);
+            zb_note_http_field("first_name_column", int_str_option);
+        }
+        if (options.last_name_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.last_name_column);
+            zb_note_http_field("last_name_column", int_str_option);
+        }
+        if (options.gender_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.gender_column);
+            zb_note_http_field("gender_column", int_str_option);
+        }
+        if (options.ip_address_column > 0) {
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.ip_address_column);
+            zb_note_http_field("ip_address_column", int_str_option);
+        }
+    }
+    if (options.return_url && strlen(options.return_url) != 0) {
+        zb_note_http_field("return_url", options.return_url);
+    }
+    zb_note_http_field("has_header_row", options.has_header_row ? "true" : "false");
+    zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
+    if (!scoring && options.allow_phase_2_is_set) {
+        zb_note_http_field("allow_phase_2", options.allow_phase_2 ? "true" : "false");
+    }
+}
+
 static void send_file_internal(
     ZeroBounce *zb,
     bool scoring,
@@ -474,6 +959,9 @@ static void send_file_internal(
 
     memory response_data = {0};
 
+    zb_note_http_request("POST", url_path, NULL);
+    note_send_file_fields(zb, scoring, email_address_column_index, options);
+
     if (s_http_perform) {
         long http_code = 0;
         if (!s_http_perform(&response_data, &http_code, NULL)) {
@@ -481,11 +969,11 @@ static void send_file_internal(
             goto cleanup;
         }
         if (http_code > 299) {
-            if (error_callback) error_callback(parse_error(response_data.response));
+            zb_report_body_error(response_data.response, http_code, error_callback);
         } else if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+                goto cleanup;
             } else {
                 success_callback(zb_send_file_response_from_json(j_obj));
                 json_object_put(j_obj);
@@ -601,14 +1089,11 @@ static void send_file_internal(
     curl_mime_free(multipart);
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -658,19 +1143,16 @@ static void file_status_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -710,8 +1192,15 @@ static void get_file_internal(
     }
 
     memory response_data = {0};
+    response_data.max_bytes = ZB_MAX_GETFILE_BYTES;
     long http_code = 0;
     char* content_type = NULL;
+
+    zb_note_http_request("GET", url_path, NULL);
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        goto cleanup;
+    }
 
     if (s_http_perform) {
         if (!s_http_perform(&response_data, &http_code, &content_type)) {
@@ -767,15 +1256,8 @@ static void get_file_internal(
 
     const char *body = response_data.response ? response_data.response : "";
 
-    if (http_code > 299) {
-        if (error_callback) {
-            char *fmt = NULL;
-            if (body[0] == '{') {
-                fmt = zb_format_get_file_error_message(body);
-            }
-            error_callback(parse_error(fmt && fmt[0] ? fmt : body));
-            free(fmt);
-        }
+    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0') {
+        zb_report_body_error(body, http_code, error_callback);
     } else if (success_callback) {
         if (zb_should_treat_getfile_body_as_error(body, content_type)) {
             if (error_callback) {
@@ -865,19 +1347,16 @@ static void delete_file_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -923,19 +1402,16 @@ static void find_email_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
@@ -977,19 +1453,16 @@ static void search_domain_internal(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(j_obj);
@@ -1035,19 +1508,16 @@ void get_credits(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1106,19 +1576,16 @@ void get_api_usage(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1140,18 +1607,155 @@ void validate_email(
     OnSuccessCallbackValidate success_callback,
     OnErrorCallback error_callback
 ) {
+    validate_email_with_options(zb, email, ip_address, NULL, success_callback, error_callback);
+}
+
+void validate_email_with_options(
+    ZeroBounce *zb,
+    char* email,
+    char* ip_address,
+    const ZBValidateOptions *options,
+    OnSuccessCallbackValidate success_callback,
+    OnErrorCallback error_callback
+) {
     if (zero_bounce_invalid_api_key(zb, error_callback)) return;
 
-    const char *url_pattern = "%s/validate?api_key=%s&email=%s&ip_address=%s";
+    ZBValidateOptions default_options = new_validate_options();
+    if (!options) {
+        options = &default_options;
+    }
+    if (!zb_check_validate_timeout(options->timeout, error_callback)) {
+        return;
+    }
+    if (!zb_check_callback_url(options, error_callback)) {
+        return;
+    }
+
+    if (options->use_post == 1) {
+        char *url_path = malloc(strlen(zb->api_base_url) + 16);
+        if (!url_path) {
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        snprintf(url_path, strlen(zb->api_base_url) + 16, "%s/validate", zb->api_base_url);
+
+        char *api_key_esc = zb_url_escape(zb->api_key);
+        char *email_esc = zb_url_escape(email ? email : "");
+        char *ip_esc = zb_url_escape(ip_address ? ip_address : "");
+        if (!api_key_esc || !email_esc || !ip_esc) {
+            free(api_key_esc);
+            free(email_esc);
+            free(ip_esc);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        size_t body_cap = strlen(api_key_esc) + strlen(email_esc) + strlen(ip_esc) + 128;
+        if (options->timeout >= 0) {
+            body_cap += 32;
+        }
+        if (options->activity_data >= 0 || options->verify_plus >= 0) {
+            body_cap += 64;
+        }
+        char *post_body = malloc(body_cap);
+        if (!post_body) {
+            free(api_key_esc);
+            free(email_esc);
+            free(ip_esc);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        snprintf(
+            post_body, body_cap, "api_key=%s&email=%s&ip_address=%s",
+            api_key_esc, email_esc, ip_esc
+        );
+        free(api_key_esc);
+        free(email_esc);
+        free(ip_esc);
+
+        if (options->timeout >= 0) {
+            char timeout_buf[16];
+            snprintf(timeout_buf, sizeof(timeout_buf), "%d", options->timeout);
+            char *timeout_esc = zb_url_escape(timeout_buf);
+            if (!timeout_esc || !zb_url_append_suffix(&post_body, "&timeout=") ||
+                !zb_url_append_suffix(&post_body, timeout_esc)) {
+                free(timeout_esc);
+                free(post_body);
+                free(url_path);
+                fprintf(stderr, "Memory allocation failed.\n");
+                exit(EXIT_FAILURE);
+            }
+            free(timeout_esc);
+        }
+        if (options->activity_data >= 0) {
+            const char *suffix = options->activity_data ? "&activity_data=true" : "&activity_data=false";
+            if (!zb_url_append_suffix(&post_body, suffix)) {
+                free(post_body);
+                free(url_path);
+                fprintf(stderr, "Memory allocation failed.\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        if (options->verify_plus >= 0) {
+            const char *suffix = options->verify_plus ? "&verify_plus=true" : "&verify_plus=false";
+            if (!zb_url_append_suffix(&post_body, suffix)) {
+                free(post_body);
+                free(url_path);
+                fprintf(stderr, "Memory allocation failed.\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        if (!zb_append_validate_extras(&post_body, options)) {
+            free(post_body);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        zero_bounce_record_request_url_for_test(url_path);
+
+        memory response_data = {0};
+        long http_code;
+
+        if (!zb_make_request_with_post_body(url_path, post_body, &response_data, &http_code, error_callback)) {
+            free(url_path);
+            free(post_body);
+            return;
+        }
+
+        if (http_code > 299) {
+            zb_report_body_error(response_data.response, http_code, error_callback);
+        } else if (success_callback) {
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+                /* reported */
+            } else {
+                success_callback(zb_validate_response_from_json(j_obj));
+                json_object_put(j_obj);
+            }
+        }
+
+        free(url_path);
+        free(post_body);
+        free(response_data.response);
+        return;
+    }
 
     char* api_key_esc = zb_url_escape(zb->api_key);
     char* email_esc = zb_url_escape(email ? email : "");
     char* ip_esc = zb_url_escape(ip_address ? ip_address : "");
-    int url_path_len = snprintf(
-        NULL, 0, url_pattern, zb->api_base_url, api_key_esc, email_esc, ip_esc
-    );
 
-    char *url_path = malloc(url_path_len + 1);
+    size_t url_cap = strlen(zb->api_base_url) + strlen(api_key_esc) + strlen(email_esc) + strlen(ip_esc) + 256;
+    if (options->timeout >= 0) {
+        url_cap += 32;
+    }
+    if (options->activity_data >= 0 || options->verify_plus >= 0) {
+        url_cap += 64;
+    }
+
+    char *url_path = malloc(url_cap);
     if (!url_path) {
         free(api_key_esc);
         free(email_esc);
@@ -1161,28 +1765,69 @@ void validate_email(
     }
 
     snprintf(
-        url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, email_esc, ip_esc
+        url_path, url_cap, "%s/validate?api_key=%s&email=%s&ip_address=%s",
+        zb->api_base_url, api_key_esc, email_esc, ip_esc
     );
+    if (options->timeout >= 0) {
+        char timeout_buf[16];
+        snprintf(timeout_buf, sizeof(timeout_buf), "%d", options->timeout);
+        char* timeout_esc = zb_url_escape(timeout_buf);
+        char* extended = realloc(url_path, strlen(url_path) + strlen(timeout_esc) + 32);
+        if (!extended) {
+            free(timeout_esc);
+            free(api_key_esc);
+            free(email_esc);
+            free(ip_esc);
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        url_path = extended;
+        strcat(url_path, "&timeout=");
+        strcat(url_path, timeout_esc);
+        free(timeout_esc);
+    }
+    if (options->activity_data >= 0) {
+        const char *suffix = options->activity_data ? "&activity_data=true" : "&activity_data=false";
+        if (!zb_url_append_suffix(&url_path, suffix)) {
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (options->verify_plus >= 0) {
+        const char *suffix = options->verify_plus ? "&verify_plus=true" : "&verify_plus=false";
+        if (!zb_url_append_suffix(&url_path, suffix)) {
+            free(url_path);
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (!zb_append_validate_extras(&url_path, options)) {
+        free(url_path);
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+
     free(api_key_esc);
     free(email_esc);
     free(ip_esc);
 
+    zero_bounce_record_request_url_for_test(url_path);
+
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1196,14 +1841,31 @@ void validate_email(
     free(response_data.response);
 }
 
-
 void validate_email_batch(
     ZeroBounce *zb,
     EmailToValidateVector email_batch,
     OnSuccessCallbackValidateBatch success_callback,
     OnErrorCallback error_callback
 ) {
+    validate_email_batch_with_options(zb, email_batch, NULL, success_callback, error_callback);
+}
+
+void validate_email_batch_with_options(
+    ZeroBounce *zb,
+    EmailToValidateVector email_batch,
+    const ZBValidateOptions *options,
+    OnSuccessCallbackValidateBatch success_callback,
+    OnErrorCallback error_callback
+) {
     if (zero_bounce_invalid_api_key(zb, error_callback)) return;
+
+    ZBValidateOptions default_options = new_validate_options();
+    if (!options) {
+        options = &default_options;
+    }
+    if (!zb_check_validate_batch_timeout(options->timeout, error_callback)) {
+        return;
+    }
 
     const char *url_pattern = "%s/validatebatch";
 
@@ -1228,16 +1890,53 @@ void validate_email_batch(
 
     for(size_t i = 0; i < email_batch.size; i++) {
         json_object *email_obj = json_object_new_object();
-        json_object_object_add(email_obj, "email_address", json_object_new_string(email_batch.data[i].email_address));
-        json_object_object_add(email_obj, "ip_address", json_object_new_string(email_batch.data[i].ip_address));
+        json_object_object_add(email_obj, "email_address", json_object_new_string(email_batch.data[i].email_address ? email_batch.data[i].email_address : ""));
+        if (!email_batch.data[i].ip_address || !email_batch.data[i].ip_address[0]) {
+            json_object_object_add(email_obj, "ip_address", json_object_new_null());
+        } else {
+            json_object_object_add(email_obj, "ip_address", json_object_new_string(email_batch.data[i].ip_address));
+        }
         json_object_array_add(email_batch_json, email_obj);
     }
 
     json_object_object_add(payload, "api_key", json_object_new_string(zb->api_key));
     json_object_object_add(payload, "email_batch", email_batch_json);
+    if (options->timeout >= 0) {
+        /*
+         * LIVE: validatebatch takes timeout as a JSON *string*. Sent as a
+         * number the API rejects the whole batch with the account-level
+         * "Invalid API Key or your account ran out of credits".
+         */
+        char timeout_text[16];
+        snprintf(timeout_text, sizeof(timeout_text), "%d", options->timeout);
+        json_object_object_add(payload, "timeout", json_object_new_string(timeout_text));
+    }
+    if (options->activity_data >= 0) {
+        json_object_object_add(
+            payload,
+            "activity_data",
+            json_object_new_boolean(options->activity_data ? 1 : 0)
+        );
+    }
+    if (options->verify_plus >= 0) {
+        json_object_object_add(
+            payload,
+            "verify_plus",
+            json_object_new_boolean(options->verify_plus ? 1 : 0)
+        );
+    }
+
+    const char* payload_str = json_object_to_json_string(payload);
+    zb_note_http_request("POST", url_path, payload_str);
 
     memory response_data = {0};
     long http_code = 0;
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        json_object_put(payload);
+        free(url_path);
+        return;
+    }
 
     if (s_http_perform) {
         json_object_put(payload);
@@ -1292,18 +1991,23 @@ void validate_email_batch(
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
-            success_callback(zb_validate_batch_response_from_json(j_obj));
+            char *account_error = NULL;
+            if (zb_batch_has_account_error(j_obj, &account_error)) {
+                if (error_callback) {
+                    error_callback(parse_error(account_error));
+                }
+                free(account_error);
+            } else {
+                success_callback(zb_validate_batch_response_from_json(j_obj));
+            }
             json_object_put(j_obj);
         }
     }
@@ -1335,6 +2039,284 @@ void file_status(
     file_status_internal(zb, false, file_id, success_callback, error_callback);
 }
 
+
+
+/*
+ * A streaming getfile download: the body goes straight to disk as it arrives
+ * instead of being held in memory first.
+ *
+ * It is opt-in because a streamed body cannot be inspected as a whole, and
+ * getfile answers an unknown or deleted file id with a JSON error rather than
+ * a file. The first chunk is held back and checked; only once it is clearly
+ * not an error does the file get created and the rest stream through.
+ */
+#define ZB_STREAM_PROBE_BYTES 4096
+
+typedef struct {
+    FILE *file;
+    const char *path;
+    char probe[ZB_STREAM_PROBE_BYTES + 1];
+    size_t probe_size;
+    bool decided;
+    bool rejected;
+    bool open_failed;
+} ZbDownloadStream;
+
+static bool zb_stream_open(ZbDownloadStream *stream) {
+    struct stat sb;
+    char *dir_path;
+    char *end;
+#ifdef _WIN32
+    const char path_separator = '\\';
+#else
+    const char path_separator = '/';
+#endif
+
+    if (stat(stream->path, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        return false;
+    }
+    dir_path = strdup(stream->path);
+    if (dir_path) {
+        end = strrchr(dir_path, path_separator);
+        if (end) {
+            *end = '\0';
+            mkdir(dir_path, 0777);
+        }
+        free(dir_path);
+    }
+    stream->file = fopen(stream->path, "wb");
+    return stream->file != NULL;
+}
+
+static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *userp) {
+    ZbDownloadStream *stream = (ZbDownloadStream *)userp;
+    size_t total = size * nmemb;
+
+    if (stream->rejected || stream->open_failed) {
+        /* Keep draining so libcurl reports the HTTP status, not a write error. */
+        return total;
+    }
+    if (!stream->decided) {
+        size_t room = ZB_STREAM_PROBE_BYTES - stream->probe_size;
+        size_t take = total < room ? total : room;
+        memcpy(stream->probe + stream->probe_size, contents, take);
+        stream->probe_size += take;
+        stream->probe[stream->probe_size] = '\0';
+        if (stream->probe_size < ZB_STREAM_PROBE_BYTES && take == total) {
+            return total;
+        }
+        /* Enough to tell a file from an error page. */
+        stream->decided = true;
+        if (zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe)) {
+            stream->rejected = true;
+            return total;
+        }
+        if (!zb_stream_open(stream)) {
+            stream->open_failed = true;
+            return total;
+        }
+        fwrite(stream->probe, 1, stream->probe_size, stream->file);
+        if (take < total) {
+            fwrite((const char *)contents + take, 1, total - take, stream->file);
+        }
+        return total;
+    }
+    fwrite(contents, 1, total, stream->file);
+    return total;
+}
+
+/* Flushes whatever the probe still holds when the body was shorter than it. */
+static void zb_stream_finish(ZbDownloadStream *stream) {
+    if (stream->decided || stream->rejected || stream->open_failed) {
+        return;
+    }
+    stream->decided = true;
+    if (zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe) ||
+        stream->probe_size == 0) {
+        stream->rejected = true;
+        return;
+    }
+    if (!zb_stream_open(stream)) {
+        stream->open_failed = true;
+        return;
+    }
+    fwrite(stream->probe, 1, stream->probe_size, stream->file);
+}
+
+static void get_file_streaming_internal(
+    ZeroBounce *zb,
+    bool scoring,
+    char *file_id,
+    char *local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    GetFileOptions default_opts = new_get_file_options();
+    ZbDownloadStream stream;
+    char *url_path;
+    long http_code = 0;
+    CURL *curl;
+    CURLcode res;
+    struct curl_slist *headers = NULL;
+
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+    if (!local_download_path || !local_download_path[0]) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: local_download_path"));
+        }
+        return;
+    }
+    if (!options) {
+        options = &default_opts;
+    }
+    url_path = zb_build_getfile_url(zb, scoring, file_id, options);
+    if (!url_path) {
+        if (error_callback) {
+            error_callback(parse_error("Failed to build getfile URL"));
+        }
+        return;
+    }
+    zb_note_http_request("GET", url_path, NULL);
+    if (!zb_check_request_url(url_path, error_callback)) {
+        free(url_path);
+        return;
+    }
+
+    memset(&stream, 0, sizeof(stream));
+    stream.path = local_download_path;
+
+    if (s_http_perform) {
+        /* The offline suite drives the same probe-then-stream logic. */
+        memory buffer = {0};
+        buffer.max_bytes = ZB_MAX_GETFILE_BYTES;
+        if (!s_http_perform(&buffer, &http_code, NULL)) {
+            free(buffer.response);
+            free(url_path);
+            if (error_callback) {
+                error_callback(parse_error("Mock request failed"));
+            }
+            return;
+        }
+        if (buffer.response && buffer.size) {
+            zb_stream_write(buffer.response, 1, buffer.size, &stream);
+        }
+        free(buffer.response);
+        free(url_path);
+        zb_stream_finish(&stream);
+        if (stream.file) {
+            fclose(stream.file);
+            stream.file = NULL;
+        }
+        if (http_code > 299 || stream.rejected) {
+            remove(local_download_path);
+            zb_report_body_error(stream.probe, http_code, error_callback);
+            return;
+        }
+        if (stream.open_failed) {
+            if (error_callback) {
+                error_callback(parse_error("Invalid file path"));
+            }
+            return;
+        }
+        if (success_callback) {
+            ZBGetFileResponse response = new_zb_get_file_response();
+            response.success = true;
+            response.local_file_path = local_download_path;
+            success_callback(response);
+        }
+        return;
+    }
+
+    curl = curl_easy_init();
+    if (!curl) {
+        free(url_path);
+        if (error_callback) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+        }
+        return;
+    }
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "GET");
+    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+    headers = curl_slist_append(headers, "Accept: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, zb_stream_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&stream);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
+#endif
+
+    res = curl_easy_perform(curl);
+    zb_stream_finish(&stream);
+    if (stream.file) {
+        fclose(stream.file);
+        stream.file = NULL;
+    }
+    http_code = get_http_code(curl);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    free(url_path);
+
+    if (res != CURLE_OK) {
+        char message[300];
+        snprintf(message, sizeof(message),
+                 "Failed to perform request. CURLcode: %d. Error: %s",
+                 res, curl_easy_strerror(res));
+        if (error_callback) {
+            error_callback(parse_error(message));
+        }
+        remove(local_download_path);
+        return;
+    }
+    if (http_code > 299 || stream.rejected) {
+        remove(local_download_path);
+        zb_report_body_error(stream.probe, http_code, error_callback);
+        return;
+    }
+    if (stream.open_failed) {
+        if (error_callback) {
+            error_callback(parse_error("Invalid file path"));
+        }
+        return;
+    }
+    if (success_callback) {
+        ZBGetFileResponse response = new_zb_get_file_response();
+        response.success = true;
+        response.local_file_path = local_download_path;
+        success_callback(response);
+    }
+}
+
+void get_file_streaming(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    get_file_streaming_internal(zb, false, file_id, local_download_path, options,
+                                success_callback, error_callback);
+}
+
+void scoring_get_file_streaming(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    get_file_streaming_internal(zb, true, file_id, local_download_path, options,
+                                success_callback, error_callback);
+}
 
 void get_file(
     ZeroBounce *zb,
@@ -1453,19 +2435,16 @@ void get_activity_data(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1477,6 +2456,111 @@ void get_activity_data(
     cleanup:
     free(url_path);
     free(response_data.response);
+}
+
+static void score_email_internal(
+    ZeroBounce *zb,
+    bool use_post,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    if (zero_bounce_invalid_api_key(zb, error_callback)) return;
+
+    char* api_key_esc = zb_url_escape(zb->api_key);
+    char* email_esc = zb_url_escape(email ? email : "");
+
+    char *url_path = NULL;
+    char *post_body = NULL;
+
+    if (use_post) {
+        const char *url_pattern = "%s/scoring";
+        int url_path_len = snprintf(NULL, 0, url_pattern, zb->api_base_url);
+        url_path = malloc(url_path_len + 1);
+        if (!url_path) {
+            goto alloc_fail;
+        }
+        snprintf(url_path, url_path_len + 1, url_pattern, zb->api_base_url);
+
+        const char *body_pattern = "api_key=%s&email=%s";
+        int body_len = snprintf(NULL, 0, body_pattern, api_key_esc, email_esc);
+        post_body = malloc(body_len + 1);
+        if (!post_body) {
+            goto alloc_fail;
+        }
+        snprintf(post_body, body_len + 1, body_pattern, api_key_esc, email_esc);
+    } else {
+        const char *url_pattern = "%s/scoring?api_key=%s&email=%s";
+        int url_path_len = snprintf(
+            NULL, 0, url_pattern, zb->api_base_url, api_key_esc, email_esc
+        );
+        url_path = malloc(url_path_len + 1);
+        if (!url_path) {
+            goto alloc_fail;
+        }
+        snprintf(
+            url_path, url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc, email_esc
+        );
+        zero_bounce_record_request_url_for_test(url_path);
+    }
+
+    free(api_key_esc);
+    api_key_esc = NULL;
+    free(email_esc);
+    email_esc = NULL;
+
+    memory response_data = {0};
+    long http_code = 0;
+    int ok = use_post
+        ? zb_make_request_with_post_body(url_path, post_body, &response_data, &http_code, error_callback)
+        : zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback);
+
+    if (!ok) {
+        goto cleanup;
+    }
+
+    if (http_code > 299) {
+        zb_report_body_error(response_data.response, http_code, error_callback);
+    } else if (success_callback) {
+        json_object *j_obj = NULL;
+        if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            goto cleanup;
+        }
+
+        success_callback(zb_score_email_response_from_json(j_obj));
+        json_object_put(j_obj);
+    }
+
+    goto cleanup;
+
+alloc_fail:
+    free(api_key_esc);
+    free(email_esc);
+    fprintf(stderr, "Memory allocation failed.\n");
+    exit(EXIT_FAILURE);
+
+cleanup:
+    free(url_path);
+    free(post_body);
+    free(response_data.response);
+}
+
+void score_email(
+    ZeroBounce *zb,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    score_email_internal(zb, false, email, success_callback, error_callback);
+}
+
+void score_email_post(
+    ZeroBounce *zb,
+    char* email,
+    OnSuccessCallbackScoreEmail success_callback,
+    OnErrorCallback error_callback
+) {
+    score_email_internal(zb, true, email, success_callback, error_callback);
 }
 
 
@@ -1595,19 +2679,16 @@ void find_email(
     memory response_data = {0};
     long http_code;
 
-    if(!make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
+    if(!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)){
         goto cleanup;
     }
 
     if (http_code > 299) {
-        if (error_callback) {
-            error_callback(parse_error(response_data.response));
-        }
+        zb_report_body_error(response_data.response, http_code, error_callback);
     } else {
         if (success_callback) {
-            json_object *j_obj = json_tokener_parse(response_data.response);
-            if (j_obj == NULL) {
-                error_callback(parse_error("Failed to parse json string"));
+            json_object *j_obj = NULL;
+            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);

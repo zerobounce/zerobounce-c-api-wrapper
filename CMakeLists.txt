@@ -57,6 +57,16 @@ target_include_directories(${PROJECT_NAME} PUBLIC include ${json-c_SOURCE_DIR})
 target_link_libraries(${PROJECT_NAME} PUBLIC json-c libcurl)
 
 enable_testing()
-add_executable(ZeroBounceTests test/ZeroBounceTest.c)
+add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
 target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
+
+# The live suite calls the real API and spends credits, so it is opt-in and
+# never built by a plain `cmake --build build`:
+#   cmake -S . -B build-live -DZEROBOUNCE_BUILD_LIVE_TESTS=ON
+#   cmake --build build-live --target ZeroBounceLiveApi
+option(ZEROBOUNCE_BUILD_LIVE_TESTS "Build the opt-in live API suite" OFF)
+if(ZEROBOUNCE_BUILD_LIVE_TESTS)
+  add_executable(ZeroBounceLiveApi live/live_api.c)
+  target_link_libraries(ZeroBounceLiveApi PRIVATE ${PROJECT_NAME})
+endif()

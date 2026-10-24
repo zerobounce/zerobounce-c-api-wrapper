@@ -21,6 +21,12 @@
 typedef struct {
     bool success;
     StringVector errors;
+    /**
+     * The HTTP status the request came back with, or 0 when the error was
+     * raised before a response arrived (a rejected argument, a transport
+     * failure). Lets a caller tell 429 from 500 without parsing the message.
+     */
+    long status_code;
 } ZBErrorResponse;
 
 /**
@@ -45,6 +51,24 @@ char* zb_error_response_to_string(ZBErrorResponse* response);
  * @return ZBErrorResponse new instance
  */
 ZBErrorResponse parse_error(const char* error);
+
+/**
+ * @brief As parse_error, but records the HTTP status the response carried.
+ *
+ * @param error error string
+ * @param status_code HTTP status, or 0 when there was no response
+ * @return ZBErrorResponse new instance
+ */
+ZBErrorResponse parse_error_with_status(const char* error, long status_code);
+
+/**
+ * @brief Whether a JSON body says the call failed although the HTTP status was
+ * a success. The API sends "success" as a JSON false, "false" or "False".
+ *
+ * @param body response body
+ * @return true when the body is a failure
+ */
+bool zb_success_means_failure(const char* body);
 
 /**
  * @brief Function used to compare ZBErrorResponse instances.
