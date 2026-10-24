@@ -499,6 +499,41 @@ void get_file(
 );
 
 /**
+ * @brief As get_file, but written straight to disk as it arrives instead of
+ * being held in memory first — use it for a download too large to buffer.
+ *
+ * It is opt-in because a streamed body cannot be inspected as a whole, and
+ * getfile answers an unknown or deleted file id with a JSON error rather than
+ * a file. The first 4 KB are held back and checked, so an error still reaches
+ * the error callback and no partial file is left behind.
+ *
+ * @param zb                    ZeroBounce pointer
+ * @param file_id               the returned file ID when calling send file API
+ * @param local_download_path   the path to which to download the file
+ * @param options               optional v2 query parameters, or NULL
+ * @param success_callback      success callback
+ * @param error_callback        error callback
+ */
+void get_file_streaming(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+);
+
+/** @brief The AI scoring counterpart of get_file_streaming. */
+void scoring_get_file_streaming(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+);
+
+/**
  * @brief Bulk get file with optional v2 query parameters (download_type, activity_data for validation only).
  */
 void get_file_with_options(

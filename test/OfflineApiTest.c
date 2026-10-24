@@ -1138,6 +1138,50 @@ void test_offline_redirect_is_not_followed(void) {
     TEST_ASSERT_EQUAL_INT(302, (int)g_error_status);
 }
 
+void test_offline_streaming_download(void) {
+    const char *path = "test/downloads/offline-stream.csv";
+    reset_offline();
+    /* The body goes straight to disk instead of being buffered first. */
+    ZeroBounce *zb = client_with("stream-key");
+
+    remove(path);
+    get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    {
+        FILE *handle = fopen(path, "rb");
+        char first[32] = {0};
+        TEST_ASSERT_NOT_NULL(handle);
+        TEST_ASSERT_TRUE(fread(first, 1, sizeof(first) - 1, handle) > 0);
+        fclose(handle);
+        TEST_ASSERT_EQUAL_INT(0, strncmp(first, "email", 5));
+    }
+    remove(path);
+
+    /* getfile answers an unknown or deleted id with a JSON error rather than
+       a file, so the probe must catch it and leave nothing behind. */
+    reset_offline();
+    zb = client_with("success-false");
+    get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "File cannot be found"));
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+
+    /* An HTML error page is caught the same way. */
+    reset_offline();
+    zb = client_with("html-200-stream");
+    get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NULL(strstr(g_error_text, "<html"));
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+
+    reset_offline();
+    zb = client_with("stream-key");
+    get_file_streaming(zb, "fid", "", NULL, on_get, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "local_download_path"));
+}
+
 void test_offline_rejects_before_request(void) {
     reset_offline();
     ZeroBounce *zb = client_with("");
@@ -1332,6 +1376,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_success_false_on_200_is_an_error);
     RUN_TEST(test_offline_safety_rails);
     RUN_TEST(test_offline_redirect_is_not_followed);
+    RUN_TEST(test_offline_streaming_download);
     RUN_TEST(test_offline_list_evaluator_base_url);
     RUN_TEST(test_offline_inbox_placement);
     RUN_TEST(test_offline_inbox_placement_detail_error);

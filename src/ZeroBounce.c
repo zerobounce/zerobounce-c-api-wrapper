@@ -208,7 +208,7 @@ void set_write_callback(CURL* curl, memory* response_data) {
     /* A redirect could send the api_key to another host, so one is reported
        rather than followed, and only https is ever dialled. */
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-#ifdef CURLOPT_PROTOCOLS_STR
+#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
 #else
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
@@ -2039,6 +2039,284 @@ void file_status(
     file_status_internal(zb, false, file_id, success_callback, error_callback);
 }
 
+
+
+/*
+ * A streaming getfile download: the body goes straight to disk as it arrives
+ * instead of being held in memory first.
+ *
+ * It is opt-in because a streamed body cannot be inspected as a whole, and
+ * getfile answers an unknown or deleted file id with a JSON error rather than
+ * a file. The first chunk is held back and checked; only once it is clearly
+ * not an error does the file get created and the rest stream through.
+ */
+#define ZB_STREAM_PROBE_BYTES 4096
+
+typedef struct {
+    FILE *file;
+    const char *path;
+    char probe[ZB_STREAM_PROBE_BYTES + 1];
+    size_t probe_size;
+    bool decided;
+    bool rejected;
+    bool open_failed;
+} ZbDownloadStream;
+
+static bool zb_stream_open(ZbDownloadStream *stream) {
+    struct stat sb;
+    char *dir_path;
+    char *end;
+#ifdef _WIN32
+    const char path_separator = '\\';
+#else
+    const char path_separator = '/';
+#endif
+
+    if (stat(stream->path, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        return false;
+    }
+    dir_path = strdup(stream->path);
+    if (dir_path) {
+        end = strrchr(dir_path, path_separator);
+        if (end) {
+            *end = '\0';
+            mkdir(dir_path, 0777);
+        }
+        free(dir_path);
+    }
+    stream->file = fopen(stream->path, "wb");
+    return stream->file != NULL;
+}
+
+static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *userp) {
+    ZbDownloadStream *stream = (ZbDownloadStream *)userp;
+    size_t total = size * nmemb;
+
+    if (stream->rejected || stream->open_failed) {
+        /* Keep draining so libcurl reports the HTTP status, not a write error. */
+        return total;
+    }
+    if (!stream->decided) {
+        size_t room = ZB_STREAM_PROBE_BYTES - stream->probe_size;
+        size_t take = total < room ? total : room;
+        memcpy(stream->probe + stream->probe_size, contents, take);
+        stream->probe_size += take;
+        stream->probe[stream->probe_size] = '\0';
+        if (stream->probe_size < ZB_STREAM_PROBE_BYTES && take == total) {
+            return total;
+        }
+        /* Enough to tell a file from an error page. */
+        stream->decided = true;
+        if (zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe)) {
+            stream->rejected = true;
+            return total;
+        }
+        if (!zb_stream_open(stream)) {
+            stream->open_failed = true;
+            return total;
+        }
+        fwrite(stream->probe, 1, stream->probe_size, stream->file);
+        if (take < total) {
+            fwrite((const char *)contents + take, 1, total - take, stream->file);
+        }
+        return total;
+    }
+    fwrite(contents, 1, total, stream->file);
+    return total;
+}
+
+/* Flushes whatever the probe still holds when the body was shorter than it. */
+static void zb_stream_finish(ZbDownloadStream *stream) {
+    if (stream->decided || stream->rejected || stream->open_failed) {
+        return;
+    }
+    stream->decided = true;
+    if (zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe) ||
+        stream->probe_size == 0) {
+        stream->rejected = true;
+        return;
+    }
+    if (!zb_stream_open(stream)) {
+        stream->open_failed = true;
+        return;
+    }
+    fwrite(stream->probe, 1, stream->probe_size, stream->file);
+}
+
+static void get_file_streaming_internal(
+    ZeroBounce *zb,
+    bool scoring,
+    char *file_id,
+    char *local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    GetFileOptions default_opts = new_get_file_options();
+    ZbDownloadStream stream;
+    char *url_path;
+    long http_code = 0;
+    CURL *curl;
+    CURLcode res;
+    struct curl_slist *headers = NULL;
+
+    if (zero_bounce_invalid_api_key(zb, error_callback)) {
+        return;
+    }
+    if (!local_download_path || !local_download_path[0]) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: local_download_path"));
+        }
+        return;
+    }
+    if (!options) {
+        options = &default_opts;
+    }
+    url_path = zb_build_getfile_url(zb, scoring, file_id, options);
+    if (!url_path) {
+        if (error_callback) {
+            error_callback(parse_error("Failed to build getfile URL"));
+        }
+        return;
+    }
+    zb_note_http_request("GET", url_path, NULL);
+    if (!zb_check_request_url(url_path, error_callback)) {
+        free(url_path);
+        return;
+    }
+
+    memset(&stream, 0, sizeof(stream));
+    stream.path = local_download_path;
+
+    if (s_http_perform) {
+        /* The offline suite drives the same probe-then-stream logic. */
+        memory buffer = {0};
+        buffer.max_bytes = ZB_MAX_GETFILE_BYTES;
+        if (!s_http_perform(&buffer, &http_code, NULL)) {
+            free(buffer.response);
+            free(url_path);
+            if (error_callback) {
+                error_callback(parse_error("Mock request failed"));
+            }
+            return;
+        }
+        if (buffer.response && buffer.size) {
+            zb_stream_write(buffer.response, 1, buffer.size, &stream);
+        }
+        free(buffer.response);
+        free(url_path);
+        zb_stream_finish(&stream);
+        if (stream.file) {
+            fclose(stream.file);
+            stream.file = NULL;
+        }
+        if (http_code > 299 || stream.rejected) {
+            remove(local_download_path);
+            zb_report_body_error(stream.probe, http_code, error_callback);
+            return;
+        }
+        if (stream.open_failed) {
+            if (error_callback) {
+                error_callback(parse_error("Invalid file path"));
+            }
+            return;
+        }
+        if (success_callback) {
+            ZBGetFileResponse response = new_zb_get_file_response();
+            response.success = true;
+            response.local_file_path = local_download_path;
+            success_callback(response);
+        }
+        return;
+    }
+
+    curl = curl_easy_init();
+    if (!curl) {
+        free(url_path);
+        if (error_callback) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+        }
+        return;
+    }
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "GET");
+    curl_easy_setopt(curl, CURLOPT_URL, url_path);
+    headers = curl_slist_append(headers, "Accept: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, zb_stream_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&stream);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
+#endif
+
+    res = curl_easy_perform(curl);
+    zb_stream_finish(&stream);
+    if (stream.file) {
+        fclose(stream.file);
+        stream.file = NULL;
+    }
+    http_code = get_http_code(curl);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    free(url_path);
+
+    if (res != CURLE_OK) {
+        char message[300];
+        snprintf(message, sizeof(message),
+                 "Failed to perform request. CURLcode: %d. Error: %s",
+                 res, curl_easy_strerror(res));
+        if (error_callback) {
+            error_callback(parse_error(message));
+        }
+        remove(local_download_path);
+        return;
+    }
+    if (http_code > 299 || stream.rejected) {
+        remove(local_download_path);
+        zb_report_body_error(stream.probe, http_code, error_callback);
+        return;
+    }
+    if (stream.open_failed) {
+        if (error_callback) {
+            error_callback(parse_error("Invalid file path"));
+        }
+        return;
+    }
+    if (success_callback) {
+        ZBGetFileResponse response = new_zb_get_file_response();
+        response.success = true;
+        response.local_file_path = local_download_path;
+        success_callback(response);
+    }
+}
+
+void get_file_streaming(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    get_file_streaming_internal(zb, false, file_id, local_download_path, options,
+                                success_callback, error_callback);
+}
+
+void scoring_get_file_streaming(
+    ZeroBounce *zb,
+    char* file_id,
+    char* local_download_path,
+    const GetFileOptions *options,
+    OnSuccessCallbackGetFile success_callback,
+    OnErrorCallback error_callback
+) {
+    get_file_streaming_internal(zb, true, file_id, local_download_path, options,
+                                success_callback, error_callback);
+}
 
 void get_file(
     ZeroBounce *zb,
