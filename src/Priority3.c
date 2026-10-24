@@ -59,14 +59,22 @@ static bool p3_append_form_field(char **body, size_t *cap, const char *key, cons
     }
     if (need > *cap) {
         size_t new_cap = (*cap == 0) ? 256 : *cap * 2;
+        bool was_empty = (*body == NULL);
+        char *n;
         while (new_cap < need) {
             new_cap *= 2;
         }
-        char *n = realloc(*body, new_cap);
+        n = realloc(*body, new_cap);
         if (!n) {
             free(ek);
             free(ev);
             return false;
+        }
+        /* realloc(NULL, n) is malloc: the block is uninitialized, so the
+           strlen and strcat below would read and append past garbage, and
+           that garbage would go out on the wire. */
+        if (was_empty) {
+            n[0] = '\0';
         }
         *body = n;
         *cap = new_cap;

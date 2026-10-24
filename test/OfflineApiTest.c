@@ -1182,6 +1182,37 @@ void test_offline_streaming_download(void) {
     TEST_ASSERT_NOT_NULL(strstr(g_error_text, "local_download_path"));
 }
 
+void test_offline_form_body_is_not_prefixed_with_garbage(void) {
+    reset_offline();
+    /* The form body starts out as a NULL pointer with a zero capacity, and
+       realloc(NULL, n) hands back an uninitialized block. Appending to it
+       without terminating it first put stray bytes in front of the first
+       field, which the API saw as a malformed request. */
+    ZeroBounce *zb = client_with("form-body-key");
+
+    add_filter(zb, "allow", "domain", "example.com", on_raw, on_error);
+    {
+        OfflineRequest request = only_request();
+        TEST_ASSERT_EQUAL_INT(0, strncmp(request.body, "api_key=", 8));
+        TEST_ASSERT_NOT_NULL(strstr(request.body, "&rule=allow"));
+        TEST_ASSERT_NOT_NULL(strstr(request.body, "&target=domain"));
+        TEST_ASSERT_NOT_NULL(strstr(request.body, "&value=example.com"));
+    }
+
+    reset_offline();
+    send_evaluated_file(zb, "fid-1", on_send, on_error);
+    TEST_ASSERT_EQUAL_INT(0, strncmp(only_request().body, "api_key=", 8));
+
+    reset_offline();
+    {
+        ZBBulkFileJobOptions options = new_bulk_file_job_options();
+        options.file_name = "f.csv";
+        options.return_url = "https://example.com/done";
+        email_finder_s3_file(zb, &options, on_send, on_error);
+        TEST_ASSERT_EQUAL_INT(0, strncmp(only_request().body, "api_key=", 8));
+    }
+}
+
 void test_offline_rejects_before_request(void) {
     reset_offline();
     ZeroBounce *zb = client_with("");
@@ -1377,6 +1408,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_safety_rails);
     RUN_TEST(test_offline_redirect_is_not_followed);
     RUN_TEST(test_offline_streaming_download);
+    RUN_TEST(test_offline_form_body_is_not_prefixed_with_garbage);
     RUN_TEST(test_offline_list_evaluator_base_url);
     RUN_TEST(test_offline_inbox_placement);
     RUN_TEST(test_offline_inbox_placement_detail_error);

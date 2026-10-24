@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Form-encoded request bodies no longer start with stray bytes. The builder grew its buffer with `realloc(NULL, n)`, which hands back uninitialized memory, and then appended to it without terminating it first, so whatever was in that block went out in front of the first field. Depending on what the allocator handed back, `add_filter`, `send_evaluated_file` and the S3/SFTP jobs could be answered with a Cloudflare block instead of a result.
+
 - A 403 HTML "Access denied" page is returned as a short error. An HTML page with status 200 is an error as well, including `get_file`, `email_finder_get_file`, and `domain_search_get_file`, instead of a saved file.
 - Empty and non-JSON bodies are a short error. A repeated `Error:` / `[Error]:` prefix is removed.
 - `validate_email_batch` reports an account-level failure (HTTP 200, error for address `all`, such as an invalid API key or no credits) through the error callback. An error for one address stays on the successful result.
