@@ -278,13 +278,51 @@ char *zb_message_from_body(const char *body, long status_code) {
     }
 }
 
+char *zb_redact_api_key(const char *text) {
+    const char *src = text ? text : "";
+    size_t len = strlen(src);
+    char *out = malloc(len + 16);
+    size_t i = 0;
+    size_t j = 0;
+
+    if (!out) {
+        return NULL;
+    }
+    while (i < len) {
+        if (strncmp(src + i, "api_key=", 8) == 0) {
+            memcpy(out + j, "api_key=REDACTED", 16);
+            j += 16;
+            i += 8;
+            /* Skip the value, up to the next separator. */
+            while (i < len && src[i] != '&' && src[i] != ' ' && src[i] != '"') {
+                i++;
+            }
+            continue;
+        }
+        out[j++] = src[i++];
+    }
+    out[j] = '\0';
+    return out;
+}
+
 void zb_report_body_error(const char *body, long status_code, OnErrorCallback error_callback) {
     char *message;
+    char *safe;
     if (!error_callback) {
         return;
     }
+    if (status_code >= 300 && status_code < 400) {
+        /* FOLLOWLOCATION is off: a redirect could send the api_key to another
+           host, so it is reported rather than followed. */
+        error_callback(parse_error_with_status(
+            "ZeroBounce returned a redirect, which this client does not follow.", status_code
+        ));
+        return;
+    }
     message = zb_message_from_body(body, status_code);
-    error_callback(parse_error_with_status(message, status_code));
+    safe = zb_redact_api_key(message);
+    error_callback(parse_error_with_status(safe ? safe : message, status_code));
+    free(safe);
     free(message);
 }
 

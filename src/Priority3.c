@@ -255,6 +255,9 @@ static void p3_bulk_root_multipart(
 
     long http_code = 0;
     zb_note_http_request("POST", url_path, NULL);
+    if (!zb_check_request_url(url_path, error_callback)) {
+        goto cleanup;
+    }
     zb_note_http_field("api_key", zb->api_key ? zb->api_key : "");
     zb_note_http_field("file", "<file>");
     if (add_fields) {
@@ -698,9 +701,15 @@ void get_list_evaluator_result(
         return;
     }
 
-    api_key_esc = zb_url_escape(zb->api_key);
     /* The file id is one path segment, so a slash in it must stay encoded. */
     file_id_esc = p3_escape_path_segment(file_id);
+    if (!file_id_esc) {
+        if (error_callback) {
+            error_callback(parse_error("Invalid parameter: file_id"));
+        }
+        return;
+    }
+    api_key_esc = zb_url_escape(zb->api_key);
     url_path_len = snprintf(NULL, 0, url_pattern, zb->list_evaluator_base_url, file_id_esc, api_key_esc);
     url_path = malloc((size_t)url_path_len + 1);
     snprintf(url_path, (size_t)url_path_len + 1, url_pattern, zb->list_evaluator_base_url, file_id_esc, api_key_esc);
@@ -1299,7 +1308,13 @@ static void p3_inbox_placement_request(
  * literal plus inside a path, so each one becomes %20 here.
  */
 static char *p3_escape_path_segment(const char *value) {
-    char *escaped = zb_url_escape(value);
+    char *escaped;
+    /* Everything else, slashes included, is percent-encoded and stays inside
+       the segment; "." and ".." would walk the request elsewhere. */
+    if (value && (strcmp(value, ".") == 0 || strcmp(value, "..") == 0)) {
+        return NULL;
+    }
+    escaped = zb_url_escape(value);
     size_t len = strlen(escaped);
     char *out = malloc(len * 3 + 1);
     size_t i;
@@ -1325,13 +1340,18 @@ static char *p3_escape_path_segment(const char *value) {
 }
 
 static char *p3_inbox_placement_test_segment(const char *test_id, OnErrorCallback error_callback) {
+    char *segment;
     if (p3_is_blank(test_id)) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: test_id"));
         }
         return NULL;
     }
-    return p3_escape_path_segment(test_id);
+    segment = p3_escape_path_segment(test_id);
+    if (!segment && error_callback) {
+        error_callback(parse_error("Invalid parameter: test_id"));
+    }
+    return segment;
 }
 
 static void p3_json_append(char **body, size_t *cap, const char *fragment) {

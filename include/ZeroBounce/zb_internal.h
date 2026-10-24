@@ -4,6 +4,15 @@
 #include "ZeroBounce/ZeroBounce.h"
 
 bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback);
+/* Whether a key is free of surrounding whitespace and control characters. */
+bool zb_api_key_is_clean(const char *api_key);
+/*
+ * Refuses a URL that is not https, and warns once when a regional base URL is
+ * paired with the single global bulk host.
+ */
+bool zb_check_request_url(const char *url, OnErrorCallback error_callback);
+/* Replaces the value of any api_key parameter in a message with REDACTED. */
+char *zb_redact_api_key(const char *text);
 char *zb_url_escape(const char *value);
 int zb_make_request(
     char *url_path,

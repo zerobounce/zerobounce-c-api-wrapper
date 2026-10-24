@@ -6,6 +6,7 @@
 
 #include "unity.h"
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/zb_internal.h"
 
 #define OFFLINE_MAX 64
 
@@ -198,6 +199,9 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
         set_body(response_data, "{\"success\":\"False\",\"message\":\"File cannot be found.\"}");
     } else if (strncmp(key, "success-false", 13) == 0) {
         set_body(response_data, "{\"success\":false,\"message\":\"File cannot be found.\"}");
+    } else if (strncmp(key, "redirect-302", 12) == 0) {
+        *http_code = 302;
+        set_body(response_data, "");
     } else if (strncmp(key, "cf-json-", 8) == 0) {
         *http_code = 403;
         set_body(response_data,
@@ -1077,6 +1081,63 @@ void test_offline_success_false_on_200_is_an_error(void) {
     TEST_ASSERT_TRUE(g_error_called);
 }
 
+void test_offline_safety_rails(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("rails-key");
+
+    /* Only https is ever dialled: a plain-http base URL would put the key on
+       the wire in the clear. */
+    zb->api_base_url = "http://api.zerobounce.net/v2";
+    get_credits(zb, on_credits, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "https"));
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+
+    /* A path segment of "." or ".." would walk the request out of the
+       endpoint it was meant for. */
+    reset_offline();
+    zb = client_with("rails-key");
+    get_inbox_placement_test(zb, "..", on_raw, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "test_id"));
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+
+    reset_offline();
+    get_list_evaluator_result(zb, ".", on_raw, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "file_id"));
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+
+    /* A key with surrounding whitespace or control characters would be
+       quoted, unredacted, in a transport error. */
+    TEST_ASSERT_TRUE(zb_api_key_is_clean("abc123"));
+    TEST_ASSERT_FALSE(zb_api_key_is_clean(" abc123"));
+    TEST_ASSERT_FALSE(zb_api_key_is_clean("abc123\n"));
+    TEST_ASSERT_FALSE(zb_api_key_is_clean("abc\t123"));
+
+    /* An api_key never reaches an error message. */
+    {
+        char *safe = zb_redact_api_key("GET https://api.zerobounce.net/v2/validate?api_key=sekrit&email=a");
+        TEST_ASSERT_NOT_NULL(safe);
+        TEST_ASSERT_NULL(strstr(safe, "sekrit"));
+        TEST_ASSERT_NOT_NULL(strstr(safe, "api_key=REDACTED"));
+        TEST_ASSERT_NOT_NULL(strstr(safe, "&email=a"));
+        free(safe);
+    }
+}
+
+void test_offline_redirect_is_not_followed(void) {
+    reset_offline();
+    /* FOLLOWLOCATION is off: a redirect could send the api_key to another
+       host, so it is reported rather than followed. */
+    ZeroBounce *zb = client_with("redirect-302");
+
+    get_credits(zb, on_credits, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "redirect"));
+    TEST_ASSERT_EQUAL_INT(302, (int)g_error_status);
+}
+
 void test_offline_rejects_before_request(void) {
     reset_offline();
     ZeroBounce *zb = client_with("");
@@ -1269,6 +1330,8 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_bulk_jobs_reject_before_request);
     RUN_TEST(test_offline_batch_timeout_is_a_string);
     RUN_TEST(test_offline_success_false_on_200_is_an_error);
+    RUN_TEST(test_offline_safety_rails);
+    RUN_TEST(test_offline_redirect_is_not_followed);
     RUN_TEST(test_offline_list_evaluator_base_url);
     RUN_TEST(test_offline_inbox_placement);
     RUN_TEST(test_offline_inbox_placement_detail_error);

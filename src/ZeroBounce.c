@@ -71,6 +71,14 @@ typedef struct {
 
 static _Thread_local ZBTlsRequest zb_tls_request;
 
+/*
+ * The region of the client making the current call, for the one-time bulk-host
+ * warning. Recorded at the guard every public call already runs, so the
+ * transports do not have to carry the client around.
+ */
+static _Thread_local const char *zb_tls_region = NULL;
+
+
 static void zb_copy_cap(char *dest, size_t dest_len, const char *src) {
     if (!dest || dest_len == 0) {
         return;
@@ -197,6 +205,14 @@ void set_write_callback(CURL* curl, memory* response_data) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    /* A redirect could send the api_key to another host, so one is reported
+       rather than followed, and only https is ever dialled. */
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+#ifdef CURLOPT_PROTOCOLS_STR
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
+#endif
 }
 
 long get_http_code(CURL* curl) {
@@ -564,7 +580,36 @@ ZeroBounce* zero_bounce_get_instance() {
 }
 
 
+/*
+ * A key with surrounding whitespace or control characters would otherwise be
+ * quoted, unredacted, in a transport error, so it is refused here. An empty
+ * key stays deferred to zero_bounce_invalid_api_key, which names the call
+ * that initializes the client.
+ */
+bool zb_api_key_is_clean(const char *api_key) {
+    const char *p;
+    if (!api_key || !api_key[0]) {
+        return true;
+    }
+    if (isspace((unsigned char)api_key[0]) ||
+        isspace((unsigned char)api_key[strlen(api_key) - 1])) {
+        return false;
+    }
+    for (p = api_key; *p; p++) {
+        if ((unsigned char)*p < 32 || (unsigned char)*p == 127) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
+    if (!zb_api_key_is_clean(api_key)) {
+        fprintf(stderr,
+            "ZeroBounce: api_key has surrounding whitespace or control characters; "
+            "it was not accepted.\n");
+        return;
+    }
     if (zb->api_key) {
         free(zb->api_key);
     }
@@ -573,6 +618,12 @@ void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
 
 
 void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, ZBApiURL api_base_url) {
+    if (!zb_api_key_is_clean(api_key)) {
+        fprintf(stderr,
+            "ZeroBounce: api_key has surrounding whitespace or control characters; "
+            "it was not accepted.\n");
+        return;
+    }
     if (zb->api_key) {
         free(zb->api_key);
     }
@@ -580,8 +631,58 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
     zb->api_base_url = base_url_string_from_zb_api_url(api_base_url);
 }
 
+/* The host part of a URL, lowercased, or "" when there is none. */
+static void zb_host_of(const char *url, char *out, size_t out_len) {
+    const char *start = url ? strstr(url, "://") : NULL;
+    const char *host = start ? start + 3 : (url ? url : "");
+    const char *end = host;
+    size_t i = 0;
+    while (*end && *end != '/' && *end != '?' && *end != '#') {
+        end++;
+    }
+    while (host + i < end && i + 1 < out_len) {
+        out[i] = (char)tolower((unsigned char)host[i]);
+        i++;
+    }
+    out[i] = '\0';
+}
+
+bool zb_check_request_url(const char *url, OnErrorCallback error_callback) {
+    static int warned_about_region = 0;
+    char host[256];
+
+    if (!url || strncmp(url, "https://", 8) != 0) {
+        if (error_callback) {
+            error_callback(parse_error("url must be an https:// URL"));
+        }
+        return false;
+    }
+    zb_host_of(url, host, sizeof(host));
+    if (!warned_about_region && zb_tls_region &&
+        strcmp(host, "bulkapi.zerobounce.net") == 0) {
+        warned_about_region = 1;
+        fprintf(stderr,
+            "ZeroBounce warning: the base URL is the %s API, but this request goes to "
+            "bulkapi.zerobounce.net. ZeroBounce documents no regional host for bulk files, "
+            "scoring files, email finder and domain search files, the list evaluator, "
+            "S3/SFTP or the Inbox Placement Tester. Set the matching base URLs with "
+            "zero_bounce_set_bulk_api_base_url and friends if ZeroBounce gave you "
+            "regional ones.\n",
+            zb_tls_region);
+    }
+    return true;
+}
+
 
 bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback) {
+    zb_tls_region = NULL;
+    if (zb && zb->api_base_url) {
+        if (strstr(zb->api_base_url, "api-eu.zerobounce.net")) {
+            zb_tls_region = "EU";
+        } else if (strstr(zb->api_base_url, "api-us.zerobounce.net")) {
+            zb_tls_region = "US";
+        }
+    }
     if (zb->api_key == NULL || strlen(zb->api_key) == 0) {
         ZBErrorResponse error_response = parse_error(
             "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first"
@@ -620,6 +721,10 @@ int zb_make_request_with_extra_header(
 ) {
     zb_note_http_request(method, url_path, body);
     zb_note_http_header(extra_header);
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        return 0;
+    }
 
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
@@ -678,6 +783,10 @@ int zb_make_request_with_post_body(
 ) {
     zb_note_http_request("POST", url_path, body ? body : "");
 
+    if (!zb_check_request_url(url_path, error_callback)) {
+        return 0;
+    }
+
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
     }
@@ -733,6 +842,10 @@ int zb_make_request(
     OnErrorCallback error_callback
 ) {
     zb_note_http_request(request_type ? request_type : "GET", url_path, NULL);
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        return 0;
+    }
     if (s_http_perform) {
         return s_http_perform(response_data, http_code, NULL);
     }
@@ -1084,6 +1197,10 @@ static void get_file_internal(
     char* content_type = NULL;
 
     zb_note_http_request("GET", url_path, NULL);
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        goto cleanup;
+    }
 
     if (s_http_perform) {
         if (!s_http_perform(&response_data, &http_code, &content_type)) {
@@ -1814,6 +1931,12 @@ void validate_email_batch_with_options(
 
     memory response_data = {0};
     long http_code = 0;
+
+    if (!zb_check_request_url(url_path, error_callback)) {
+        json_object_put(payload);
+        free(url_path);
+        return;
+    }
 
     if (s_http_perform) {
         json_object_put(payload);
