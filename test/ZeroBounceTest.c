@@ -1050,6 +1050,9 @@ void test_validate_s3_file_valid(void) {
     get_http_code_fake.return_val = 200;
     ValidateS3FileOptions options = new_validate_s3_file_options();
     options.file_name = "bucket/key.csv";
+    /* LIVE: without a return_url the API answers 400 "Provided return URL is
+       not permitted: None", so the SDK requires one. */
+    options.return_url = "https://example.com/done";
     validate_s3_file(zb, &options, on_success_send_file_valid, on_error_valid);
 
     const char* url = zero_bounce_get_last_request_url_for_test();
@@ -1059,6 +1062,7 @@ void test_validate_s3_file_valid(void) {
     const char* body = zero_bounce_get_last_post_body_for_test();
     TEST_ASSERT_NOT_NULL(body);
     TEST_ASSERT_NOT_NULL(strstr(body, "file_name="));
+    TEST_ASSERT_NOT_NULL(strstr(body, "return_url="));
 }
 
 void test_score_email_post_valid(void) {

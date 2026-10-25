@@ -631,6 +631,29 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
     zb->api_base_url = base_url_string_from_zb_api_url(api_base_url);
 }
 
+/*
+ * The bulk hosts are not built from api_base_url, so initializing with a
+ * regional base URL leaves them on the global bulk host. These three let a
+ * caller point them somewhere else, as zb_check_request_url's warning says.
+ */
+void zero_bounce_set_bulk_api_base_url(ZeroBounce *zb, const char *url) {
+    if (zb && url) {
+        zb->bulk_api_base_url = url;
+    }
+}
+
+void zero_bounce_set_bulk_api_root_url(ZeroBounce *zb, const char *url) {
+    if (zb && url) {
+        zb->bulk_api_root_url = url;
+    }
+}
+
+void zero_bounce_set_bulk_api_scoring_base_url(ZeroBounce *zb, const char *url) {
+    if (zb && url) {
+        zb->bulk_api_scoring_base_url = url;
+    }
+}
+
 /* The host part of a URL, lowercased, or "" when there is none. */
 static void zb_host_of(const char *url, char *out, size_t out_len) {
     const char *start = url ? strstr(url, "://") : NULL;
@@ -1040,7 +1063,10 @@ static void send_file_internal(
         }
     }
 
-    if (strlen(options.return_url) != 0) {
+    /* A caller that zeroed SendFileOptions instead of calling
+       new_send_file_options leaves return_url NULL, so it is checked here the
+       same way the field notes above check it. */
+    if (options.return_url && options.return_url[0] != '\0') {
         part = curl_mime_addpart(multipart);
         curl_mime_name(part, "return_url");
         curl_mime_data(part, options.return_url, CURL_ZERO_TERMINATED);
