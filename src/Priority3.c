@@ -13,6 +13,32 @@ static bool p3_is_blank(const char *value);
 static char *p3_escape_path_segment(const char *value);
 
 typedef void (*p3_mime_fields_fn)(curl_mime *multipart, void *ctx);
+/* The job-specific form fields an S3 or SFTP file job sends on top of the four
+   shared ones. */
+typedef void (*p3_extra_form_fields_fn)(char **body, size_t *cap, const void *ctx);
+
+static void p3_bulk_root_file_job_ex(
+    ZeroBounce *zb,
+    const char *path,
+    const char *file_name,
+    int has_header_row,
+    int remove_duplicates,
+    const char *return_url,
+    p3_extra_form_fields_fn add_extra_fields,
+    const void *extra_ctx,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
+
+static void p3_export_bulk_file(
+    ZeroBounce *zb,
+    const char *path,
+    const char *destination_field,
+    const char *file_id,
+    const char *destination,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+);
 
 EmailFinderSendFileOptions new_email_finder_send_file_options(void) {
     EmailFinderSendFileOptions o = {0, 0, 0, 0, -1};
@@ -39,6 +65,7 @@ ScoreS3FileOptions new_score_s3_file_options(void) {
     o.remove_duplicates = -1;
     o.remove_duplicate = -1;
     o.email_address_column = -1;
+    o.return_url = NULL;
     return o;
 }
 
@@ -568,6 +595,15 @@ void send_email_finder_file(
         }
         return;
     }
+    /* The endpoint has no name to search for without one of the two. */
+    if (!options || (options->first_name_column < 1 && options->full_name_column < 1)) {
+        if (error_callback) {
+            error_callback(parse_error(
+                "Empty parameter: first_name_column or full_name_column (one is required)"
+            ));
+        }
+        return;
+    }
     char url[512];
     snprintf(url, sizeof(url), "%s/email-finder/sendfile", zb->bulk_api_root_url);
     EmailFinderMimeCtx ctx = {domain_column, options};
@@ -680,7 +716,10 @@ void send_list_evaluator_file(
         return;
     }
     char url[512];
-    snprintf(url, sizeof(url), "%s/listevaluator/", zb->bulk_api_base_url);
+    /* The list evaluator is a base URL of its own, the same one
+       get_list_evaluator_result reads, so the override set with
+       zero_bounce_set_list_evaluator_base_url moves both halves together. */
+    snprintf(url, sizeof(url), "%s/", zb->list_evaluator_base_url);
     ListEvaluatorMimeCtx ctx = {email_address_column};
     p3_bulk_root_multipart(
         zb, url, file_path, p3_list_evaluator_mime_fields, &ctx, success_callback, error_callback
@@ -827,46 +866,37 @@ void delete_filter(
     p3_raw_json_form_post(zb, strdup(url), body, success_callback, error_callback);
 }
 
-static char *p3_build_validate_s3_body(ZeroBounce *zb, const ValidateS3FileOptions *options) {
-    char *body = NULL;
-    size_t cap = 0;
-    p3_append_form_field(&body, &cap, "file_name", options->file_name ? options->file_name : "");
-    p3_append_optional_bool_form(&body, &cap, "has_header_row", options->has_header_row);
-    p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
-    p3_append_optional_bool_form(&body, &cap, "remove_duplicate", options->remove_duplicate);
+static void p3_append_column_form(char **body, size_t *cap, const char *key, int column) {
+    char col[16];
+    if (column <= 0) {
+        return;
+    }
+    snprintf(col, sizeof(col), "%d", column);
+    p3_append_form_field(body, cap, key, col);
+}
+
+/* The columns validateS3file takes on top of the four fields every S3 and SFTP
+   job sends. email_address_column is 1-based, -1 omits it, and 0 is sent. */
+static void p3_validate_s3_extra_fields(char **body, size_t *cap, const void *ctx) {
+    const ValidateS3FileOptions *options = (const ValidateS3FileOptions *)ctx;
     if (options->email_address_column >= 0) {
         char col[16];
         snprintf(col, sizeof(col), "%d", options->email_address_column);
-        p3_append_form_field(&body, &cap, "email_address_column", col);
+        p3_append_form_field(body, cap, "email_address_column", col);
     }
-    if (options->return_url && options->return_url[0]) {
-        p3_append_form_field(&body, &cap, "return_url", options->return_url);
-    }
-    if (options->first_name_column > 0) {
+    p3_append_column_form(body, cap, "first_name_column", options->first_name_column);
+    p3_append_column_form(body, cap, "last_name_column", options->last_name_column);
+    p3_append_column_form(body, cap, "gender_column", options->gender_column);
+    p3_append_column_form(body, cap, "ip_address_column", options->ip_address_column);
+}
+
+static void p3_score_s3_extra_fields(char **body, size_t *cap, const void *ctx) {
+    const ScoreS3FileOptions *options = (const ScoreS3FileOptions *)ctx;
+    if (options->email_address_column >= 0) {
         char col[16];
-        snprintf(col, sizeof(col), "%d", options->first_name_column);
-        p3_append_form_field(&body, &cap, "first_name_column", col);
+        snprintf(col, sizeof(col), "%d", options->email_address_column);
+        p3_append_form_field(body, cap, "email_address_column", col);
     }
-    if (options->last_name_column > 0) {
-        char col[16];
-        snprintf(col, sizeof(col), "%d", options->last_name_column);
-        p3_append_form_field(&body, &cap, "last_name_column", col);
-    }
-    if (options->gender_column > 0) {
-        char col[16];
-        snprintf(col, sizeof(col), "%d", options->gender_column);
-        p3_append_form_field(&body, &cap, "gender_column", col);
-    }
-    if (options->ip_address_column > 0) {
-        char col[16];
-        snprintf(col, sizeof(col), "%d", options->ip_address_column);
-        p3_append_form_field(&body, &cap, "ip_address_column", col);
-    }
-    if (options->allow_phase_2_is_set) {
-        p3_append_form_field(&body, &cap, "allow_phase_2", options->allow_phase_2 ? "true" : "false");
-    }
-    p3_append_form_field(&body, &cap, "api_key", zb->api_key);
-    return body;
 }
 
 void validate_s3_file(
@@ -875,19 +905,18 @@ void validate_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    if (zero_bounce_invalid_api_key(zb, error_callback)) {
-        return;
-    }
-    if (!options || !options->file_name || !options->file_name[0]) {
-        if (error_callback) {
-            error_callback(parse_error("Empty parameter: file_name"));
-        }
-        return;
-    }
-    char *body = p3_build_validate_s3_body(zb, options);
-    char url[512];
-    snprintf(url, sizeof(url), "%s/validateS3file", zb->bulk_api_root_url);
-    p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+    ValidateS3FileOptions empty = new_validate_s3_file_options();
+    const ValidateS3FileOptions *o = options ? options : &empty;
+    /*
+     * The same required-parameter rules as the other five jobs, so it goes
+     * through the same helper. remove_duplicate and allow_phase_2 are not sent:
+     * validateS3file documents remove_duplicate**s**, and allow_phase_2 is a
+     * field of the multipart bulk sendfile.
+     */
+    p3_bulk_root_file_job_ex(
+        zb, "/validateS3file", o->file_name, o->has_header_row, o->remove_duplicates,
+        o->return_url, p3_validate_s3_extra_fields, o, success_callback, error_callback
+    );
 }
 
 void score_s3_file(
@@ -896,30 +925,12 @@ void score_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    if (zero_bounce_invalid_api_key(zb, error_callback)) {
-        return;
-    }
-    if (!options || !options->file_name || !options->file_name[0]) {
-        if (error_callback) {
-            error_callback(parse_error("Empty parameter: file_name"));
-        }
-        return;
-    }
-    char *body = NULL;
-    size_t cap = 0;
-    p3_append_form_field(&body, &cap, "file_name", options->file_name);
-    p3_append_form_field(&body, &cap, "api_key", zb->api_key);
-    p3_append_optional_bool_form(&body, &cap, "has_header_row", options->has_header_row);
-    p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
-    p3_append_optional_bool_form(&body, &cap, "remove_duplicate", options->remove_duplicate);
-    if (options->email_address_column >= 0) {
-        char col[16];
-        snprintf(col, sizeof(col), "%d", options->email_address_column);
-        p3_append_form_field(&body, &cap, "email_address_column", col);
-    }
-    char url[512];
-    snprintf(url, sizeof(url), "%s/scoreS3file", zb->bulk_api_root_url);
-    p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+    ScoreS3FileOptions empty = new_score_s3_file_options();
+    const ScoreS3FileOptions *o = options ? options : &empty;
+    p3_bulk_root_file_job_ex(
+        zb, "/scoreS3file", o->file_name, o->has_header_row, o->remove_duplicates,
+        o->return_url, p3_score_s3_extra_fields, o, success_callback, error_callback
+    );
 }
 
 void list_s3_files(
@@ -991,29 +1002,12 @@ void export_s3_file(
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
-    if (zero_bounce_invalid_api_key(zb, error_callback)) {
-        return;
-    }
-    if (!file_id || !file_id[0]) {
-        if (error_callback) {
-            error_callback(parse_error("Empty parameter: file_id"));
-        }
-        return;
-    }
-    if (!export_bucket || !export_bucket[0]) {
-        if (error_callback) {
-            error_callback(parse_error("Empty parameter: export_bucket"));
-        }
-        return;
-    }
-    char *body = NULL;
-    size_t cap = 0;
-    p3_append_form_field(&body, &cap, "file_id", file_id);
-    p3_append_form_field(&body, &cap, "export_bucket", export_bucket);
-    p3_append_form_field(&body, &cap, "api_key", zb->api_key);
-    char url[512];
-    snprintf(url, sizeof(url), "%s/exportS3file", zb->bulk_api_root_url);
-    p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+    /* export_bucket is optional, as it is on the SFTP twin: left out, the
+       endpoint uses the export bucket from your ZeroBounce settings. */
+    p3_export_bulk_file(
+        zb, "/exportS3file", "export_bucket", file_id, export_bucket,
+        success_callback, error_callback
+    );
 }
 
 /* ------------------------------------------------------------------ */
@@ -1047,6 +1041,12 @@ ZBCreateInboxPlacementTestOptions new_create_inbox_placement_test_options(void) 
     o.test_type = -1;
     o.sender_email = NULL;
     o.webhook_url = NULL;
+    o.provider_ids = NULL;
+    o.provider_ids_count = 0;
+    o.seed_ids = NULL;
+    o.seed_ids_count = 0;
+    o.providers = NULL;
+    o.providers_count = 0;
     return o;
 }
 
@@ -1055,6 +1055,8 @@ ZBListInboxPlacementTestsOptions new_list_inbox_placement_tests_options(void) {
     o.status = NULL;
     o.page = -1;
     o.page_size = -1;
+    o.created_after = NULL;
+    o.created_before = NULL;
     return o;
 }
 
@@ -1072,20 +1074,28 @@ static bool p3_is_blank(const char *value) {
 }
 
 /*
- * POSTs one of the six documented S3 / SFTP file jobs on the bulkapi root.
+ * POSTs one of the eight documented S3 / SFTP file jobs on the bulkapi root.
  *
- * Booleans go on the wire as the strings "true"/"false", and an option the
- * caller left unset is not sent at all.
+ * Every one of them sends the same four fields, so they all come through here.
+ * Booleans go on the wire as the strings "true"/"false", an option the caller
+ * left unset is not sent at all, and add_extra_fields adds whatever one job
+ * takes on top of the four (the validateS3file and scoreS3file columns).
  *
  * LIVE: file_name and return_url are required on every one of these jobs,
  * validateSFTPfile included, although the docs call its file_name optional.
  * Without either the API answers "Empty parameter: file_name" /
- * "Empty parameter: return_url", so both are checked before sending.
+ * "Provided return URL is not permitted: None", so both are checked before
+ * sending.
  */
-static void p3_bulk_root_file_job(
+static void p3_bulk_root_file_job_ex(
     ZeroBounce *zb,
     const char *path,
-    const ZBBulkFileJobOptions *options,
+    const char *file_name,
+    int has_header_row,
+    int remove_duplicates,
+    const char *return_url,
+    p3_extra_form_fields_fn add_extra_fields,
+    const void *extra_ctx,
     OnSuccessCallbackSendFile success_callback,
     OnErrorCallback error_callback
 ) {
@@ -1096,13 +1106,13 @@ static void p3_bulk_root_file_job(
     if (zero_bounce_invalid_api_key(zb, error_callback)) {
         return;
     }
-    if (!options || p3_is_blank(options->file_name)) {
+    if (p3_is_blank(file_name)) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: file_name"));
         }
         return;
     }
-    if (p3_is_blank(options->return_url)) {
+    if (p3_is_blank(return_url)) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: return_url"));
         }
@@ -1110,13 +1120,32 @@ static void p3_bulk_root_file_job(
     }
 
     p3_append_form_field(&body, &cap, "api_key", zb->api_key);
-    p3_append_form_field(&body, &cap, "has_header_row", options->has_header_row ? "true" : "false");
-    p3_append_form_field(&body, &cap, "file_name", options->file_name);
-    p3_append_optional_bool_form(&body, &cap, "remove_duplicates", options->remove_duplicates);
-    p3_append_form_field(&body, &cap, "return_url", options->return_url);
+    p3_append_optional_bool_form(&body, &cap, "has_header_row", has_header_row);
+    p3_append_form_field(&body, &cap, "file_name", file_name);
+    p3_append_optional_bool_form(&body, &cap, "remove_duplicates", remove_duplicates);
+    p3_append_form_field(&body, &cap, "return_url", return_url);
+    if (add_extra_fields) {
+        add_extra_fields(&body, &cap, extra_ctx);
+    }
 
     snprintf(url, sizeof(url), "%s%s", zb->bulk_api_root_url, path);
     p3_post_send_file_form(zb, url, body, success_callback, error_callback);
+}
+
+static void p3_bulk_root_file_job(
+    ZeroBounce *zb,
+    const char *path,
+    const ZBBulkFileJobOptions *options,
+    OnSuccessCallbackSendFile success_callback,
+    OnErrorCallback error_callback
+) {
+    ZBBulkFileJobOptions empty = new_bulk_file_job_options();
+    const ZBBulkFileJobOptions *o = options ? options : &empty;
+    /* has_header_row is a plain bool here, so it is always sent. */
+    p3_bulk_root_file_job_ex(
+        zb, path, o->file_name, o->has_header_row ? 1 : 0, o->remove_duplicates,
+        o->return_url, NULL, NULL, success_callback, error_callback
+    );
 }
 
 static void p3_export_bulk_file(
@@ -1362,7 +1391,7 @@ static char *p3_inbox_placement_test_segment(const char *test_id, OnErrorCallbac
     return segment;
 }
 
-static void p3_json_append(char **body, size_t *cap, const char *fragment) {
+static void p3_str_append(char **body, size_t *cap, const char *fragment) {
     size_t needed = (*body ? strlen(*body) : 0) + strlen(fragment) + 1;
     if (needed > *cap) {
         size_t new_cap = needed * 2;
@@ -1378,6 +1407,162 @@ static void p3_json_append(char **body, size_t *cap, const char *fragment) {
         *cap = new_cap;
     }
     strcat(*body, fragment);
+}
+
+/*
+ * Escapes a value for use inside a JSON string.
+ *
+ * The Inbox Placement Tester bodies used to be concatenated into a fixed
+ * buffer with no escaping at all, so a quote or a backslash in a test name, a
+ * sender address or a webhook URL ended the string early: the body was either
+ * rejected as malformed or carried fields the caller never asked for, and
+ * anything longer than the buffer was silently cut off. Every value goes
+ * through here now, and the buffers grow to fit.
+ */
+static char *p3_json_escape(const char *value) {
+    const char *in = value ? value : "";
+    size_t len = strlen(in);
+    /* Worst case is \u00XX: six bytes out for one byte in. */
+    char *out = malloc(len * 6 + 1);
+    size_t i;
+    size_t j = 0;
+
+    if (!out) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)in[i];
+        switch (c) {
+            case '"':  out[j++] = '\\'; out[j++] = '"';  break;
+            case '\\': out[j++] = '\\'; out[j++] = '\\'; break;
+            case '\b': out[j++] = '\\'; out[j++] = 'b';  break;
+            case '\f': out[j++] = '\\'; out[j++] = 'f';  break;
+            case '\n': out[j++] = '\\'; out[j++] = 'n';  break;
+            case '\r': out[j++] = '\\'; out[j++] = 'r';  break;
+            case '\t': out[j++] = '\\'; out[j++] = 't';  break;
+            default:
+                if (c < 0x20) {
+                    snprintf(out + j, 7, "\\u%04x", c);
+                    j += 6;
+                } else {
+                    out[j++] = (char)c;
+                }
+                break;
+        }
+    }
+    out[j] = '\0';
+    return out;
+}
+
+/*
+ * One "&key=value" query filter, url-encoded and appended to a buffer that
+ * grows to fit. p3_inbox_placement_request turns the leading '&' into the '?'.
+ */
+static void p3_query_append_string(char **query, size_t *cap, const char *key, const char *value) {
+    char *escaped;
+    if (!value || !value[0]) {
+        return;
+    }
+    escaped = zb_url_escape(value);
+    if (!escaped) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    p3_str_append(query, cap, "&");
+    p3_str_append(query, cap, key);
+    p3_str_append(query, cap, "=");
+    p3_str_append(query, cap, escaped);
+    free(escaped);
+}
+
+static void p3_query_append_int(char **query, size_t *cap, const char *key, int value) {
+    char number[16];
+    snprintf(number, sizeof(number), "%d", value);
+    p3_str_append(query, cap, "&");
+    p3_str_append(query, cap, key);
+    p3_str_append(query, cap, "=");
+    p3_str_append(query, cap, number);
+}
+
+/* A comma between two fields, but not after the opening brace. */
+static void p3_json_append_separator(char **body, size_t *cap) {
+    size_t len = *body ? strlen(*body) : 0;
+    if (len > 0 && (*body)[len - 1] != '{') {
+        p3_str_append(body, cap, ",");
+    }
+}
+
+static void p3_json_append_string_field(char **body, size_t *cap, const char *key, const char *value) {
+    char *escaped = p3_json_escape(value);
+    p3_json_append_separator(body, cap);
+    p3_str_append(body, cap, "\"");
+    p3_str_append(body, cap, key);
+    p3_str_append(body, cap, "\":\"");
+    p3_str_append(body, cap, escaped);
+    p3_str_append(body, cap, "\"");
+    free(escaped);
+}
+
+static void p3_json_append_int_field(char **body, size_t *cap, const char *key, int value) {
+    char number[16];
+    snprintf(number, sizeof(number), "%d", value);
+    p3_json_append_separator(body, cap);
+    p3_str_append(body, cap, "\"");
+    p3_str_append(body, cap, key);
+    p3_str_append(body, cap, "\":");
+    p3_str_append(body, cap, number);
+}
+
+static void p3_json_append_int_array_field(
+    char **body,
+    size_t *cap,
+    const char *key,
+    const int *values,
+    size_t count
+) {
+    size_t i;
+    if (!values || count == 0) {
+        return;
+    }
+    p3_json_append_separator(body, cap);
+    p3_str_append(body, cap, "\"");
+    p3_str_append(body, cap, key);
+    p3_str_append(body, cap, "\":[");
+    for (i = 0; i < count; i++) {
+        char number[16];
+        snprintf(number, sizeof(number), "%s%d", i ? "," : "", values[i]);
+        p3_str_append(body, cap, number);
+    }
+    p3_str_append(body, cap, "]");
+}
+
+/* providers is an array of objects: [{"id":3,"maxSeeds":10}, ...]. */
+static void p3_json_append_providers_field(
+    char **body,
+    size_t *cap,
+    const ZBInboxPlacementProvider *providers,
+    size_t count
+) {
+    size_t i;
+    if (!providers || count == 0) {
+        return;
+    }
+    p3_json_append_separator(body, cap);
+    p3_str_append(body, cap, "\"providers\":[");
+    for (i = 0; i < count; i++) {
+        char entry[64];
+        if (providers[i].max_seeds >= 0) {
+            snprintf(
+                entry, sizeof(entry), "%s{\"id\":%d,\"maxSeeds\":%d}",
+                i ? "," : "", providers[i].id, providers[i].max_seeds
+            );
+        } else {
+            snprintf(entry, sizeof(entry), "%s{\"id\":%d}", i ? "," : "", providers[i].id);
+        }
+        p3_str_append(body, cap, entry);
+    }
+    p3_str_append(body, cap, "]");
 }
 
 void get_inbox_placement_providers(
@@ -1396,6 +1581,8 @@ void get_inbox_placement_test_types(
     p3_inbox_placement_request(zb, "GET", "/test-types", NULL, NULL, success_callback, error_callback);
 }
 
+#define ZB_INBOX_PLACEMENT_NAME_MAX 64
+
 void create_inbox_placement_test(
     ZeroBounce *zb,
     const char *name,
@@ -1405,7 +1592,6 @@ void create_inbox_placement_test(
 ) {
     char *body = NULL;
     size_t cap = 0;
-    char buf[1024];
 
     if (p3_is_blank(name)) {
         if (error_callback) {
@@ -1413,25 +1599,51 @@ void create_inbox_placement_test(
         }
         return;
     }
+    if (strlen(name) > ZB_INBOX_PLACEMENT_NAME_MAX) {
+        if (error_callback) {
+            error_callback(parse_error("Invalid parameter: name (at most 64 characters)"));
+        }
+        return;
+    }
+    if (options && options->test_type >= 0 &&
+        (options->test_type < 1 || options->test_type > 3)) {
+        if (error_callback) {
+            error_callback(parse_error("Invalid parameter: test_type (must be 1, 2 or 3)"));
+        }
+        return;
+    }
+    /* A seed-list test (type 1) has nowhere to send from without a sender. */
+    if (options && options->test_type == 1 && p3_is_blank(options->sender_email)) {
+        if (error_callback) {
+            error_callback(parse_error("Empty parameter: sender_email (required when test_type is 1)"));
+        }
+        return;
+    }
 
     /* camelCase JSON, with unset fields left out. */
-    snprintf(buf, sizeof(buf), "{\"name\":\"%s\"", name);
-    p3_json_append(&body, &cap, buf);
+    p3_str_append(&body, &cap, "{");
+    p3_json_append_string_field(&body, &cap, "name", name);
     if (options) {
         if (options->test_type >= 0) {
-            snprintf(buf, sizeof(buf), ",\"testType\":%d", options->test_type);
-            p3_json_append(&body, &cap, buf);
+            p3_json_append_int_field(&body, &cap, "testType", options->test_type);
         }
         if (options->sender_email) {
-            snprintf(buf, sizeof(buf), ",\"senderEmail\":\"%s\"", options->sender_email);
-            p3_json_append(&body, &cap, buf);
+            p3_json_append_string_field(&body, &cap, "senderEmail", options->sender_email);
         }
         if (options->webhook_url) {
-            snprintf(buf, sizeof(buf), ",\"webhookUrl\":\"%s\"", options->webhook_url);
-            p3_json_append(&body, &cap, buf);
+            p3_json_append_string_field(&body, &cap, "webhookUrl", options->webhook_url);
         }
+        p3_json_append_int_array_field(
+            &body, &cap, "providerIds", options->provider_ids, options->provider_ids_count
+        );
+        p3_json_append_int_array_field(
+            &body, &cap, "seedIds", options->seed_ids, options->seed_ids_count
+        );
+        p3_json_append_providers_field(
+            &body, &cap, options->providers, options->providers_count
+        );
     }
-    p3_json_append(&body, &cap, "}");
+    p3_str_append(&body, &cap, "}");
 
     p3_inbox_placement_request(zb, "POST", "/test", NULL, body, success_callback, error_callback);
     free(body);
@@ -1459,20 +1671,31 @@ void list_inbox_placement_tests(
     OnSuccessCallbackRawJson success_callback,
     OnErrorCallback error_callback
 ) {
-    char query[512];
-    size_t used = 0;
-    query[0] = '\0';
-    if (options) {
-        if (options->status) {
-            char *escaped = zb_url_escape(options->status);
-            used += (size_t)snprintf(query + used, sizeof(query) - used, "&status=%s", escaped);
-            free(escaped);
+    char *query = NULL;
+    size_t cap = 0;
+
+    if (options && options->page_size >= 0 &&
+        (options->page_size < 1 || options->page_size > 100)) {
+        if (error_callback) {
+            error_callback(parse_error("Invalid parameter: page_size (must be between 1 and 100)"));
         }
+        return;
+    }
+
+    if (options) {
+        p3_query_append_string(&query, &cap, "status", options->status);
+        p3_query_append_string(&query, &cap, "createdAfter", options->created_after);
+        p3_query_append_string(&query, &cap, "createdBefore", options->created_before);
         if (options->page >= 0) {
-            used += (size_t)snprintf(query + used, sizeof(query) - used, "&page=%d", options->page);
+            p3_query_append_int(&query, &cap, "page", options->page);
         }
         if (options->page_size >= 0) {
-            snprintf(query + used, sizeof(query) - used, "&pageSize=%d", options->page_size);
+            /*
+             * LIVE: the filter is page_size. pageSize is accepted and then
+             * silently ignored, so a caller asking for 10 rows quietly got the
+             * default page.
+             */
+            p3_query_append_int(&query, &cap, "page_size", options->page_size);
         }
     }
     /*
@@ -1480,6 +1703,7 @@ void list_inbox_placement_tests(
      * and answers 'Method "GET" not allowed'.
      */
     p3_inbox_placement_request(zb, "GET", "/tests", query, NULL, success_callback, error_callback);
+    free(query);
 }
 
 void delete_inbox_placement_test(
@@ -1512,13 +1736,17 @@ void set_inbox_placement_webhook(
     OnSuccessCallbackRawJson success_callback,
     OnErrorCallback error_callback
 ) {
-    char body[1024];
+    char *body = NULL;
+    size_t cap = 0;
     if (p3_is_blank(webhook_url)) {
         if (error_callback) {
             error_callback(parse_error("Empty parameter: webhook_url"));
         }
         return;
     }
-    snprintf(body, sizeof(body), "{\"webhookUrl\":\"%s\"}", webhook_url);
+    p3_str_append(&body, &cap, "{");
+    p3_json_append_string_field(&body, &cap, "webhookUrl", webhook_url);
+    p3_str_append(&body, &cap, "}");
     p3_inbox_placement_request(zb, "PUT", "/webhook", NULL, body, success_callback, error_callback);
+    free(body);
 }

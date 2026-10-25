@@ -963,18 +963,34 @@ void list_s3_files(
     OnErrorCallback error_callback
 );
 
+/* The base URL overrides. Each one keeps the pointer it is given rather than a
+ * copy, so the string has to outlive the client. */
+
 /** @brief Overrides the list evaluator base URL. */
 void zero_bounce_set_list_evaluator_base_url(ZeroBounce *zb, const char *url);
 
 /** @brief Overrides the Inbox Placement Tester base URL. */
 void zero_bounce_set_inbox_placement_base_url(ZeroBounce *zb, const char *url);
 
+/** @brief Overrides the bulk file base URL. Ends in /v2. */
+void zero_bounce_set_bulk_api_base_url(ZeroBounce *zb, const char *url);
+
+/**
+ * @brief Overrides the bulk host root, which the S3 and SFTP/FTP jobs use.
+ *
+ * This one has no /v2 on the end.
+ */
+void zero_bounce_set_bulk_api_root_url(ZeroBounce *zb, const char *url);
+
+/** @brief Overrides the bulk AI scoring base URL. Ends in /v2/scoring. */
+void zero_bounce_set_bulk_api_scoring_base_url(ZeroBounce *zb, const char *url);
+
 /**
  * @brief The documented fields shared by the six S3 and SFTP/FTP file jobs.
  *
- * file_name is required by every job except validate_sftp_file, where the docs
- * list it as optional: leaving it NULL there uses the input bucket configured
- * in your ZeroBounce settings. remove_duplicates is -1 to omit, 0 false, 1 true.
+ * LIVE: file_name and return_url are required by every one of them,
+ * validate_sftp_file included, although the docs call its file_name optional.
+ * remove_duplicates is -1 to omit, 0 false, 1 true.
  */
 typedef struct {
     const char *file_name;
@@ -1010,8 +1026,8 @@ void domain_search_s3_file(
 /**
  * @brief Validates a file from your SFTP/FTP server.
  *
- * This is the one job whose file_name the docs list as optional: leave
- * options->file_name NULL to use the input bucket from your settings.
+ * LIVE: the docs call this job's file_name optional, but the API answers
+ * "Empty parameter: file_name" without it, so it is required here too.
  */
 void validate_sftp_file(
     ZeroBounce *zb,
@@ -1055,25 +1071,62 @@ void export_sftp_file(
     OnErrorCallback error_callback
 );
 
-/* Inbox Placement Tester (/api/ipt). Its own host, the API key on the query
- * string, camelCase JSON bodies, and errors under a "detail" key. Spends the
- * account's inbox-test credits. */
+/* Inbox Placement Tester (/api/ipt). Its own host, camelCase JSON bodies, and
+ * errors under a "detail" key. Spends the account's inbox-test credits.
+ *
+ * LIVE: the key travels in an Authorization: Bearer header. Sent as an api_key
+ * query parameter the request is rejected as unauthorized, and the key would
+ * end up in whatever logs the query string. */
 
-/** @brief The optional fields of a new test. Only what is set is sent. */
+/**
+ * @brief One entry of a new test's providers[] array.
+ *
+ * id is the provider id from get_inbox_placement_providers. max_seeds caps how
+ * many of that provider's seed addresses the test uses; -1 leaves it out.
+ */
 typedef struct {
-    /** -1 to omit. */
+    int id;
+    int max_seeds;
+} ZBInboxPlacementProvider;
+
+/**
+ * @brief The optional fields of a new test. Only what is set is sent.
+ *
+ * test_type is 1, 2 or 3, and a test_type of 1 requires sender_email.
+ * The three arrays are left out when their count is 0.
+ */
+typedef struct {
+    /** -1 to omit. 1, 2 or 3 otherwise. */
     int test_type;
+    /** Required when test_type is 1. */
     const char *sender_email;
     const char *webhook_url;
+    /** Provider ids from get_inbox_placement_providers. */
+    const int *provider_ids;
+    size_t provider_ids_count;
+    /** Seed ids to use instead of the whole seed list. */
+    const int *seed_ids;
+    size_t seed_ids_count;
+    /** Per-provider seed caps. */
+    const ZBInboxPlacementProvider *providers;
+    size_t providers_count;
 } ZBCreateInboxPlacementTestOptions;
 
 ZBCreateInboxPlacementTestOptions new_create_inbox_placement_test_options(void);
 
-/** @brief The documented filters of the test list. page / page_size: -1 to omit. */
+/**
+ * @brief The documented filters of the test list.
+ *
+ * page / page_size: -1 to omit; page_size has to be between 1 and 100.
+ * created_after / created_before are the documented date filters; NULL omits
+ * them.
+ */
 typedef struct {
     const char *status;
     int page;
     int page_size;
+    const char *created_after;
+    const char *created_before;
 } ZBListInboxPlacementTestsOptions;
 
 ZBListInboxPlacementTestsOptions new_list_inbox_placement_tests_options(void);
@@ -1090,6 +1143,11 @@ void get_inbox_placement_test_types(
     OnErrorCallback error_callback
 );
 
+/**
+ * @brief Starts a new inbox placement test.
+ *
+ * name is required and is at most 64 characters.
+ */
 void create_inbox_placement_test(
     ZeroBounce *zb,
     const char *name,

@@ -379,9 +379,11 @@ SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/a
 and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
 These live on the bulkapi host *without* the `/v2` path.
 
-Every one of these jobs needs both `file_name` and `return_url`. The docs call
-`validate_sftp_file`'s `file_name` optional, but the live API answers
-`Empty parameter: file_name` without it, so the SDK checks both before sending.
+Every one of these jobs needs both `file_name` and `return_url`, `validate_s3_file`
+and `score_s3_file` included. The docs call several of them optional, but the live
+API answers `Empty parameter: file_name` without the one and
+`Provided return URL is not permitted: None` without the other, so the SDK checks
+both before sending.
 
 ```c
 ZBBulkFileJobOptions options = new_bulk_file_job_options();
@@ -406,6 +408,22 @@ domain_search_sftp_file(zb, &options, on_send, on_error);
 /* Note the field: this one takes export_path, not export_bucket.
    NULL uses the export path from your settings. */
 export_sftp_file(zb, "<FILE_ID>", "/exports", on_send, on_error);
+
+/* validate_s3_file and score_s3_file take the same two required fields plus
+   their own columns. */
+ValidateS3FileOptions validate = new_validate_s3_file_options();
+validate.file_name = "lists/leads.csv";
+validate.return_url = "https://example.com/zerobounce-done";
+validate.email_address_column = 1;
+validate_s3_file(zb, &validate, on_send, on_error);
+
+ScoreS3FileOptions score = new_score_s3_file_options();
+score.file_name = "lists/leads.csv";
+score.return_url = "https://example.com/zerobounce-done";
+score_s3_file(zb, &score, on_send, on_error);
+
+/* export_bucket is optional: NULL uses the one from your settings. */
+export_s3_file(zb, "<FILE_ID>", NULL, on_send, on_error);
 ```
 
 ## Inbox Placement Tester
@@ -418,10 +436,20 @@ the API takes, and it spends the account's inbox-test credits.
 get_inbox_placement_providers(zb, on_raw, on_error);
 get_inbox_placement_test_types(zb, on_raw, on_error);
 
+/* name is at most 64 characters, test_type is 1, 2 or 3, and a test_type of 1
+   needs a sender_email. */
+static const int provider_ids[] = {3, 7};
+static const ZBInboxPlacementProvider providers[] = {{3, 10}};
+
 ZBCreateInboxPlacementTestOptions create = new_create_inbox_placement_test_options();
 create.test_type = 1;
 create.sender_email = "news@example.com";
 create.webhook_url = "https://example.com/ipt-webhook";
+/* Optional: pick the providers, the seeds, or a per-provider seed cap. */
+create.provider_ids = provider_ids;
+create.provider_ids_count = 2;
+create.providers = providers;
+create.providers_count = 1;
 create_inbox_placement_test(zb, "Launch", &create, on_raw, on_error);
 
 /* Send your campaign to the seeds you got back, then read the results. */
@@ -430,6 +458,9 @@ get_inbox_placement_test(zb, "<TEST_ID>", on_raw, on_error);
 ZBListInboxPlacementTestsOptions list = new_list_inbox_placement_tests_options();
 list.status = "finished";
 list.page = 1;
+list.page_size = 25;            /* 1 to 100 */
+list.created_after = "2026-01-01";
+list.created_before = "2026-02-01";
 list_inbox_placement_tests(zb, &list, on_raw, on_error);
 
 set_inbox_placement_webhook(zb, "https://example.com/ipt-webhook", on_raw, on_error);
@@ -500,10 +531,16 @@ SMTP login with HTTP 500, which arrives as an error with
 
 ## Per-API base URLs
 
-The list evaluator and the Inbox Placement Tester are separate hosts, so
-`zero_bounce_initialize_with_base_url` alone leaves them pointing at the live API.
+The bulk hosts, the list evaluator and the Inbox Placement Tester are not built
+from `api_base_url`, so `zero_bounce_initialize_with_base_url` alone leaves them
+pointing at the live API. Each one has a setter. They keep the pointer they are
+given rather than a copy, so the string has to outlive the client.
 
 ```c
+zero_bounce_set_bulk_api_base_url(zb, "https://bulkapi.zerobounce.net/v2");
+zero_bounce_set_bulk_api_scoring_base_url(zb, "https://bulkapi.zerobounce.net/v2/scoring");
+/* The S3 and SFTP jobs use the bulk host root, without /v2. */
+zero_bounce_set_bulk_api_root_url(zb, "https://bulkapi.zerobounce.net");
 zero_bounce_set_list_evaluator_base_url(zb, "https://bulkapi.zerobounce.net/v2/listevaluator");
 zero_bounce_set_inbox_placement_base_url(zb, "https://bulkapi.zerobounce.net/api/ipt");
 ```
