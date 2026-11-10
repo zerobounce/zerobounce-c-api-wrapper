@@ -97,6 +97,19 @@ typedef struct {
     char* country;
     char* processed_at;
     char* error;
+    /*
+     * Appended rather than grouped with the fields above, so the members
+     * before them keep their offsets.
+     */
+    /** Returned with domain_info set to true. */
+    char* domain_website_exists;
+    /** Returned with domain_info set to true. */
+    char* domain_registrant_company_name;
+    /**
+     * Set instead of a result while a greylist_processing retry is still
+     * running. The API spells this key "Message".
+     */
+    char* message;
 } ZBValidateResponse;
 
 /**

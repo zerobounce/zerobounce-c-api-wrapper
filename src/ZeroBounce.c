@@ -1437,7 +1437,7 @@ static void find_email_internal(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
@@ -1488,7 +1488,7 @@ static void search_domain_internal(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(j_obj);
@@ -2714,7 +2714,7 @@ void find_email(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);

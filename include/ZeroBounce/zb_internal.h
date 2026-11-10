@@ -71,6 +71,20 @@ bool zb_body_looks_like_html(const char *body);
 void zb_report_body_error(const char *body, long status_code, OnErrorCallback error_callback);
 /** Parses a 2xx non-HTML JSON body. On failure, reports a short error and returns false. */
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback);
+/**
+ * Whether a 2xx JSON body is an error with no "success" field to gate on: a
+ * non-empty "error", "error_message" or "Error" string. LIVE: an invalid or
+ * drained key answers validate, activity and getapiusage with {"error": ...},
+ * and the filters with {"Error": ...}, on an HTTP 200.
+ */
+bool zb_error_only_body(const char *body);
+/**
+ * zb_read_success_json for a call whose result is never a bare message: the
+ * email finder and domain search. A body made only of message fields is an
+ * error. Not for validate, which answers a repeated greylist_processing request
+ * with {"Message": "Greylist validation still in progress..."}.
+ */
+bool zb_read_non_message_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback);
 bool zb_batch_has_account_error(const json_object *batch, char **message_out);
 
 #endif

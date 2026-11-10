@@ -216,6 +216,24 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
         *http_code = 400;
         set_body(response_data, "Error: Error: api_key is invalid");
         content = "text/plain";
+    } else if (strncmp(key, "dead-key-", 9) == 0) {
+        /* LIVE (2026-11-11): what an invalid or drained key gets back, each
+           with an HTTP 200 and no "success" field. */
+        if (strstr(request.path, "guessformat")) {
+            set_body(response_data, "{\"Message\":\"Invalid API key or your account ran out of credits\"}");
+        } else if (strstr(request.path, "filters")) {
+            set_body(response_data, "{  \"Error\": \"Invalid API key or your account ran out of credits\"}");
+        } else if (strstr(request.path, "getapiusage")) {
+            set_body(response_data, "{\"error\":\"Invalid API key\"}");
+        } else {
+            set_body(response_data, "{\"error\":\"Invalid API key or your account ran out of credits\"}");
+        }
+    } else if (strncmp(key, "greylist-pending-", 17) == 0 && strstr(request.path, "/validate")) {
+        /* The documented answer to a repeated greylist_processing validate:
+           a result whose only field is Message, not an error. */
+        set_body(response_data, "{\"Message\":\"Greylist validation still in progress. Please try again later.\"}");
+    } else if (strncmp(key, "filter-message-", 15) == 0 && strstr(request.path, "filters")) {
+        set_body(response_data, "{\"Message\":\"Filter has been added.\"}");
     } else if (strstr(request.path, "validatebatch") && strncmp(key, "batch-account-", 14) == 0) {
         set_body(response_data,
             "{\"email_batch\":[],\"errors\":[{\"email_address\":\"all\",\"error\":\"Invalid API Key or your account ran out of credits\"}]}");
@@ -344,6 +362,13 @@ static void on_validate(ZBValidateResponse response) {
     g_success_called = 1;
     snprintf(tls_echo, sizeof(tls_echo), "%s", response.address ? response.address : "");
     snprintf(g_echo, sizeof(g_echo), "%s", tls_echo);
+}
+
+static char g_validate_message[256];
+
+static void on_validate_message(ZBValidateResponse response) {
+    g_success_called = 1;
+    snprintf(g_validate_message, sizeof(g_validate_message), "%s", response.message ? response.message : "");
 }
 
 static void on_batch(ZBValidateBatchResponse response) {
@@ -1671,6 +1696,62 @@ void test_offline_batch_partial(void) {
     email_to_validate_vector_free(&emails);
 }
 
+static void expect_dead_key(const char *name, const char *message) {
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, name);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, name);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(message, g_error_text, name);
+    reset_offline();
+}
+
+/* An invalid or drained key answers with an HTTP 200 and an error-only body.
+   Every call must reach the error callback with the API's own message. */
+void test_offline_dead_key_is_an_error(void) {
+    const char *drained = "Invalid API key or your account ran out of credits";
+    reset_offline();
+    ZeroBounce *zb = client_with("dead-key-user");
+    validate_email(zb, "a@example.com", "", on_validate, on_error);
+    expect_dead_key("validate", drained);
+    get_activity_data(zb, "a@example.com", on_activity, on_error);
+    expect_dead_key("activity", drained);
+    struct tm start = {0};
+    struct tm end = {0};
+    start.tm_year = 126; start.tm_mon = 9; start.tm_mday = 1;
+    end.tm_year = 126; end.tm_mon = 9; end.tm_mday = 2;
+    get_api_usage(zb, start, end, on_usage, on_error);
+    expect_dead_key("api usage", "Invalid API key");
+    find_email_by_domain_first_name(zb, "example.com", "Ada", on_find, on_error);
+    expect_dead_key("find email", drained);
+    search_domain_by_domain(zb, "example.com", on_domain, on_error);
+    expect_dead_key("domain search", drained);
+    find_email(zb, "example.com", "Ada", "", "Lovelace", on_find, on_error);
+    expect_dead_key("find_email (deprecated)", drained);
+    add_filter(zb, "allow", "email", "x@example.com", on_raw, on_error);
+    expect_dead_key("add_filter", drained);
+    delete_filter(zb, "allow", "email", "x@example.com", on_raw, on_error);
+    expect_dead_key("delete_filter", drained);
+    list_filters(zb, false, on_raw, on_error);
+    expect_dead_key("list_filters GET", drained);
+    list_filters(zb, true, on_raw, on_error);
+    expect_dead_key("list_filters POST", drained);
+}
+
+/* The error-body checks must not turn a real result into a failure. */
+void test_offline_bare_message_is_a_result_where_the_api_means_one(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("greylist-pending-user");
+    g_validate_message[0] = '\0';
+    validate_email(zb, "a@example.com", "", on_validate_message, on_error);
+    TEST_ASSERT_FALSE_MESSAGE(g_error_called, g_error_text);
+    TEST_ASSERT_TRUE(g_success_called);
+    /* The pending answer is a result, and its text lands on response.message. */
+    TEST_ASSERT_EQUAL_STRING("Greylist validation still in progress. Please try again later.", g_validate_message);
+    reset_offline();
+    zb = client_with("filter-message-user");
+    add_filter(zb, "allow", "email", "x@example.com", on_raw, on_error);
+    TEST_ASSERT_FALSE_MESSAGE(g_error_called, g_error_text);
+    TEST_ASSERT_TRUE(g_success_called);
+}
+
 typedef struct {
     int index;
     char echo[64];
@@ -1757,4 +1838,6 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_batch_account_error);
     RUN_TEST(test_offline_batch_partial);
     RUN_TEST(test_offline_concurrent_clients);
+    RUN_TEST(test_offline_dead_key_is_an_error);
+    RUN_TEST(test_offline_bare_message_is_a_result_where_the_api_means_one);
 }

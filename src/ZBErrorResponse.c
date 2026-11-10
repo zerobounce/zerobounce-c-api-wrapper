@@ -351,6 +351,78 @@ bool zb_success_means_failure(const char *body) {
     return failed;
 }
 
+static bool zb_nonempty_string_field(json_object *object, const char *key) {
+    json_object *value = NULL;
+    if (!json_object_object_get_ex(object, key, &value) || !json_object_is_type(value, json_type_string)) {
+        return false;
+    }
+    return zb_skip_ws(json_object_get_string(value))[0] != '\0';
+}
+
+static json_object *zb_parse_object_without_success(const char *body) {
+    const char *text = zb_skip_ws(body ? body : "");
+    json_object *parsed;
+    if (text[0] != '{') {
+        return NULL;
+    }
+    parsed = json_tokener_parse(text);
+    if (!parsed) {
+        return NULL;
+    }
+    if (!json_object_is_type(parsed, json_type_object) || json_object_object_get_ex(parsed, "success", NULL)) {
+        json_object_put(parsed);
+        return NULL;
+    }
+    return parsed;
+}
+
+bool zb_error_only_body(const char *body) {
+    static const char *const keys[] = {"error", "error_message", "Error"};
+    json_object *parsed = zb_parse_object_without_success(body);
+    bool found = false;
+    size_t i;
+    if (!parsed) {
+        return false;
+    }
+    for (i = 0; i < sizeof(keys) / sizeof(keys[0]) && !found; i++) {
+        found = zb_nonempty_string_field(parsed, keys[i]);
+    }
+    json_object_put(parsed);
+    return found;
+}
+
+/* An object with no "success" field whose keys are all message keys, at least
+   one of them a non-empty string. */
+static bool zb_message_only_body(const char *body) {
+    static const char *const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
+    json_object *parsed = zb_parse_object_without_success(body);
+    bool has_text = false;
+    bool only_messages = true;
+    if (!parsed) {
+        return false;
+    }
+    json_object_object_foreach(parsed, key, value) {
+        bool known = false;
+        size_t i;
+        (void)value;
+        for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            if (strcmp(key, keys[i]) == 0) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            only_messages = false;
+            break;
+        }
+        if (zb_nonempty_string_field(parsed, key)) {
+            has_text = true;
+        }
+    }
+    json_object_put(parsed);
+    return only_messages && has_text;
+}
+
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback) {
     const char *text = body ? body : "";
     json_object *parsed;
@@ -363,8 +435,14 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
      * result. getfile and deletefile report an unknown or deleted file id
      * that way, and the caller should not have to inspect a flag to notice.
      */
+    /*
+     * LIVE: so is an error with no "success" field at all. An invalid or
+     * drained key answers validate, activity and getapiusage with
+     * {"error": ...} on an HTTP 200; parsed, that used to reach the success
+     * callback as an empty result.
+     */
     if (status_code > 299 || zb_body_looks_like_html(text) ||
-        zb_skip_ws(text)[0] == '\0' || zb_success_means_failure(text)) {
+        zb_skip_ws(text)[0] == '\0' || zb_success_means_failure(text) || zb_error_only_body(text)) {
         zb_report_body_error(text, status_code, error_callback);
         return false;
     }
@@ -421,4 +499,20 @@ int compare_zb_error_response(const ZBErrorResponse* response1, const ZBErrorRes
     }
 
     return 1;
+}
+
+bool zb_read_non_message_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback) {
+    /*
+     * LIVE: guessformat answers an invalid or drained key with an HTTP 200 and
+     * nothing but {"Message": "Invalid API key or your account ran out of
+     * credits"}, which used to come back as an empty result.
+     */
+    if (status_code <= 299 && zb_message_only_body(body)) {
+        if (out) {
+            *out = NULL;
+        }
+        zb_report_body_error(body, status_code, error_callback);
+        return false;
+    }
+    return zb_read_success_json(body, status_code, out, error_callback);
 }

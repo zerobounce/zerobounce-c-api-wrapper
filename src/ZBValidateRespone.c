@@ -105,6 +105,9 @@ ZBValidateResponse new_zb_validate_response() {
     response.country = "";
     response.processed_at = "";
     response.error = "";
+    response.domain_website_exists = "";
+    response.domain_registrant_company_name = "";
+    response.message = "";
 
     return response;
 }
@@ -118,6 +121,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         ", domain='%s'"
         ", did_you_mean='%s'"
         ", domain_age_days='%s'"
+        ", active_in_days='%s'"
+        ", active_first_seen='%s'"
         ", free_email=%d"
         ", mx_found=%d"
         ", mx_record='%s'"
@@ -133,6 +138,9 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         ", country='%s'"
         ", processed_at='%s'"
         ", error='%s'"
+        ", domain_website_exists='%s'"
+        ", domain_registrant_company_name='%s'"
+        ", message='%s'"
         "}";
 
     int size = snprintf(
@@ -144,6 +152,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         response->domain,
         response->did_you_mean,
         response->domain_age_days,
+        response->active_in_days,
+        response->active_first_seen,
         response->free_email,
         response->mx_found,
         response->mx_record,
@@ -158,7 +168,10 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         response->zip_code,
         response->country,
         response->processed_at,
-        response->error
+        response->error,
+        response->domain_website_exists,
+        response->domain_registrant_company_name,
+        response->message
     );
 
     if (size < 0) {
@@ -179,6 +192,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         response->domain,
         response->did_you_mean,
         response->domain_age_days,
+        response->active_in_days,
+        response->active_first_seen,
         response->free_email,
         response->mx_found,
         response->mx_record,
@@ -193,7 +208,10 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
         response->zip_code,
         response->country,
         response->processed_at,
-        response->error
+        response->error,
+        response->domain_website_exists,
+        response->domain_registrant_company_name,
+        response->message
     );
     return buffer;
 }
@@ -235,6 +253,10 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
     r.country = *(char**)get_json_value(j, json_type_string, "country", &(char*){""});
     r.processed_at = *(char**)get_json_value(j, json_type_string, "processed_at", &(char*){""});
     r.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
+    r.domain_website_exists = *(char**)get_json_value(j, json_type_string, "domain_website_exists", &(char*){""});
+    r.domain_registrant_company_name = *(char**)get_json_value(j, json_type_string, "domain_registrant_company_name", &(char*){""});
+    /* A repeated greylist_processing request answers with nothing but this. */
+    r.message = *(char**)get_json_value(j, json_type_string, "Message", &(char*){""});
 
     return r;
 }
@@ -264,5 +286,8 @@ int compare_zb_validate_response(const ZBValidateResponse* response1, const ZBVa
         strcmp(response1->zip_code, response2->zip_code) == 0 &&
         strcmp(response1->country, response2->country) == 0 &&
         strcmp(response1->processed_at, response2->processed_at) == 0 &&
-        strcmp(response1->error, response2->error) == 0;
+        strcmp(response1->error, response2->error) == 0 &&
+        strcmp(response1->domain_website_exists, response2->domain_website_exists) == 0 &&
+        strcmp(response1->domain_registrant_company_name, response2->domain_registrant_company_name) == 0 &&
+        strcmp(response1->message, response2->message) == 0;
 }

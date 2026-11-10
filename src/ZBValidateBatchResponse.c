@@ -134,6 +134,9 @@ void validate_response_vector_append(ValidateResponseVector* vector, const ZBVal
     vector->data[vector->size].country = strdup(response.country);
     vector->data[vector->size].processed_at = strdup(response.processed_at);
     vector->data[vector->size].error = strdup(response.error);
+    vector->data[vector->size].domain_website_exists = strdup(response.domain_website_exists);
+    vector->data[vector->size].domain_registrant_company_name = strdup(response.domain_registrant_company_name);
+    vector->data[vector->size].message = strdup(response.message);
     vector->size++;
 }
 
@@ -159,6 +162,9 @@ void validate_response_vector_free(ValidateResponseVector* vector) {
         free(vector->data[i].country);
         free(vector->data[i].processed_at);
         free(vector->data[i].error);
+        free(vector->data[i].domain_website_exists);
+        free(vector->data[i].domain_registrant_company_name);
+        free(vector->data[i].message);
     }
     free(vector->data);
     vector->data = NULL;

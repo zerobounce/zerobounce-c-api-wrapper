@@ -1,5 +1,5 @@
 #### INSTALLATION
-Before installing the wrapper, you have to make sure that `CMake` is installed on your system. It can be downloaded from [here](https://cmake.org/download/).
+Before installing the wrapper, you have to make sure that `CMake` 3.21 or newer is installed on your system. It can be downloaded from [here](https://cmake.org/download/).
 
 You can install by using CMake with `FetchContent`. Add the following to your `CMakeLists.txt`:
 ```cmake
@@ -24,15 +24,31 @@ Alternatively, you can also use the CLI commands in the root directory of your p
 
 ###### LINUX
 
+libcurl is built against OpenSSL, so install its headers first (on Debian/Ubuntu, `libssl-dev`).
+
 ```bash
 mkdir build
 cmake -S . -B build -G "Unix Makefiles"
 cmake --build build
 ```
 
+###### MACOS
+
+libcurl is built against OpenSSL 3 or newer, because curl no longer supports Secure Transport. Install it with Homebrew; CMake finds the linked `openssl` formula on its own:
+
+```bash
+brew install openssl
+cmake -S . -B build -G "Unix Makefiles"
+cmake --build build
+```
+
+For a keg-only formula such as `openssl@3`, add `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"`.
+
+Certificates are verified against the macOS trust store (curl's `USE_APPLE_SECTRUST`).
+
 ###### WINDOWS
 
-You have to make sure that `MinGW` is installed on your system. It can be installed following the steps [here](https://code.visualstudio.com/docs/cpp/config-mingw).
+libcurl uses Windows' own TLS (Schannel), so no extra TLS library is needed. You have to make sure that `MinGW` is installed on your system. It can be installed following the steps [here](https://code.visualstudio.com/docs/cpp/config-mingw).
 
 ```bash
 mkdir build
@@ -45,13 +61,20 @@ Be aware that the library may require some .dll files (found in the `build` dire
 #### USAGE
 Include the library in your file:
 ```c
-###include <ZeroBounce/ZeroBounce.h>
+#include <ZeroBounce/ZeroBounce.h>
 ```
 
-Initialize the wrapper with your api key and preferred api:
+Initialize the wrapper with your api key:
 ```c
 ZeroBounce* zb = zero_bounce_get_instance();
-zero_bounce_initialize(zb, "<YOUR_API_KEY>", ZB_Api_URL_Default);
+zero_bounce_initialize(zb, "<YOUR_API_KEY>");
+```
+
+To use a regional API instead of the default one, pass a `ZBApiURL`
+(`ZB_Api_URL_Default`, `ZB_Api_URL_USA` or `ZB_Api_URL_EU`):
+```c
+ZeroBounce* zb = zero_bounce_get_instance();
+zero_bounce_initialize_with_base_url(zb, "<YOUR_API_KEY>", ZB_Api_URL_EU);
 ```
 
 #### Examples
@@ -160,13 +183,13 @@ char* file_path = "<FILE_PATH>"; 			// The path of the csv or txt file
 int email_address_column = 3; 			// The index of "email" column in the file. Index starts at 1
 SendFileOptions options = new_send_file_options();	// Additional options
 
-options.returnUrl = "https://domain.com/called/after/processing/request";
-options.firstNameColumn = 4;		// The index of "first name" column in the file
-options.lastNameColumn = 5;		// The index of "last name" column in the file
-options.genderColumn = 6;		// The index of "gender" column in the file
-options.ipAddressColumn = 7;		// The index of "IP address" column in the file
-options.hasHeaderRow = true;		// If this is `true` the first row is considered as table headers
-options.removeDuplicate = true;	// If this is `true` the duplicate emails will be removed
+options.return_url = "https://domain.com/called/after/processing/request";
+options.first_name_column = 4;		// The index of "first name" column in the file
+options.last_name_column = 5;		// The index of "last name" column in the file
+options.gender_column = 6;		// The index of "gender" column in the file
+options.ip_address_column = 7;		// The index of "IP address" column in the file
+options.has_header_row = true;		// If this is `true` the first row is considered as table headers
+options.remove_duplicate = true;	// If this is `true` the duplicate emails will be removed
 
 send_file(zb, file_path, email_address_column, options, on_success_send_file, on_error);
 ```
@@ -249,8 +272,8 @@ char* file_path = "<FILE_PATH>";			// The path of the csv or txt file
 int email_address_column = 3; 			// The index of "email" column in the file. Index starts at 1
 SendFileOptions options = new_send_file_options();	// Additional options
 
-options.returnUrl = "https://domain.com/called/after/processing/request";
-options.hasHeaderRow = true;            // If this is `true` the first row is considered as table headers
+options.return_url = "https://domain.com/called/after/processing/request";
+options.has_header_row = true;            // If this is `true` the first row is considered as table headers
 
 scoring_send_file(zb, file_path, email_address_column, options, on_success_send_file, on_error);
 ```
@@ -315,13 +338,26 @@ void on_success_callback(ZBFindEmailResponse response) {
     free(result);
 }
 
-// actual method
-find_email_by_domain(
-    zb, "example.com", "John", "", "Doe", on_success_callback, error_callback
+// by domain: first, middle and last name, or fewer of them
+find_email_by_domain_first_middle_last_name(
+    zb, "example.com", "John", "Quincy", "Doe", on_success_callback, error_callback
+);
+find_email_by_domain_first_last_name(
+    zb, "example.com", "John", "Doe", on_success_callback, error_callback
+);
+find_email_by_domain_first_name(
+    zb, "example.com", "John", on_success_callback, error_callback
 );
 
-find_email_by_company_name(
-    zb, "company", "John", "", "Doe", on_success_callback, error_callback
+// by company name, with the same three variants
+find_email_by_company_name_first_middle_last_name(
+    zb, "company", "John", "Quincy", "Doe", on_success_callback, error_callback
+);
+find_email_by_company_name_first_last_name(
+    zb, "company", "John", "Doe", on_success_callback, error_callback
+);
+find_email_by_company_name_first_name(
+    zb, "company", "John", on_success_callback, error_callback
 );
 ```
 
@@ -549,7 +585,9 @@ zero_bounce_set_inbox_placement_base_url(zb, "https://bulkapi.zerobounce.net/api
 
 It is recommended that the development should be done on Linux.
 
-After checking out the repo, build the library then run tests.
+After checking out the repo, build the library then run the tests from the
+repository root. The test binary writes downloaded files under
+`test/downloads/`, relative to the current directory, so run it from there:
 
 ```bash
 ./build/bin/ZeroBounceTests
@@ -558,6 +596,6 @@ After checking out the repo, build the library then run tests.
 You should see an output like this
 
 ```bash
-24 Tests 0 Failures 0 Ignored
+105 Tests 0 Failures 0 Ignored
 OK
 ```

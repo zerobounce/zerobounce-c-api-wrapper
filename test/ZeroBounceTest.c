@@ -383,6 +383,144 @@ void test_sub_status_unknown_falls_back_to_none(void)
     TEST_ASSERT_EQUAL_INT(None, sub_status_from_string("some_future_sub_status"));
 }
 
+void test_validate_response_reads_domain_info(void)
+{
+    // domain_info=true adds these two to a validate result.
+    const char* json =
+        "{\n"
+        "    \"address\": \"valid@example.com\",\n"
+        "    \"status\": \"valid\",\n"
+        "    \"sub_status\": \"\",\n"
+        "    \"domain_website_exists\": \"true\",\n"
+        "    \"domain_registrant_company_name\": \"Example Inc.\"\n"
+        "}";
+    json_object* j = json_tokener_parse(json);
+    ZBValidateResponse parsed = zb_validate_response_from_json(j);
+    TEST_ASSERT_EQUAL_STRING("true", parsed.domain_website_exists);
+    TEST_ASSERT_EQUAL_STRING("Example Inc.", parsed.domain_registrant_company_name);
+    TEST_ASSERT_EQUAL_STRING("", parsed.message);
+
+    char* text = zb_validate_response_to_string(&parsed);
+    TEST_ASSERT_NOT_NULL(text);
+    TEST_ASSERT_NOT_NULL(strstr(text, "domain_website_exists='true'"));
+    TEST_ASSERT_NOT_NULL(strstr(text, "domain_registrant_company_name='Example Inc.'"));
+    free(text);
+
+    ZBValidateResponse other = parsed;
+    other.domain_registrant_company_name = "Someone Else";
+    TEST_ASSERT_EQUAL_INT(0, compare_zb_validate_response(&parsed, &other));
+
+    ZBValidateResponse empty = new_zb_validate_response();
+    TEST_ASSERT_EQUAL_STRING("", empty.domain_website_exists);
+    TEST_ASSERT_EQUAL_STRING("", empty.domain_registrant_company_name);
+    TEST_ASSERT_EQUAL_STRING("", empty.message);
+    json_object_put(j);
+}
+
+void test_validate_response_to_string_includes_every_field(void)
+{
+    // One distinct value per member, so a field left out of the format
+    // string (or printed in the wrong slot) shows up as a missing substring.
+    ZBValidateResponse r = new_zb_validate_response();
+    r.address = "addr@example.com";
+    r.status = Valid;
+    r.sub_status = AliasAddress;
+    r.account = "acct";
+    r.domain = "example.com";
+    r.did_you_mean = "dym@example.com";
+    r.domain_age_days = "9000";
+    r.active_in_days = "30";
+    r.active_first_seen = "2024-01-02";
+    r.free_email = true;
+    r.mx_found = true;
+    r.mx_record = "mx.example.com";
+    r.smtp_provider = "smtp-provider";
+    r.catchall_domain = true;
+    r.catchall_domain_set = true;
+    r.first_name = "First";
+    r.last_name = "Last";
+    r.gender = "female";
+    r.city = "City";
+    r.region = "Region";
+    r.zip_code = "12345";
+    r.country = "Country";
+    r.processed_at = "2026-11-11 00:00:00.000";
+    r.error = "err";
+    r.domain_website_exists = "true";
+    r.domain_registrant_company_name = "Example Inc.";
+    r.message = "msg";
+
+    char* text = zb_validate_response_to_string(&r);
+    TEST_ASSERT_NOT_NULL(text);
+
+    char expected[64];
+    snprintf(expected, sizeof expected, "status=%d,", Valid);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(text, expected), text);
+    snprintf(expected, sizeof expected, "sub_status=%d,", AliasAddress);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(text, expected), text);
+
+    const char* parts[] = {
+        "address='addr@example.com'",
+        "account='acct'",
+        "domain='example.com'",
+        "did_you_mean='dym@example.com'",
+        "domain_age_days='9000'",
+        "active_in_days='30'",
+        "active_first_seen='2024-01-02'",
+        "free_email=1",
+        "mx_found=1",
+        "mx_record='mx.example.com'",
+        "smtp_provider='smtp-provider'",
+        "catchall_domain=1",
+        "catchall_domain_set=1",
+        "first_name='First'",
+        "last_name='Last'",
+        "gender='female'",
+        "city='City'",
+        "region='Region'",
+        "zip_code='12345'",
+        "country='Country'",
+        "processed_at='2026-11-11 00:00:00.000'",
+        "error='err'",
+        "domain_website_exists='true'",
+        "domain_registrant_company_name='Example Inc.'",
+        "message='msg'",
+    };
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(text, parts[i]), parts[i]);
+    }
+    free(text);
+}
+
+void test_validate_response_reads_greylist_message(void)
+{
+    // A repeated greylist_processing validate answers with nothing but "Message".
+    const char* json = "{\"Message\":\"Greylist validation still in progress. Please try again later.\"}";
+    json_object* j = json_tokener_parse(json);
+    ZBValidateResponse parsed = zb_validate_response_from_json(j);
+    TEST_ASSERT_EQUAL_STRING("Greylist validation still in progress. Please try again later.", parsed.message);
+    TEST_ASSERT_EQUAL_STRING("", parsed.address);
+    TEST_ASSERT_EQUAL_INT(UnknownValue, parsed.status);
+    json_object_put(j);
+}
+
+void test_validate_batch_copies_domain_info_and_message(void)
+{
+    const char* json =
+        "{\"email_batch\":[{\"address\":\"valid@example.com\",\"status\":\"valid\","
+        "\"domain_website_exists\":\"true\",\"domain_registrant_company_name\":\"Example Inc.\"}],"
+        "\"errors\":[]}";
+    json_object* j = json_tokener_parse(json);
+    ZBValidateBatchResponse parsed = zb_validate_batch_response_from_json(j);
+    json_object_put(j);  // the batch result holds its own copies
+    TEST_ASSERT_EQUAL_size_t(1, parsed.email_batch.size);
+    TEST_ASSERT_EQUAL_STRING("true", parsed.email_batch.data[0].domain_website_exists);
+    TEST_ASSERT_EQUAL_STRING("Example Inc.", parsed.email_batch.data[0].domain_registrant_company_name);
+    TEST_ASSERT_EQUAL_STRING("", parsed.email_batch.data[0].message);
+    validate_response_vector_free(&parsed.email_batch);
+    validate_error_vector_free(&parsed.errors);
+}
+
 void test_validate_email_valid(void)
 {
     response_json = "{\n"
@@ -1137,6 +1275,10 @@ int main(void)
     RUN_TEST(test_sub_status_ai_agent_mailbox);
     RUN_TEST(test_sub_status_ai_agent_mailbox_parsed_from_response);
     RUN_TEST(test_sub_status_unknown_falls_back_to_none);
+    RUN_TEST(test_validate_response_reads_domain_info);
+    RUN_TEST(test_validate_response_to_string_includes_every_field);
+    RUN_TEST(test_validate_response_reads_greylist_message);
+    RUN_TEST(test_validate_batch_copies_domain_info_and_message);
     RUN_TEST(test_get_credits_invalid);
     RUN_TEST(test_get_credits_valid);
     RUN_TEST(test_get_api_usage_invalid);

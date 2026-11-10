@@ -140,7 +140,9 @@ static void p3_send_json_success(
     OnErrorCallback error_callback
 ) {
     const char *body = response_data->response ? response_data->response : "";
-    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0') {
+    /* LIVE: the filters answer an invalid or drained key with an HTTP 200 and
+       {"Error": ...}, which used to be handed over as a successful result. */
+    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' || zb_error_only_body(body)) {
         zb_report_body_error(body, http_code, error_callback);
         return;
     }
