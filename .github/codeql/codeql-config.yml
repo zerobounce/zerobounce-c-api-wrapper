@@ -1,0 +1,15 @@
+# CodeQL configuration, referenced from .github/workflows/codeql.yml.
+#
+# test/ holds the offline and transport suites. They point the client at plain
+# http:// URLs on purpose (local stub servers, and assertions that the client
+# refuses to dial them), which cpp/non-https-url reports as alerts. Only the
+# library in src/ and include/ is code that ships.
+#
+# For C/C++ analysed from a build, paths-ignore alone does not remove files that
+# were compiled, so the workflow also builds only the library target (no test
+# executables). GitHub's docs ask for both: exclude the directory from the build
+# and list it here.
+name: "ZeroBounce C SDK CodeQL config"
+
+paths-ignore:
+  - test

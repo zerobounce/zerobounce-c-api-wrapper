@@ -2,11 +2,14 @@
  * The real libcurl transport against a local socket server: redirects are not
  * followed, and the total and connect timeouts are set on every request path.
  * These fail if CURLOPT_FOLLOWLOCATION, CURLOPT_TIMEOUT_MS or
- * CURLOPT_CONNECTTIMEOUT_MS is dropped from any path.
+ * CURLOPT_CONNECTTIMEOUT_MS is dropped from any path. A download answered
+ * with a JSON object or cut short is an error and leaves no file, and a
+ * column number of any int is sent whole.
  */
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -30,7 +33,9 @@
 typedef struct {
     int listen_fd;
     int port;
-    /* 1: answer 302 to /landed. 2: answer 200 with a CSV body.
+    /* 1: answer 302 to /landed. 2: answer 200 with a CSV body. 3: answer 200
+       with {"Message": ...} as application/json; 4: the same as text/csv.
+       5: a 200 header with Content-Length 1000, 26 bytes, then close.
        0: accept and never answer. */
     int redirect;
     volatile int stop;
@@ -38,6 +43,8 @@ typedef struct {
     pthread_mutex_t mu;
     int requests;
     int landed;
+    /* The last request received, headers and body. */
+    char last_request[16384];
 } TServer;
 
 static long t_now_ms(void) {
@@ -52,10 +59,28 @@ static void t_answer_redirect(TServer *server, int fd) {
     long deadline = t_now_ms() + 5000;
     char *header_end = NULL;
     size_t content_length = 0;
-    const char *response = server->redirect == 2
-        ? "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 24\r\nConnection: close\r\n\r\n"
-          "email\nsaved@example.com\n"
-        : "HTTP/1.1 302 Found\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const char *response;
+    switch (server->redirect) {
+    case 2:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 24\r\nConnection: close\r\n\r\n"
+                   "email\nsaved@example.com\n";
+        break;
+    case 3:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 28\r\n"
+                   "Connection: close\r\n\r\n{\"Message\":\"File not found\"}";
+        break;
+    case 4:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 28\r\n"
+                   "Connection: close\r\n\r\n{\"Message\":\"File not found\"}";
+        break;
+    case 5:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 1000\r\n"
+                   "Connection: close\r\n\r\nemail\npartial@example.com\n";
+        break;
+    default:
+        response = "HTTP/1.1 302 Found\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        break;
+    }
 
     request[0] = '\0';
     while (t_now_ms() < deadline && used + 1 < sizeof(request)) {
@@ -89,6 +114,7 @@ static void t_answer_redirect(TServer *server, int fd) {
     }
     pthread_mutex_lock(&server->mu);
     server->requests++;
+    memcpy(server->last_request, request, used + 1);
     if (strstr(request, " /landed")) {
         server->landed++;
     }
@@ -347,6 +373,85 @@ void test_transport_a_downloaded_file_is_saved(void) {
     zero_bounce_set_transport_for_test(0, 0, false);
 }
 
+/* Each of the six getfile calls, over the real transport. */
+static void t_download(int kind, ZeroBounce *zb, const char *path) {
+    switch (kind) {
+    case 0: get_file(zb, "fid", (char *)path, t_on_get, t_on_error); break;
+    case 1: scoring_get_file(zb, "fid", (char *)path, t_on_get, t_on_error); break;
+    case 2: get_file_streaming(zb, "fid", (char *)path, NULL, t_on_get, t_on_error); break;
+    case 3: scoring_get_file_streaming(zb, "fid", (char *)path, NULL, t_on_get, t_on_error); break;
+    case 4: email_finder_get_file(zb, "fid", (char *)path, t_on_get, t_on_error); break;
+    default: domain_search_get_file(zb, "fid", (char *)path, t_on_get, t_on_error); break;
+    }
+}
+
+static void t_expect_no_download(int mode, long status) {
+    const char *path = "test/downloads/transport-not-saved.csv";
+    TServer server;
+    char message[48];
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(5000, 5000, true);
+    t_start(&server, mode);
+    ZeroBounce *zb = t_client("http", server.port);
+    for (int kind = 0; kind < 6; kind++) {
+        FILE *handle;
+        remove(path);
+        t_errors = t_successes = 0;
+        t_status = -1;
+        t_download(kind, zb, path);
+        handle = fopen(path, "rb");
+        if (handle) {
+            fclose(handle);
+            remove(path);
+        }
+        snprintf(message, sizeof(message), "mode %d, getfile %d", mode, kind);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)status, (int)t_status, message);
+        TEST_ASSERT_NULL_MESSAGE(handle, message);
+    }
+    t_stop(&server);
+    zero_bounce_set_transport_for_test(0, 0, false);
+}
+
+void test_transport_a_json_body_is_not_saved(void) {
+    /* {"Message": ...} on an HTTP 200, with a JSON content type and without:
+       the content type comes from libcurl here, the streaming download
+       included. */
+    t_expect_no_download(3, 200);
+    t_expect_no_download(4, 200);
+}
+
+void test_transport_a_download_cut_short_is_not_saved(void) {
+    /* 26 of the 1000 bytes the header promised, then the connection closes. */
+    t_expect_no_download(5, 0);
+}
+
+void test_transport_a_column_number_of_any_int_is_sent_whole(void) {
+    /* The multipart fields were formatted into a 10-byte buffer: INT_MAX
+       needs 11 bytes and INT_MIN 12. */
+    TServer server;
+    SendFileOptions options = new_send_file_options();
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(5000, 5000, true);
+    t_start(&server, 2);
+    ZeroBounce *zb = t_client("http", server.port);
+
+    options.first_name_column = INT_MAX;
+    options.ip_address_column = INT_MAX;
+    send_file(zb, "email_file.csv", INT_MIN, options, t_on_send, t_on_error);
+    pthread_mutex_lock(&server.mu);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(server.last_request,
+        "name=\"email_address_column\"\r\n\r\n-2147483648\r\n"), "email_address_column");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(server.last_request,
+        "name=\"first_name_column\"\r\n\r\n2147483647\r\n"), "first_name_column");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(server.last_request,
+        "name=\"ip_address_column\"\r\n\r\n2147483647\r\n"), "ip_address_column");
+    pthread_mutex_unlock(&server.mu);
+    t_stop(&server);
+    zero_bounce_set_transport_for_test(0, 0, false);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -356,5 +461,8 @@ int main(void) {
     RUN_TEST(test_transport_redirects_are_not_followed);
     RUN_TEST(test_transport_every_path_has_a_total_timeout);
     RUN_TEST(test_transport_every_path_has_a_connect_timeout);
+    RUN_TEST(test_transport_a_json_body_is_not_saved);
+    RUN_TEST(test_transport_a_download_cut_short_is_not_saved);
+    RUN_TEST(test_transport_a_column_number_of_any_int_is_sent_whole);
     return UNITY_END();
 }

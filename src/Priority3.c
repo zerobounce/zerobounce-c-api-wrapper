@@ -443,8 +443,10 @@ static void p3_bulk_root_get_file(
     }
 
     const char *body = response_data.response ? response_data.response : "";
+    /* A JSON body, whatever its keys or content type, is the API saying why
+       there is no file. */
     if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' ||
-        zb_get_file_json_indicates_error(body)) {
+        zb_download_body_is_json(body, content_type)) {
         zb_report_body_error(body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
@@ -456,6 +458,8 @@ static void p3_bulk_root_get_file(
         } else {
             size_t written = fwrite(response_data.response, 1, response_data.size, file_stream);
             if (fclose(file_stream) != 0 || written != response_data.size) {
+                /* Part of the file may be on disk: it is not left looking like a result. */
+                remove(local_download_path);
                 if (error_callback) {
                     error_callback(parse_error("Could not write local_download_path"));
                 }

@@ -1,5 +1,6 @@
 # ZeroBounce C API – test image (CMake + Unity tests)
-FROM ubuntu:22.04
+# Same Ubuntu release as the ubuntu-latest CI runner (ubuntu-26.04).
+FROM ubuntu:26.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
