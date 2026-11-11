@@ -96,5 +96,11 @@ bool zb_error_only_body(const char *body);
  */
 bool zb_read_non_message_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback);
 bool zb_batch_has_account_error(const json_object *batch, char **message_out);
+/**
+ * Whether a download's body is the API saying why there is no file: a JSON
+ * content type, or a body that is a JSON object (a result file never starts
+ * with "{"), whatever its keys. content_type may be NULL.
+ */
+bool zb_download_body_is_json(const char *body, const char *content_type);
 
 #endif

@@ -413,7 +413,7 @@ bool zb_get_file_json_indicates_error(const char *body) {
         }
     }
 
-    const char *keys[] = {"message", "error", "error_message"};
+    const char *keys[] = {"message", "error", "error_message", "Message", "Error"};
     for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
         json_object *v = json_object_object_get(o, keys[k]);
         if (!v || json_object_is_type(v, json_type_null)) {
@@ -438,11 +438,17 @@ bool zb_get_file_json_indicates_error(const char *body) {
 }
 
 
-static bool zb_should_treat_getfile_body_as_error(const char *body, const char *content_type) {
+bool zb_download_body_is_json(const char *body, const char *content_type) {
     if (zb_ct_includes_application_json(content_type)) {
         return true;
     }
-    return zb_get_file_json_indicates_error(body);
+    if (!body) {
+        return false;
+    }
+    while (*body == ' ' || *body == '\t' || *body == '\n' || *body == '\r') {
+        body++;
+    }
+    return *body == '{';
 }
 
 
@@ -458,7 +464,7 @@ char *zb_format_get_file_error_message(const char *body) {
         return strdup(body[0] ? body : "Invalid getfile response");
     }
 
-    const char *keys[] = {"message", "error", "error_message"};
+    const char *keys[] = {"message", "error", "error_message", "Message", "Error"};
     for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
         json_object *v = json_object_object_get(o, keys[k]);
         if (!v || json_object_is_type(v, json_type_null)) {
@@ -1084,36 +1090,37 @@ static void send_file_internal(
     curl_mime_name(part, "file");
     curl_mime_filedata(part, file_path);
 
-    char int_str_option[10];
+    /* Room for any int: INT_MIN is 11 characters and a NUL. */
+    char int_str_option[16];
 
     part = curl_mime_addpart(multipart);
     curl_mime_name(part, "email_address_column");
-    sprintf(int_str_option, "%d", email_address_column_index);
+    snprintf(int_str_option, sizeof(int_str_option), "%d", email_address_column_index);
     curl_mime_data(part, int_str_option, CURL_ZERO_TERMINATED);
 
     if (!scoring) {
         if (options.first_name_column > 0) {
             part = curl_mime_addpart(multipart);
             curl_mime_name(part, "first_name_column");
-            sprintf(int_str_option, "%d", options.first_name_column);
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.first_name_column);
             curl_mime_data(part, int_str_option, CURL_ZERO_TERMINATED);
         }
         if (options.last_name_column > 0) {
             part = curl_mime_addpart(multipart);
             curl_mime_name(part, "last_name_column");
-            sprintf(int_str_option, "%d", options.last_name_column);
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.last_name_column);
             curl_mime_data(part, int_str_option, CURL_ZERO_TERMINATED);
         }
         if (options.gender_column > 0) {
             part = curl_mime_addpart(multipart);
             curl_mime_name(part, "gender_column");
-            sprintf(int_str_option, "%d", options.gender_column);
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.gender_column);
             curl_mime_data(part, int_str_option, CURL_ZERO_TERMINATED);
         }
         if (options.ip_address_column > 0) {
             part = curl_mime_addpart(multipart);
             curl_mime_name(part, "ip_address_column");
-            sprintf(int_str_option, "%d", options.ip_address_column);
+            snprintf(int_str_option, sizeof(int_str_option), "%d", options.ip_address_column);
             curl_mime_data(part, int_str_option, CURL_ZERO_TERMINATED);
         }
     }
@@ -1341,7 +1348,9 @@ static void get_file_internal(
         zb_report_body_error(body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
-        if (zb_should_treat_getfile_body_as_error(body, content_type)) {
+        /* A JSON body, whatever its keys or content type, is the API saying
+           why there is no file. */
+        if (zb_download_body_is_json(body, content_type)) {
             if (error_callback) {
                 char *msg = zb_format_get_file_error_message(body);
                 /* The API did answer: the status goes with the error. */
@@ -1382,6 +1391,8 @@ static void get_file_internal(
             }
             size_t written = fwrite(response_data.response, 1, response_data.size, file_stream);
             if (fclose(file_stream) != 0 || written != response_data.size) {
+                /* Part of the file may be on disk: it is not left looking like a result. */
+                remove(local_download_path);
                 if (error_callback) {
                     error_callback(parse_error("Could not write local_download_path"));
                 }
@@ -2149,10 +2160,37 @@ typedef struct {
     const char *path;
     char probe[ZB_STREAM_PROBE_BYTES + 1];
     size_t probe_size;
+    /* NULL for the offline test hook. */
+    CURL *curl;
+    /* The content type the test hook supplied, when there is no handle. */
+    const char *content_type;
     bool decided;
     bool rejected;
     bool open_failed;
+    bool write_failed;
 } ZbDownloadStream;
+
+/* Whether the held-back start of the body is the API's error, not a file. */
+static bool zb_stream_probe_is_error(ZbDownloadStream *stream) {
+    const char *content_type = stream->content_type;
+    if (stream->curl) {
+        char *from_curl = NULL;
+        if (curl_easy_getinfo(stream->curl, CURLINFO_CONTENT_TYPE, &from_curl) == CURLE_OK) {
+            content_type = from_curl;
+        }
+    }
+    return zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe) ||
+        zb_download_body_is_json(stream->probe, content_type);
+}
+
+/* Writes one chunk; a short write stops the transfer (CURLE_WRITE_ERROR). */
+static bool zb_stream_put(ZbDownloadStream *stream, const void *data, size_t size) {
+    if (size && fwrite(data, 1, size, stream->file) != size) {
+        stream->write_failed = true;
+        return false;
+    }
+    return true;
+}
 
 static bool zb_stream_open(ZbDownloadStream *stream) {
     struct stat sb;
@@ -2199,7 +2237,7 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
         }
         /* Enough to tell a file from an error page. */
         stream->decided = true;
-        if (zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe)) {
+        if (zb_stream_probe_is_error(stream)) {
             stream->rejected = true;
             return total;
         }
@@ -2207,13 +2245,15 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
             stream->open_failed = true;
             return total;
         }
-        fwrite(stream->probe, 1, stream->probe_size, stream->file);
-        if (take < total) {
-            fwrite((const char *)contents + take, 1, total - take, stream->file);
+        if (!zb_stream_put(stream, stream->probe, stream->probe_size) ||
+            !zb_stream_put(stream, (const char *)contents + take, total - take)) {
+            return 0;
         }
         return total;
     }
-    fwrite(contents, 1, total, stream->file);
+    if (stream->write_failed || !zb_stream_put(stream, contents, total)) {
+        return 0;
+    }
     return total;
 }
 
@@ -2223,8 +2263,7 @@ static void zb_stream_finish(ZbDownloadStream *stream) {
         return;
     }
     stream->decided = true;
-    if (zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe) ||
-        stream->probe_size == 0) {
+    if (stream->probe_size == 0 || zb_stream_probe_is_error(stream)) {
         stream->rejected = true;
         return;
     }
@@ -2232,7 +2271,25 @@ static void zb_stream_finish(ZbDownloadStream *stream) {
         stream->open_failed = true;
         return;
     }
-    fwrite(stream->probe, 1, stream->probe_size, stream->file);
+    zb_stream_put(stream, stream->probe, stream->probe_size);
+}
+
+/*
+ * Closes the file. A write that failed, or a close that could not flush the
+ * last of it, removes the partial file and returns false.
+ */
+static bool zb_stream_close(ZbDownloadStream *stream) {
+    if (stream->file) {
+        if (fclose(stream->file) != 0) {
+            stream->write_failed = true;
+        }
+        stream->file = NULL;
+    }
+    if (stream->write_failed) {
+        remove(stream->path);
+        return false;
+    }
+    return true;
 }
 
 static void get_file_streaming_internal(
@@ -2283,24 +2340,31 @@ static void get_file_streaming_internal(
     if (s_http_perform) {
         /* The offline suite drives the same probe-then-stream logic. */
         memory buffer = {0};
+        char *content_type = NULL;
         buffer.max_bytes = ZB_MAX_GETFILE_BYTES;
-        if (!s_http_perform(&buffer, &http_code, NULL)) {
+        if (!s_http_perform(&buffer, &http_code, &content_type)) {
             free(buffer.response);
+            free(content_type);
             free(url_path);
             if (error_callback) {
                 error_callback(parse_error("Mock request failed"));
             }
             return;
         }
+        stream.content_type = content_type;
         if (buffer.response && buffer.size) {
             zb_stream_write(buffer.response, 1, buffer.size, &stream);
         }
         free(buffer.response);
         free(url_path);
         zb_stream_finish(&stream);
-        if (stream.file) {
-            fclose(stream.file);
-            stream.file = NULL;
+        free(content_type);
+        stream.content_type = NULL;
+        if (!zb_stream_close(&stream)) {
+            if (error_callback) {
+                error_callback(parse_error("Could not write local_download_path"));
+            }
+            return;
         }
         if (http_code > 299 || stream.rejected) {
             remove(local_download_path);
@@ -2337,18 +2401,26 @@ static void get_file_streaming_internal(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, zb_stream_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&stream);
     zb_set_transport_options(curl);
+    stream.curl = curl;
 
     res = curl_easy_perform(curl);
-    zb_stream_finish(&stream);
-    if (stream.file) {
-        fclose(stream.file);
-        stream.file = NULL;
+    if (res == CURLE_OK) {
+        zb_stream_finish(&stream);
     }
+    stream.curl = NULL;
     http_code = get_http_code(curl);
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
     free(url_path);
 
+    if (!zb_stream_close(&stream)) {
+        /* Checked before res: a failed write stops the transfer with
+           CURLE_WRITE_ERROR, and this says why. */
+        if (error_callback) {
+            error_callback(parse_error("Could not write local_download_path"));
+        }
+        return;
+    }
     if (res != CURLE_OK) {
         char message[300];
         snprintf(message, sizeof(message),

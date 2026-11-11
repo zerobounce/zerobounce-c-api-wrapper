@@ -1,7 +1,9 @@
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include "unity.h"
@@ -1874,6 +1876,173 @@ void test_offline_get_file_json_error_keeps_the_http_status(void) {
     TEST_ASSERT_NULL(fopen("test/downloads/json-error.csv", "rb"));
 }
 
+/* One scripted HTTP 200 answer for every request, for the download tests. */
+static const char *g_scripted_body;
+static const char *g_scripted_type;
+static int g_scripted_errors;
+static int g_scripted_successes;
+static long g_scripted_status;
+static char g_scripted_text[256];
+
+static int scripted_perform(memory *response_data, long *http_code, char **content_type_out) {
+    size_t len = strlen(g_scripted_body);
+    response_data->response = malloc(len + 1);
+    memcpy(response_data->response, g_scripted_body, len + 1);
+    response_data->size = len;
+    *http_code = 200;
+    if (content_type_out) {
+        *content_type_out = g_scripted_type ? strdup(g_scripted_type) : NULL;
+    }
+    return 1;
+}
+
+static void scripted_on_error(ZBErrorResponse error) {
+    g_scripted_errors++;
+    g_scripted_status = error.status_code;
+    snprintf(g_scripted_text, sizeof(g_scripted_text), "%s", error.errors.size ? error.errors.data[0] : "");
+}
+
+static void scripted_on_get(ZBGetFileResponse response) {
+    (void)response;
+    g_scripted_successes++;
+}
+
+#define DOWNLOAD_KINDS 6
+static const char *download_name(int kind) {
+    static const char *names[DOWNLOAD_KINDS] = {
+        "get_file", "scoring_get_file", "get_file_streaming", "scoring_get_file_streaming",
+        "email_finder_get_file", "domain_search_get_file"};
+    return names[kind];
+}
+
+static void download(int kind, ZeroBounce *zb, const char *path) {
+    switch (kind) {
+    case 0: get_file(zb, "fid", (char *)path, scripted_on_get, scripted_on_error); break;
+    case 1: scoring_get_file(zb, "fid", (char *)path, scripted_on_get, scripted_on_error); break;
+    case 2: get_file_streaming(zb, "fid", (char *)path, NULL, scripted_on_get, scripted_on_error); break;
+    case 3: scoring_get_file_streaming(zb, "fid", (char *)path, NULL, scripted_on_get, scripted_on_error); break;
+    case 4: email_finder_get_file(zb, "fid", (char *)path, scripted_on_get, scripted_on_error); break;
+    default: domain_search_get_file(zb, "fid", (char *)path, scripted_on_get, scripted_on_error); break;
+    }
+}
+
+void test_offline_a_json_object_in_place_of_a_file_is_an_error(void) {
+    /* LIVE: getfile answers with a JSON object to say why there is no file:
+       {"error": ...}, {"message": ...}, and for an invalid key {"Message": ...}
+       or {"Error": ...}. Any JSON object, with a JSON content type or not, is
+       an error carrying the HTTP status, and nothing is written. The streaming
+       download used to save all of these; the others saved "Message" and
+       "Error" bodies without a JSON content type. */
+    const char *bodies[] = {"{\"error\":\"File not found\"}", "{\"message\":\"File not ready\"}",
+                            "{\"Message\":\"File not found\"}", " {\"Error\":\"Invalid API key\"}",
+                            "{\"file_id\":\"x\"}"};
+    const char *types[] = {"application/json", "text/csv", NULL};
+    const char *path = "test/downloads/offline-json-object.csv";
+    char message[160];
+    ZeroBounce *zb = client_with("json-object-key");
+
+    zero_bounce_set_http_perform_for_test(scripted_perform);
+    for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+        for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+            for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+                FILE *handle;
+                g_scripted_body = bodies[b];
+                g_scripted_type = types[t];
+                g_scripted_errors = g_scripted_successes = 0;
+                g_scripted_status = -1;
+                remove(path);
+                download(kind, zb, path);
+                handle = fopen(path, "rb");
+                if (handle) {
+                    fclose(handle);
+                    remove(path);
+                }
+                snprintf(message, sizeof(message), "%s %s %s", download_name(kind), bodies[b],
+                         types[t] ? types[t] : "(no content type)");
+                TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_scripted_errors, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_scripted_successes, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_scripted_status, message);
+                TEST_ASSERT_NULL_MESSAGE(handle, message);
+            }
+        }
+    }
+    /* The error carries the API's message. */
+    g_scripted_body = "{\"Message\":\"File not found\"}";
+    g_scripted_type = "text/csv";
+    for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+        g_scripted_text[0] = '\0';
+        download(kind, zb, path);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("File not found", g_scripted_text, download_name(kind));
+    }
+    TEST_ASSERT_TRUE(zb_get_file_json_indicates_error("{\"Error\":\"Invalid API key\"}"));
+    zero_bounce_set_http_perform_for_test(offline_perform);
+}
+
+void test_offline_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
+    /* A file size limit stops the write part-way, as a full disk would. Every
+       download reports it and removes the partial file; the streaming one
+       used to report success. Bodies shorter and longer than the streaming
+       probe (4096 bytes) take its two write paths. */
+    static char long_body[6001];
+    const char *bodies[2] = {"email\nshort-write@example.com\n", long_body};
+    const char *path = "test/downloads/offline-short-write.csv";
+    int errors[2][DOWNLOAD_KINDS];
+    int successes[2][DOWNLOAD_KINDS];
+    int left[2][DOWNLOAD_KINDS];
+    char text[2][DOWNLOAD_KINDS][sizeof(g_scripted_text)];
+    struct rlimit saved;
+    struct rlimit tight;
+    void (*previous)(int);
+    char message[96];
+    ZeroBounce *zb = client_with("short-write-key");
+
+    memset(long_body, 'a', sizeof(long_body) - 1);
+    memcpy(long_body, "email\n", 6);
+    long_body[sizeof(long_body) - 1] = '\0';
+    zero_bounce_set_http_perform_for_test(scripted_perform);
+    g_scripted_type = "text/csv";
+    remove(path);
+
+    TEST_ASSERT_EQUAL_INT(0, getrlimit(RLIMIT_FSIZE, &saved));
+    tight = saved;
+    tight.rlim_cur = 8;
+    previous = signal(SIGXFSZ, SIG_IGN);
+    TEST_ASSERT_EQUAL_INT(0, setrlimit(RLIMIT_FSIZE, &tight));
+    /* No assertion until the limit is lifted: a failed one would leave it in
+       place, and a test log that is a file is under the same limit. */
+    for (int b = 0; b < 2; b++) {
+        g_scripted_body = bodies[b];
+        for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+            FILE *handle;
+            g_scripted_errors = g_scripted_successes = 0;
+            g_scripted_text[0] = '\0';
+            download(kind, zb, path);
+            errors[b][kind] = g_scripted_errors;
+            successes[b][kind] = g_scripted_successes;
+            snprintf(text[b][kind], sizeof(text[b][kind]), "%s", g_scripted_text);
+            handle = fopen(path, "rb");
+            left[b][kind] = handle != NULL;
+            if (handle) {
+                fclose(handle);
+                remove(path);
+            }
+        }
+    }
+    setrlimit(RLIMIT_FSIZE, &saved);
+    signal(SIGXFSZ, previous);
+    zero_bounce_set_http_perform_for_test(offline_perform);
+
+    for (int b = 0; b < 2; b++) {
+        for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+            snprintf(message, sizeof(message), "%s, %zu-byte body", download_name(kind), strlen(bodies[b]));
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, errors[b][kind], message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, successes[b][kind], message);
+            TEST_ASSERT_NOT_NULL_MESSAGE(strstr(text[b][kind], "Could not write"), message);
+            TEST_ASSERT_FALSE_MESSAGE(left[b][kind], message);
+        }
+    }
+}
+
 void test_offline_base_url_setters_strip_trailing_slashes(void) {
     char url[64];
     ZeroBounce *zb = client_with("slash-key");
@@ -2104,4 +2273,6 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_base_url_setters_strip_trailing_slashes);
     RUN_TEST(test_offline_every_call_is_https_only);
     RUN_TEST(test_offline_a_rejected_key_replaces_the_previous_one);
+    RUN_TEST(test_offline_a_json_object_in_place_of_a_file_is_an_error);
+    RUN_TEST(test_offline_a_short_write_is_an_error_and_leaves_no_partial_file);
 }

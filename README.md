@@ -235,7 +235,7 @@ reaches the error callback and no partial file is left behind.
 get_file_streaming(zb, file_id, local_download_path, NULL, on_success_get_file, on_error);
 ```
 
-If the HTTP status is an error, or the body is a JSON error (including some HTTP 200 responses with `"success": false`), the error callback runs with a parsed message—not the get-file success callback. To inspect a raw body string yourself, use `zb_get_file_json_indicates_error(body)`; use `zb_format_get_file_error_message(body)` for a human-readable line (caller must `free()` the returned pointer).
+If the HTTP status is an error, the body is JSON (any JSON object, whatever its keys or content type, including HTTP 200 responses such as `{"success": false, ...}` or `{"Message": ...}`), the download is cut short, or the file cannot be written in full, the error callback runs with a parsed message—not the get-file success callback—and no file is left behind. This applies to every download, the streaming ones included. To inspect a raw body string yourself, use `zb_get_file_json_indicates_error(body)`; use `zb_format_get_file_error_message(body)` for a human-readable line (caller must `free()` the returned pointer).
 
 `ZBFileStatusResponse` includes `file_phase_2_status` when the API returns it.
 

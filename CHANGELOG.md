@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `get_file_streaming` and `scoring_get_file_streaming` saved a JSON error body as the downloaded file and called the success callback: `{"error": ...}`, `{"message": ...}`, `{"Message": ...}` and `{"Error": ...}` alike, with an `application/json` content type or without. Only `{"success": false, ...}` and HTML pages were caught. They now report it to the error callback with the HTTP status, as `get_file` does, and write nothing.
+- `get_file_streaming` and `scoring_get_file_streaming` ignored write errors: a full disk or a file size limit left a truncated file and still called the success callback. They now stop the transfer, remove the partial file and report `Could not write local_download_path`.
+- `get_file`, `scoring_get_file` and their `_with_options` forms saved a `{"Message": ...}` or `{"Error": ...}` body (as an invalid key answers) as the file when the content type was not `application/json`, and `email_finder_get_file` and `domain_search_get_file` saved it even with that content type. Every download now treats any JSON object body, whatever its keys or content type, as the API's error, carrying the HTTP status, as the Pascal and iOS SDKs do. `zb_get_file_json_indicates_error` and `zb_format_get_file_error_message` also recognise the `Message` and `Error` keys.
+- When `get_file` and its siblings, `email_finder_get_file` or `domain_search_get_file` could write a file only in part, the error was reported but the truncated file was left behind. It is now removed.
+- `send_file` and `scoring_send_file` formatted the column numbers it sends into a 10-byte buffer, so a value of 10 digits or more, or a negative `email_address_column_index` of 9 digits or more (`INT_MAX` needs 11 bytes, `INT_MIN` 12), wrote one or two bytes past it. The buffer now holds any `int`, and the value is sent whole. gcc 15 warned about it.
+
 ## [3.0.0] - 2026-11-12
 
 ### Breaking
