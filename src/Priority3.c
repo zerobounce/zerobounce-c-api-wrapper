@@ -407,6 +407,9 @@ static void p3_bulk_root_get_file(
     char *content_type = NULL;
 
     zb_note_http_request("GET", url_path, NULL);
+    if (!zb_check_request_url(url_path, error_callback)) {
+        goto cleanup;
+    }
     if (!zb_http_perform_if_mock(&response_data, &http_code, &content_type)) {
         CURL *curl = curl_easy_init();
         if (!curl) {
@@ -431,7 +434,10 @@ static void p3_bulk_root_get_file(
             goto cleanup;
         }
         http_code = get_http_code(curl);
-        content_type = get_content_type_value(curl);
+        /* get_content_type_value points into the handle, which is about to be
+           cleaned up, and content_type is freed below: keep a copy. */
+        const char *header_value = get_content_type_value(curl);
+        content_type = header_value ? strdup(header_value) : NULL;
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
     }
@@ -440,19 +446,25 @@ static void p3_bulk_root_get_file(
     if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' ||
         zb_get_file_json_indicates_error(body)) {
         zb_report_body_error(body, http_code, error_callback);
-    } else if (success_callback) {
+    } else {
+        /* The file is written whether or not a success callback was passed. */
         FILE *file_stream = fopen(local_download_path, "wb");
         if (file_stream == NULL) {
             if (error_callback) {
                 error_callback(parse_error("Invalid file path"));
             }
         } else {
-            fwrite(response_data.response, 1, response_data.size, file_stream);
-            fclose(file_stream);
-            ZBGetFileResponse response = new_zb_get_file_response();
-            response.success = true;
-            response.local_file_path = local_download_path;
-            success_callback(response);
+            size_t written = fwrite(response_data.response, 1, response_data.size, file_stream);
+            if (fclose(file_stream) != 0 || written != response_data.size) {
+                if (error_callback) {
+                    error_callback(parse_error("Could not write local_download_path"));
+                }
+            } else if (success_callback) {
+                ZBGetFileResponse response = new_zb_get_file_response();
+                response.success = true;
+                response.local_file_path = local_download_path;
+                success_callback(response);
+            }
         }
     }
 
@@ -1019,13 +1031,13 @@ void export_s3_file(
 
 void zero_bounce_set_list_evaluator_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->list_evaluator_base_url = url;
+        zb->list_evaluator_base_url = zb_normalized_base_url(url);
     }
 }
 
 void zero_bounce_set_inbox_placement_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->inbox_placement_base_url = url;
+        zb->inbox_placement_base_url = zb_normalized_base_url(url);
     }
 }
 

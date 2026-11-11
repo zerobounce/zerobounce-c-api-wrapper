@@ -14,6 +14,16 @@ bool zb_check_request_url(const char *url, OnErrorCallback error_callback);
 /* Replaces the value of any api_key parameter in a message with REDACTED. */
 char *zb_redact_api_key(const char *text);
 char *zb_url_escape(const char *value);
+/* A copy of a base URL without its trailing slashes. The caller owns it. */
+char *zb_normalized_base_url(const char *url);
+/* The timeouts, no-redirect and https-only options every request gets. */
+void zb_set_transport_options(CURL *curl);
+/*
+ * Test hook: request timeouts in milliseconds (0 restores 120 s and 30 s), and
+ * whether http://127.0.0.1:<port> and http://localhost:<port> are allowed, so
+ * a local test server can stand in for the API.
+ */
+void zero_bounce_set_transport_for_test(long timeout_ms, long connect_timeout_ms, bool allow_loopback_http);
 int zb_make_request(
     char *url_path,
     char *request_type,

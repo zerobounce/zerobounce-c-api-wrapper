@@ -24,9 +24,10 @@ Guidance for AI coding agents working in this repository.
 cmake -S . -B build -G "Unix Makefiles"
 cmake --build build          # this is the typecheck; there is no separate lint step
 ./build/bin/ZeroBounceTests
+./build/bin/ZeroBounceTransportTests   # real libcurl against a local server: redirects, timeouts
 ```
 
-CI (`.github/workflows/sdk_ci.yml`) configures, builds, and runs `./build/bin/ZeroBounceTests`. That build is the typecheck. `build/` is generated; do not commit it.
+CI (`.github/workflows/sdk_ci.yml`) configures, builds, and runs `./build/bin/ZeroBounceTests` and `./build/bin/ZeroBounceTransportTests`. The transport tests are a separate binary because `ZeroBounceTests` replaces `curl_easy_perform` with fff fakes, which on Linux also replace the library's own calls. That build is the typecheck. `build/` is generated; do not commit it.
 
 The live suite is opt-in and is never part of that build:
 
@@ -48,7 +49,7 @@ Keys come from the environment only. Never write one into a file, a commit, a lo
 - **The live API wins over the docs.** Where they disagree, follow the API and say so in a comment at the call site, prefixed `LIVE:`. The ones found so far: `validatebatch` takes `timeout` as a JSON *string*; the Inbox Placement Tester authenticates with `Authorization: Bearer` and lists tests from `GET /tests` (plural); every S3/SFTP job requires both `file_name` and `return_url`, `validate_sftp_file` included, although the docs call its `file_name` optional; `send_evaluated_file` takes a file id as a form field, not an upload; Warmup's `check-domain-dmarc` takes an *email address*, not a domain; and `test-smtp-configuration` answers a failed SMTP login with HTTP 500.
 - **A `"success": false` field on an HTTP 200 is a failure.** `getfile` and `deletefile` report an unknown or deleted file id that way. `zb_success_means_failure` catches it in `zb_read_success_json`, and `ZBErrorResponse.status_code` carries the HTTP status.
 - **`export_sftp_file` sends `export_path`**, not the `export_bucket` that `export_s3_file` sends.
-- **Safety rails.** `zb_api_key_is_clean` rejects a key with surrounding whitespace or control characters, `zb_check_request_url` allows https only, `p3_escape_path_segment` rejects `.` and `..`, `set_write_callback` turns redirects off and restricts the protocol to https, and `zb_redact_api_key` keeps the key out of messages built from a URL. Use them rather than adding a second rail beside them.
+- **Safety rails.** `zb_api_key_is_clean` rejects a key with surrounding whitespace or control characters, `zb_check_request_url` allows https only and every request path calls it before sending, `p3_escape_path_segment` rejects `.` and `..`, `zb_set_transport_options` (called by `set_write_callback` and the streaming download) sets both timeouts, turns redirects off and restricts the protocol to https, and `zb_redact_api_key` keeps the key out of messages built from a URL. Use them rather than adding a second rail beside them.
 - **`p3_append_form_field` does not call `zb_note_http_field`.** The offline tests assert on the recorded request body (`OfflineRequest.body`), not on `has_field`, for anything built with it.
 - **Column indexes are 1-based** on bulk send-file name, gender, and IP columns. `0` means the field is left out. `send_file`'s email column is required and is sent as given, including `0`. `ValidateS3FileOptions.email_address_column` uses `-1` for omit, and `0` is sent.
 - **Tri-state ints are `-1` omit, `0` false, `1` true.** `timeout`, `activity_data`, `verify_plus`, `has_header_row`, and `allow_phase_2` follow that. Explicit `0` is sent as `false`.
@@ -75,6 +76,6 @@ Publishing and pushing tags need a maintainer's explicit approval. Do not bump t
 
 1. Move `[Unreleased]` entries under `## [x.y.z] - YYYY-MM-DD`, leave an empty `[Unreleased]` section, and update the compare links at the bottom of `CHANGELOG.md`.
 2. Set the same version in `project(ZeroBounce VERSION …)` in `CMakeLists.txt`. That is the only version field. There is no lockfile and no runtime version constant.
-3. `cmake --build build` and `./build/bin/ZeroBounceTests`.
+3. `cmake --build build`, `./build/bin/ZeroBounceTests` and `./build/bin/ZeroBounceTransportTests`.
 3a. Run the live suite by hand with real keys and both flags set, and paste its summary line into the release notes. The offline suite cannot catch an API that has changed shape underneath the SDK.
 4. Tag `vx.y.z` on that commit and run the Publish workflow with that tag. It creates the GitHub release. There is no package registry.

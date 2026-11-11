@@ -521,6 +521,59 @@ void test_warmup_blank_arguments_are_rejected(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+void test_warmup_a_rejected_key_replaces_the_previous_one(void) {
+    w_reset();
+    ZeroBounceWarmup *zbw = w_client("warm-key");
+    /* Carrying on with the old key would send requests the caller believes
+       go out under the new one. */
+    zero_bounce_warmup_initialize(zbw, "warm-key\n");
+    TEST_ASSERT_NULL(zbw->api_key);
+    warmup_get_seeds(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(w_error, "surrounding whitespace or control characters"));
+    TEST_ASSERT_EQUAL_INT(0, w_requests);
+
+    w_reset();
+    zero_bounce_warmup_initialize(zbw, "warm-key");
+    warmup_get_seeds(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE(w_error_called);
+    TEST_ASSERT_EQUAL_INT(1, w_requests);
+    zero_bounce_warmup_free(zbw);
+}
+
+void test_warmup_base_url_trailing_slashes_are_dropped(void) {
+    w_reset();
+    ZeroBounceWarmup *zbw = w_client("warm-key");
+    zero_bounce_warmup_set_base_url(zbw, "https://warmup-api.zerobounce.net//");
+    warmup_get_seeds(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_EQUAL_STRING(WARMUP_ROOT "/seeds", w_url);
+
+    /* And http is refused before anything is sent. */
+    w_reset();
+    zero_bounce_warmup_set_base_url(zbw, "http://warmup-api.zerobounce.net");
+    warmup_get_seeds(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_EQUAL_INT(0, w_requests);
+    zero_bounce_warmup_free(zbw);
+}
+
+void test_warmup_a_download_that_cannot_be_saved_is_not_a_success(void) {
+    const char *blocker = "test/downloads/warmup-not-a-directory";
+    FILE *handle = fopen(blocker, "wb");
+    TEST_ASSERT_NOT_NULL(handle);
+    fputs("x", handle);
+    fclose(handle);
+
+    w_reset();
+    w_next_body = "seed,provider\nseed@example.com,gmail\n";
+    ZeroBounceWarmup *zbw = w_client("warm-key");
+    warmup_download_seeds(zbw, "test/downloads/warmup-not-a-directory/seeds.csv", w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_FALSE(w_success_called);
+    zero_bounce_warmup_free(zbw);
+    remove(blocker);
+}
+
 void warmup_run_tests(void) {
     RUN_TEST(test_warmup_api_key_header_and_own_host);
     RUN_TEST(test_warmup_uninitialized_sends_nothing);
@@ -535,5 +588,8 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_test_smtp_configuration);
     RUN_TEST(test_warmup_csv_downloads);
     RUN_TEST(test_warmup_blank_arguments_are_rejected);
+    RUN_TEST(test_warmup_a_rejected_key_replaces_the_previous_one);
+    RUN_TEST(test_warmup_base_url_trailing_slashes_are_dropped);
+    RUN_TEST(test_warmup_a_download_that_cannot_be_saved_is_not_a_success);
     zero_bounce_set_http_perform_for_test(NULL);
 }

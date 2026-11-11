@@ -28,7 +28,9 @@ jobs:
         run: cmake -S . -B build -G "Unix Makefiles" && cmake --build build
 
       - name: Run tests
-        run: ./build/bin/ZeroBounceTests
+        run: |
+          ./build/bin/ZeroBounceTests
+          ./build/bin/ZeroBounceTransportTests
 
   test-min-cmake:
     # Builds and tests with the oldest CMake the project supports. 3.21 is the
@@ -63,4 +65,6 @@ jobs:
         run: cmake -S . -B build -G "Unix Makefiles" && cmake --build build
 
       - name: Run tests
-        run: ./build/bin/ZeroBounceTests
+        run: |
+          ./build/bin/ZeroBounceTests
+          ./build/bin/ZeroBounceTransportTests
