@@ -618,3 +618,7 @@ OK
 2. **Actions → Publish → Run workflow** with that tag.
 
 No package registry — GitHub release only. Pin the tag in FetchContent or as a submodule.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
