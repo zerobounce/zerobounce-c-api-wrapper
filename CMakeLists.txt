@@ -4,10 +4,12 @@ project(ZeroBounce VERSION 2.2.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Schannel on Windows. A cache default rather than FORCE, so a consumer can
+# still pick another TLS backend with -DCURL_USE_SCHANNEL=OFF.
 if(WIN32)
-  set(CURL_ENABLE_SSL ON)
-  set(CURL_USE_SCHANNEL ON CACHE INTERNAL "" FORCE)
-  set(CURL_WINDOWS_SSPI ON)
+  set(CURL_ENABLE_SSL ON CACHE BOOL "Enable SSL support")
+  set(CURL_USE_SCHANNEL ON CACHE BOOL "Enable Windows native SSL/TLS (Schannel)")
+  set(CURL_WINDOWS_SSPI ON CACHE BOOL "Enable SSPI on Windows")
 endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -30,10 +32,18 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/curl/curl.git
   GIT_TAG 3163ec065643ba20709f190111f42c3e1fe95273 # curl-8_23_0
 )
-set(CURL_ENABLE_NTLM OFF CACHE BOOL "" FORCE)
+set(CURL_ENABLE_NTLM OFF CACHE BOOL "Enable NTLM support")
 set(CURL_DISABLE_TESTS ON CACHE BOOL "" FORCE)
-set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+# Since curl 8.13, CURL_USE_LIBPSL=ON (its default) fails the configure when
+# libpsl is not installed; libpsl only checks cookie domains.
+set(CURL_USE_LIBPSL OFF CACHE BOOL "Use libpsl")
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+# Only the library is needed: not the curl command-line tool, and not the man
+# pages, which also need Perl to generate.
+set(BUILD_CURL_EXE OFF CACHE BOOL "Build curl executable")
+set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "Build libcurl man pages")
+set(BUILD_MISC_DOCS OFF CACHE BOOL "Build misc man pages (e.g. curl-config and mk-ca-bundle)")
+set(ENABLE_CURL_MANUAL OFF CACHE BOOL "Build the man page for curl and enable its -M/--manual option")
 # The SDK only speaks HTTPS, so libcurl is built without the optional libraries
 # it would otherwise pick up from whatever the build machine has installed.
 # That keeps builds the same from machine to machine and stops, for example, a
@@ -89,6 +99,14 @@ enable_testing()
 add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
 target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
+
+# The real-transport tests (local socket server: redirects, timeouts) are a
+# separate binary: ZeroBounceTests replaces curl_easy_perform and friends with
+# fff fakes, and on Linux those fakes also replace the library's own calls.
+if(NOT WIN32)
+  add_executable(ZeroBounceTransportTests test/TransportTest.c)
+  target_link_libraries(ZeroBounceTransportTests PRIVATE ${PROJECT_NAME} unity)
+endif()
 
 # The live suite calls the real API and spends credits, so it is opt-in and
 # never built by a plain `cmake --build build`:

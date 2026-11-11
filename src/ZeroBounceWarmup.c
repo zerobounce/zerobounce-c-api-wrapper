@@ -41,6 +41,7 @@ ZeroBounceWarmup *new_zero_bounce_warmup_instance(void) {
     }
     zbw->api_key = NULL;
     zbw->base_url = ZB_WARMUP_DEFAULT_BASE_URL;
+    zbw->api_key_rejected = false;
     return zbw;
 }
 
@@ -48,13 +49,18 @@ void zero_bounce_warmup_initialize(ZeroBounceWarmup *zbw, const char *api_key) {
     if (!zbw) {
         return;
     }
+    /* A rejected key also drops the one set before it, and every call then
+       reports the rejection. */
+    free(zbw->api_key);
+    zbw->api_key = NULL;
     if (!zb_api_key_is_clean(api_key)) {
         fprintf(stderr,
             "ZeroBounce: the Warmup api_key has surrounding whitespace or control "
             "characters; it was not accepted.\n");
+        zbw->api_key_rejected = true;
         return;
     }
-    free(zbw->api_key);
+    zbw->api_key_rejected = false;
     zbw->api_key = api_key ? strdup(api_key) : NULL;
 }
 
@@ -88,6 +94,12 @@ static bool warmup_is_blank(const char *value) {
 }
 
 static bool warmup_ready(ZeroBounceWarmup *zbw, OnErrorCallback error_callback) {
+    if (zbw && zbw->api_key_rejected) {
+        if (error_callback) {
+            error_callback(parse_error("api_key has surrounding whitespace or control characters"));
+        }
+        return false;
+    }
     if (zbw && zbw->api_key && zbw->api_key[0]) {
         return true;
     }
@@ -233,6 +245,7 @@ static void warmup_send(
 ) {
     char *url_path;
     char *auth_header;
+    size_t base_len;
     int url_len;
     int auth_len;
     memory response_data = {0};
@@ -243,7 +256,13 @@ static void warmup_send(
         return;
     }
 
-    url_len = snprintf(NULL, 0, "%s%s%s%s", zbw->base_url, ZB_WARMUP_BASE_PATH, path, query ? query : "");
+    /* Trailing slashes on the base URL are dropped, so no //api/v1/warmup. */
+    base_len = strlen(zbw->base_url);
+    while (base_len > 0 && zbw->base_url[base_len - 1] == '/') {
+        base_len--;
+    }
+    url_len = snprintf(NULL, 0, "%.*s%s%s%s", (int)base_len, zbw->base_url, ZB_WARMUP_BASE_PATH, path,
+                       query ? query : "");
     url_path = malloc((size_t)url_len + 1);
     auth_len = snprintf(NULL, 0, "API-Key: %s", zbw->api_key);
     auth_header = malloc((size_t)auth_len + 1);
@@ -253,8 +272,8 @@ static void warmup_send(
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
-    snprintf(url_path, (size_t)url_len + 1, "%s%s%s%s",
-             zbw->base_url, ZB_WARMUP_BASE_PATH, path, query ? query : "");
+    snprintf(url_path, (size_t)url_len + 1, "%.*s%s%s%s",
+             (int)base_len, zbw->base_url, ZB_WARMUP_BASE_PATH, path, query ? query : "");
     snprintf(auth_header, (size_t)auth_len + 1, "API-Key: %s", zbw->api_key);
 
     warmup_error_ctx.error_callback = error_callback;
@@ -278,16 +297,27 @@ static void warmup_send(
         if (!text[0] || text[0] == '{' || text[0] == '[') {
             zb_report_body_error(text, http_code, warmup_on_error);
         } else {
+            bool saved = true;
             if (download_path && download_path[0]) {
                 FILE *handle = fopen(download_path, "wb");
-                if (handle) {
-                    fwrite(text, 1, strlen(text), handle);
-                    fclose(handle);
-                } else if (error_callback) {
-                    error_callback(parse_error("Could not open download_path for writing"));
+                size_t length = strlen(text);
+                if (!handle) {
+                    saved = false;
+                    if (error_callback) {
+                        error_callback(parse_error("Could not open download_path for writing"));
+                    }
+                } else {
+                    size_t written = fwrite(text, 1, length, handle);
+                    if (fclose(handle) != 0 || written != length) {
+                        saved = false;
+                        if (error_callback) {
+                            error_callback(parse_error("Could not write download_path"));
+                        }
+                    }
                 }
             }
-            if (success_callback) {
+            /* A file that could not be saved is not also a success. */
+            if (saved && success_callback) {
                 success_callback(text);
             }
         }

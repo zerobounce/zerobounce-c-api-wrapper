@@ -1795,6 +1795,264 @@ void test_offline_concurrent_clients(void) {
     }
 }
 
+/* -- downloads, base URLs, HTTPS and keys -------------------------------- */
+
+static int file_has(const char *path, const char *expected) {
+    char content[256] = {0};
+    FILE *handle = fopen(path, "rb");
+    if (!handle) {
+        return 0;
+    }
+    size_t n = fread(content, 1, sizeof(content) - 1, handle);
+    fclose(handle);
+    content[n] = '\0';
+    return strcmp(content, expected) == 0;
+}
+
+void test_offline_get_file_writes_without_a_success_callback(void) {
+    const char *paths[] = {
+        "test/downloads/nocb-get.csv", "test/downloads/nocb-score.csv",
+        "test/downloads/nocb-finder.csv", "test/downloads/nocb-domain.csv",
+    };
+    ZeroBounce *zb = client_with("nocb");
+    for (int i = 0; i < 4; i++) {
+        remove(paths[i]);
+    }
+    reset_offline();
+    get_file(zb, "fid", (char *)paths[0], NULL, on_error);
+    scoring_get_file(zb, "fid", (char *)paths[1], NULL, on_error);
+    email_finder_get_file(zb, "fid", (char *)paths[2], NULL, on_error);
+    domain_search_get_file(zb, "fid", (char *)paths[3], NULL, on_error);
+    TEST_ASSERT_FALSE(g_error_called);
+    TEST_ASSERT_EQUAL_INT(4, g_count);
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_TRUE_MESSAGE(file_has(paths[i], "email\nnocb@example.com\n"), paths[i]);
+        remove(paths[i]);
+    }
+}
+
+void test_offline_get_file_that_cannot_be_written_is_an_error(void) {
+    /* A regular file used as a directory: nothing can be created under it,
+       whoever runs the test (root included). */
+    const char *blocker = "test/downloads/not-a-directory";
+    char path[128];
+    FILE *handle = fopen(blocker, "wb");
+    TEST_ASSERT_NOT_NULL(handle);
+    fputs("x", handle);
+    fclose(handle);
+    snprintf(path, sizeof(path), "%s/out.csv", blocker);
+
+    ZeroBounce *zb = client_with("unwritable");
+    reset_offline();
+    get_file(zb, "fid", path, on_get, on_error);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, "get_file");
+    TEST_ASSERT_FALSE(g_success_called);
+    reset_offline();
+    scoring_get_file(zb, "fid", path, on_get, on_error);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, "scoring_get_file");
+    reset_offline();
+    email_finder_get_file(zb, "fid", path, NULL, on_error);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, "email_finder_get_file");
+    reset_offline();
+    domain_search_get_file(zb, "fid", path, NULL, on_error);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, "domain_search_get_file");
+    reset_offline();
+    get_file_streaming(zb, "fid", path, NULL, NULL, on_error);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, "get_file_streaming");
+    remove(blocker);
+}
+
+void test_offline_get_file_json_error_keeps_the_http_status(void) {
+    /* The API answers an unknown file id with an HTTP 200 JSON error. */
+    ZeroBounce *zb = client_with("success-false");
+    reset_offline();
+    g_error_status = -1;
+    get_file(zb, "fid", "test/downloads/json-error.csv", on_get, on_error);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(g_error_text, "File cannot be found"));
+    TEST_ASSERT_EQUAL_INT(200, (int)g_error_status);
+    TEST_ASSERT_NULL(fopen("test/downloads/json-error.csv", "rb"));
+}
+
+void test_offline_base_url_setters_strip_trailing_slashes(void) {
+    char url[64];
+    ZeroBounce *zb = client_with("slash-key");
+    strcpy(url, "https://bulk.example.test/v2//");
+    zero_bounce_set_bulk_api_base_url(zb, url);
+    zero_bounce_set_bulk_api_scoring_base_url(zb, "https://bulk.example.test/v2/scoring/");
+    zero_bounce_set_bulk_api_root_url(zb, "https://bulk.example.test/");
+    zero_bounce_set_list_evaluator_base_url(zb, "https://bulk.example.test/le/");
+    zero_bounce_set_inbox_placement_base_url(zb, "https://bulk.example.test/ipt/");
+    /* The setter keeps its own copy, so the caller's buffer can change. */
+    strcpy(url, "https://changed.example.test");
+
+    reset_offline();
+    file_status(zb, "fid", on_status, on_error);
+    TEST_ASSERT_EQUAL_STRING("bulk.example.test", only_request().host);
+    TEST_ASSERT_EQUAL_STRING("/v2/filestatus", only_request().path);
+    reset_offline();
+    scoring_file_status(zb, "fid", on_status, on_error);
+    TEST_ASSERT_EQUAL_STRING("/v2/scoring/filestatus", only_request().path);
+    reset_offline();
+    email_finder_file_status(zb, "fid", on_status, on_error);
+    TEST_ASSERT_EQUAL_STRING("/email-finder/filestatus", only_request().path);
+    reset_offline();
+    get_list_evaluator_result(zb, "fid", on_raw, on_error);
+    TEST_ASSERT_EQUAL_STRING("/le/fid/", only_request().path);
+    reset_offline();
+    get_inbox_placement_providers(zb, on_raw, on_error);
+    TEST_ASSERT_EQUAL_STRING("/ipt/providers", only_request().path);
+}
+
+/* Runs every public request function once; each must fail with `expected`
+   and send nothing. */
+#define EXPECT_REFUSED(call) do { \
+        reset_offline(); \
+        call; \
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, #call); \
+        TEST_ASSERT_FALSE_MESSAGE(g_success_called, #call); \
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(expected, g_error_text, #call); \
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_count, #call); \
+    } while (0)
+
+static void expect_every_call_refused(ZeroBounce *zb, const char *expected) {
+    const char *path = "test/downloads/refused.csv";
+    struct tm day = {0};
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"a@example.com", ""};
+    ZBValidateOptions post = new_validate_options();
+    SendFileOptions send_options = new_send_file_options();
+    GetFileOptions get_options = new_get_file_options();
+    EmailFinderSendFileOptions finder = new_email_finder_send_file_options();
+    DomainSearchSendFileOptions domain = new_domain_search_send_file_options();
+    ValidateS3FileOptions s3 = new_validate_s3_file_options();
+    ScoreS3FileOptions score = new_score_s3_file_options();
+    ZBBulkFileJobOptions job = new_bulk_file_job_options();
+    ZBCreateInboxPlacementTestOptions create = new_create_inbox_placement_test_options();
+    ZBListInboxPlacementTestsOptions list = new_list_inbox_placement_tests_options();
+
+    day.tm_year = 120;
+    day.tm_mday = 1;
+    email_to_validate_vector_append(&emails, email);
+    post.use_post = 1;
+    finder.first_name_column = 2;
+    s3.file_name = score.file_name = job.file_name = "f.csv";
+    s3.return_url = score.return_url = job.return_url = "https://example.com/done";
+    remove(path);
+
+    EXPECT_REFUSED(get_credits(zb, on_credits, on_error));
+    EXPECT_REFUSED(get_api_usage(zb, day, day, on_usage, on_error));
+    EXPECT_REFUSED(validate_email(zb, "a@example.com", "", on_validate, on_error));
+    EXPECT_REFUSED(validate_email_with_options(zb, "a@example.com", "", &post, on_validate, on_error));
+    EXPECT_REFUSED(validate_email_batch(zb, emails, on_batch, on_error));
+    EXPECT_REFUSED(validate_email_batch_with_options(zb, emails, &post, on_batch, on_error));
+    EXPECT_REFUSED(send_file(zb, "email_file.csv", 1, send_options, on_send, on_error));
+    EXPECT_REFUSED(file_status(zb, "fid", on_status, on_error));
+    EXPECT_REFUSED(get_file(zb, "fid", (char *)path, on_get, on_error));
+    EXPECT_REFUSED(get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error));
+    EXPECT_REFUSED(scoring_get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error));
+    EXPECT_REFUSED(get_file_with_options(zb, "fid", (char *)path, &get_options, on_get, on_error));
+    EXPECT_REFUSED(delete_file(zb, "fid", on_delete, on_error));
+    EXPECT_REFUSED(scoring_send_file(zb, "email_file.csv", 1, send_options, on_send, on_error));
+    EXPECT_REFUSED(scoring_file_status(zb, "fid", on_status, on_error));
+    EXPECT_REFUSED(scoring_get_file(zb, "fid", (char *)path, on_get, on_error));
+    EXPECT_REFUSED(scoring_get_file_with_options(zb, "fid", (char *)path, &get_options, on_get, on_error));
+    EXPECT_REFUSED(scoring_delete_file(zb, "fid", on_delete, on_error));
+    EXPECT_REFUSED(get_activity_data(zb, "a@example.com", on_activity, on_error));
+    EXPECT_REFUSED(score_email(zb, "a@example.com", on_score, on_error));
+    EXPECT_REFUSED(score_email_post(zb, "a@example.com", on_score, on_error));
+    EXPECT_REFUSED(find_email_by_domain_first_middle_last_name(zb, "example.com", "A", "B", "C", on_find, on_error));
+    EXPECT_REFUSED(find_email_by_domain_first_last_name(zb, "example.com", "A", "C", on_find, on_error));
+    EXPECT_REFUSED(find_email_by_domain_first_name(zb, "example.com", "A", on_find, on_error));
+    EXPECT_REFUSED(find_email_by_company_name_first_middle_last_name(zb, "Co", "A", "B", "C", on_find, on_error));
+    EXPECT_REFUSED(find_email_by_company_name_first_last_name(zb, "Co", "A", "C", on_find, on_error));
+    EXPECT_REFUSED(find_email_by_company_name_first_name(zb, "Co", "A", on_find, on_error));
+    EXPECT_REFUSED(search_domain_by_domain(zb, "example.com", on_domain, on_error));
+    EXPECT_REFUSED(search_domain_by_company_name(zb, "Co", on_domain, on_error));
+    EXPECT_REFUSED(send_email_finder_file(zb, "email_file.csv", 1, &finder, on_send, on_error));
+    EXPECT_REFUSED(email_finder_file_status(zb, "fid", on_status, on_error));
+    EXPECT_REFUSED(email_finder_get_file(zb, "fid", (char *)path, on_get, on_error));
+    EXPECT_REFUSED(email_finder_delete_file(zb, "fid", on_delete, on_error));
+    EXPECT_REFUSED(send_domain_search_file(zb, "email_file.csv", 1, &domain, on_send, on_error));
+    EXPECT_REFUSED(domain_search_file_status(zb, "fid", on_status, on_error));
+    EXPECT_REFUSED(domain_search_get_file(zb, "fid", (char *)path, on_get, on_error));
+    EXPECT_REFUSED(domain_search_delete_file(zb, "fid", on_delete, on_error));
+    EXPECT_REFUSED(send_list_evaluator_file(zb, "email_file.csv", 1, on_send, on_error));
+    EXPECT_REFUSED(get_list_evaluator_result(zb, "fid", on_raw, on_error));
+    EXPECT_REFUSED(send_evaluated_file(zb, "fid", on_send, on_error));
+    EXPECT_REFUSED(add_filter(zb, "allow", "domain", "example.com", on_raw, on_error));
+    EXPECT_REFUSED(list_filters(zb, false, on_raw, on_error));
+    EXPECT_REFUSED(list_filters(zb, true, on_raw, on_error));
+    EXPECT_REFUSED(delete_filter(zb, "allow", "domain", "example.com", on_raw, on_error));
+    EXPECT_REFUSED(validate_s3_file(zb, &s3, on_send, on_error));
+    EXPECT_REFUSED(score_s3_file(zb, &score, on_send, on_error));
+    EXPECT_REFUSED(export_s3_file(zb, "fid", NULL, on_send, on_error));
+    EXPECT_REFUSED(list_s3_files(zb, NULL, NULL, on_raw, on_error));
+    EXPECT_REFUSED(email_finder_s3_file(zb, &job, on_send, on_error));
+    EXPECT_REFUSED(domain_search_s3_file(zb, &job, on_send, on_error));
+    EXPECT_REFUSED(validate_sftp_file(zb, &job, on_send, on_error));
+    EXPECT_REFUSED(score_sftp_file(zb, &job, on_send, on_error));
+    EXPECT_REFUSED(email_finder_sftp_file(zb, &job, on_send, on_error));
+    EXPECT_REFUSED(domain_search_sftp_file(zb, &job, on_send, on_error));
+    EXPECT_REFUSED(export_sftp_file(zb, "fid", NULL, on_send, on_error));
+    EXPECT_REFUSED(get_inbox_placement_providers(zb, on_raw, on_error));
+    EXPECT_REFUSED(get_inbox_placement_test_types(zb, on_raw, on_error));
+    EXPECT_REFUSED(create_inbox_placement_test(zb, "t", &create, on_raw, on_error));
+    EXPECT_REFUSED(get_inbox_placement_test(zb, "t1", on_raw, on_error));
+    EXPECT_REFUSED(list_inbox_placement_tests(zb, &list, on_raw, on_error));
+    EXPECT_REFUSED(delete_inbox_placement_test(zb, "t1", on_raw, on_error));
+    EXPECT_REFUSED(get_inbox_placement_webhook(zb, on_raw, on_error));
+    EXPECT_REFUSED(set_inbox_placement_webhook(zb, "https://example.com/hook", on_raw, on_error));
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    EXPECT_REFUSED(find_email(zb, "example.com", "A", "B", "C", on_find, on_error));
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+    email_to_validate_vector_free(&emails);
+}
+
+void test_offline_every_call_is_https_only(void) {
+    ZeroBounce *zb = client_with("https-key");
+    /* Every base URL, the API one included, set to plain http. */
+    zb->api_base_url = "http://api.example.test/v2";
+    zero_bounce_set_bulk_api_base_url(zb, "http://bulk.example.test/v2");
+    zero_bounce_set_bulk_api_scoring_base_url(zb, "http://bulk.example.test/v2/scoring");
+    zero_bounce_set_bulk_api_root_url(zb, "http://bulk.example.test");
+    zero_bounce_set_list_evaluator_base_url(zb, "http://bulk.example.test/v2/listevaluator");
+    zero_bounce_set_inbox_placement_base_url(zb, "http://bulk.example.test/api/ipt");
+    expect_every_call_refused(zb, "url must be an https:// URL");
+}
+
+void test_offline_a_rejected_key_replaces_the_previous_one(void) {
+    const char *dirty[] = {" padded", "trailing\n", "in\x01side"};
+    for (int i = 0; i < 3; i++) {
+        ZeroBounce *zb = client_with("clean-key");
+        /* Re-initialising with a rejected key does not quietly keep the old
+           one: every call reports the rejection and nothing is sent. */
+        zero_bounce_initialize(zb, dirty[i]);
+        TEST_ASSERT_NULL(zb->api_key);
+        expect_every_call_refused(zb, "api_key has surrounding whitespace or control characters");
+
+        zb = client_with("clean-key");
+        zero_bounce_initialize_with_base_url(zb, dirty[i], ZB_Api_URL_EU);
+        reset_offline();
+        get_credits(zb, on_credits, on_error);
+        TEST_ASSERT_TRUE(g_error_called);
+        TEST_ASSERT_EQUAL_INT(0, g_count);
+
+        /* A clean key afterwards is accepted again. */
+        zero_bounce_initialize(zb, "clean-again");
+        reset_offline();
+        get_credits(zb, on_credits, on_error);
+        TEST_ASSERT_FALSE(g_error_called);
+        TEST_ASSERT_TRUE(g_success_called);
+    }
+}
+
 void offline_run_tests(void) {
     RUN_TEST(test_offline_get_credits);
     RUN_TEST(test_offline_validate_options);
@@ -1840,4 +2098,10 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_concurrent_clients);
     RUN_TEST(test_offline_dead_key_is_an_error);
     RUN_TEST(test_offline_bare_message_is_a_result_where_the_api_means_one);
+    RUN_TEST(test_offline_get_file_writes_without_a_success_callback);
+    RUN_TEST(test_offline_get_file_that_cannot_be_written_is_an_error);
+    RUN_TEST(test_offline_get_file_json_error_keeps_the_http_status);
+    RUN_TEST(test_offline_base_url_setters_strip_trailing_slashes);
+    RUN_TEST(test_offline_every_call_is_https_only);
+    RUN_TEST(test_offline_a_rejected_key_replaces_the_previous_one);
 }

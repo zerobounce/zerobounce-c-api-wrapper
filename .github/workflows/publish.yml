@@ -86,7 +86,9 @@ jobs:
         run: cmake -S . -B build -G "Unix Makefiles" && cmake --build build
 
       - name: Run tests
-        run: ./build/bin/ZeroBounceTests
+        run: |
+          ./build/bin/ZeroBounceTests
+          ./build/bin/ZeroBounceTransportTests
 
   release:
     name: Create GitHub Release

@@ -181,6 +181,13 @@ typedef struct {
     const char* inbox_placement_base_url;
     const char* bulk_api_base_url;
     const char* bulk_api_scoring_base_url;
+    /**
+     * Set when the last zero_bounce_initialize was given a key with
+     * surrounding whitespace or control characters. That key is not kept, nor
+     * is the one before it, and every call reports the rejection. Added at the
+     * end, so the fields above keep their offsets.
+     */
+    bool api_key_rejected;
 } ZeroBounce;
 
 static ZeroBounce* zero_bounce_instance = NULL;
@@ -201,6 +208,11 @@ ZeroBounce* zero_bounce_get_instance();
 
 /**
  * @brief Initializes the wrapper with the default base URL.
+ *
+ * A key with surrounding whitespace or control characters is not accepted: a
+ * message goes to stderr, any key set before is dropped, and every call then
+ * reports "api_key has surrounding whitespace or control characters" to its
+ * error callback without sending a request.
  *
  * @param zb ZeroBounce pointer
  * @param api_key the API key
@@ -963,8 +975,10 @@ void list_s3_files(
     OnErrorCallback error_callback
 );
 
-/* The base URL overrides. Each one keeps the pointer it is given rather than a
- * copy, so the string has to outlive the client. */
+/* The base URL overrides. Each one keeps its own copy of the URL, with any
+ * trailing slashes stripped, so the string passed in need not outlive the
+ * client. Every request is https only: a call to a URL that is not https://
+ * reports "url must be an https:// URL" to its error callback. */
 
 /** @brief Overrides the list evaluator base URL. */
 void zero_bounce_set_list_evaluator_base_url(ZeroBounce *zb, const char *url);

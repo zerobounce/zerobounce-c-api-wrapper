@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- Re-initializing with a key that has surrounding whitespace or control characters no longer keeps the key set before it. `zero_bounce_initialize`, `zero_bounce_initialize_with_base_url` and `zero_bounce_warmup_initialize` still print the rejection to stderr; they now also drop the previous key, and every call reports `api_key has surrounding whitespace or control characters` to its error callback and sends nothing. 2.2.0 went on sending requests with the previous key. `ZeroBounce` and `ZeroBounceWarmup` gain a trailing `api_key_rejected` field for this; the fields before it keep their offsets.
+- `send_file`, `scoring_send_file`, `email_finder_get_file` and `domain_search_get_file` refuse a base URL that is not `https://`, like every other call: the error callback gets `url must be an https:// URL` and nothing is sent. 2.2.0 sent these four over plain `http://`, API key included, when a setter was given such a URL.
+
+### Changed
+
+- The base URL setters (`zero_bounce_set_bulk_api_base_url`, `zero_bounce_set_bulk_api_root_url`, `zero_bounce_set_bulk_api_scoring_base_url`, `zero_bounce_set_list_evaluator_base_url`, `zero_bounce_set_inbox_placement_base_url`) keep their own copy of the URL, with trailing slashes stripped, instead of the caller's pointer, so the string passed in no longer has to outlive the client. The Warmup client drops trailing slashes from its base URL too. 2.2.0 built URLs such as `https://host/v2//sendfile`.
+- `CURL_USE_SCHANNEL` (Windows), `CURL_ENABLE_NTLM` and `CURL_USE_LIBPSL` are cache defaults instead of `CACHE ... FORCE`, so a consumer can override them with `-D`. `CURL_ENABLE_SSL` and `CURL_WINDOWS_SSPI` on Windows are cache defaults as well, no longer plain variables. `BUILD_TESTING` is still forced off.
+- The bundled libcurl no longer builds the `curl` command-line tool or the man pages (`BUILD_CURL_EXE`, `BUILD_LIBCURL_DOCS`, `BUILD_MISC_DOCS` and `ENABLE_CURL_MANUAL` default to `OFF`); the SDK only links the library.
+- Every request path sets its timeouts in milliseconds (`CURLOPT_TIMEOUT_MS` 120000, `CURLOPT_CONNECTTIMEOUT_MS` 30000) through one shared function; the values are unchanged.
+
+### Fixed
+
+- `get_file`, `get_file_with_options`, `scoring_get_file`, `scoring_get_file_with_options`, `email_finder_get_file` and `domain_search_get_file` wrote no file when no success callback was passed. The file is now written either way, as `get_file_streaming` already did.
+- `get_file` and its scoring and `_with_options` variants only printed `fopen: ...` to stderr when the download path could not be opened; the error callback now gets `Could not open local_download_path for writing`. A short write is reported too.
+- A JSON error body from `get_file` on an HTTP 200 (an unknown file id) reported `status_code` 0; it now carries the HTTP status.
+- `email_finder_get_file` and `domain_search_get_file` passed a pointer owned by libcurl to `free()` after a real download whose response had a `Content-Type` header, freeing memory they did not allocate: the process aborted on macOS and crashed with a segmentation fault on Linux. They keep their own copy now.
+- A Warmup CSV download (`warmup_download_seeds`, `warmup_download_statistics`) that could not be written to `download_path` called the error callback and then the success callback; it now calls only the error callback.
+
 ## [2.2.0] - 2026-11-11
+
+### Breaking
+
+- Several public structs changed layout: `ZeroBounce`, `ZBValidateResponse` and `ZBGetApiUsageResponse` have fields inserted in the middle, and `ZBErrorResponse` and `memory` have a field appended (details under Changed). Objects built against 2.1.4 are not compatible with the 2.2.0 library, and a positional initializer of these structs puts values in the wrong fields.
+- Behaviour a 2.1.4 caller may rely on: an invalid or drained API key, `"success": false` on an HTTP 200, and an account-level `validate_email_batch` error now reach the error callback (see Fixed); an HTML, empty or non-JSON body is an error, also from the getfile calls; requests time out after 120 seconds, redirects are not followed, base URLs must be `https://`, and JSON responses and file downloads are capped at 16 MB and 256 MB (`get_file_streaming` for larger files); both initializers reject a key with surrounding whitespace or control characters; `ai_agent_mailbox` maps to `AiAgentMailbox` instead of `None`.
+
+#### Upgrading from 2.1.4
+
+- Rebuild everything that includes the headers, and replace positional initializers of the structs above with designated ones (`.field = value`).
+- CMake 3.21 or newer is required.
+- macOS builds need OpenSSL 3 or newer (Homebrew's `openssl` is found automatically; pass `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"` for a keg-only formula). Linux builds need the OpenSSL development headers (for example `libssl-dev`). Windows still uses Schannel.
+- A project that pulls this one in with `FetchContent` or `add_subdirectory` gets `BUILD_TESTING`, `CURL_USE_LIBPSL` and `CURL_ENABLE_NTLM` forced off in its own cache.
 
 ### Added
 

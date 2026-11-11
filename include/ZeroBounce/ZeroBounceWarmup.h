@@ -29,6 +29,12 @@
 typedef struct {
     char *api_key;
     const char *base_url;
+    /**
+     * Set when the last zero_bounce_warmup_initialize was given a key with
+     * surrounding whitespace or control characters; every call then reports
+     * the rejection. Added at the end, so the fields above keep their offsets.
+     */
+    bool api_key_rejected;
 } ZeroBounceWarmup;
 
 /** ZB managed onboarding only. A NULL field is left out of the request. */
@@ -83,7 +89,7 @@ ZBWarmupListFromAddressesOptions new_warmup_list_from_addresses_options(void);
 ZeroBounceWarmup *new_zero_bounce_warmup_instance(void);
 /** Sets the Warmup API key. It is sent in an API-Key header. */
 void zero_bounce_warmup_initialize(ZeroBounceWarmup *zbw, const char *api_key);
-/** Overrides the base URL ZeroBounce gave you. Must be https. */
+/** Overrides the base URL ZeroBounce gave you. Must be https; trailing slashes are dropped. */
 void zero_bounce_warmup_set_base_url(ZeroBounceWarmup *zbw, const char *url);
 /** Frees the client and its key. */
 void zero_bounce_warmup_free(ZeroBounceWarmup *zbw);

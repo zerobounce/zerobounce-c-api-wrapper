@@ -15,7 +15,8 @@ COPY . .
 
 RUN cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build \
-    && ./build/bin/ZeroBounceTests
+    && ./build/bin/ZeroBounceTests \
+    && ./build/bin/ZeroBounceTransportTests
 
 RUN useradd --uid 65532 --create-home --shell /usr/sbin/nologin zbtest \
     && chown -R zbtest:zbtest /app

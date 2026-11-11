@@ -23,11 +23,22 @@
 #include "ZeroBounce/zb_internal.h"
 
 static ZBHttpPerformFn s_http_perform = NULL;
+/* Timeouts for every request, and whether http to 127.0.0.1 is allowed. Only
+   zero_bounce_set_transport_for_test changes them. */
+static long s_timeout_ms = 120000L;
+static long s_connect_timeout_ms = 30000L;
+static bool s_allow_loopback_http = false;
 static char s_last_request_url_for_test[1024] = {0};
 static char s_last_post_body_for_test[4096] = {0};
 
 void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
     s_http_perform = fn;
+}
+
+void zero_bounce_set_transport_for_test(long timeout_ms, long connect_timeout_ms, bool allow_loopback_http) {
+    s_timeout_ms = timeout_ms > 0 ? timeout_ms : 120000L;
+    s_connect_timeout_ms = connect_timeout_ms > 0 ? connect_timeout_ms : 30000L;
+    s_allow_loopback_http = allow_loopback_http;
 }
 
 int zb_http_perform_if_mock(memory *response_data, long *http_code, char **content_type_out) {
@@ -200,19 +211,29 @@ static size_t write_callback(void *data, size_t size, size_t nmemb, void *client
   return real_size;
 }
 
-void set_write_callback(CURL* curl, memory* response_data) {
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+/*
+ * The options every request gets, buffered or streamed: a total and a connect
+ * timeout (120 s and 30 s; the connect one covers the TLS handshake), no
+ * redirects, and https only.
+ */
+void zb_set_transport_options(CURL* curl) {
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, s_timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, s_connect_timeout_ms);
     /* A redirect could send the api_key to another host, so one is reported
        rather than followed, and only https is ever dialled. */
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
 #if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, s_allow_loopback_http ? "http,https" : "https");
 #else
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS,
+        s_allow_loopback_http ? (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS) : (long)CURLPROTO_HTTPS);
 #endif
+}
+
+void set_write_callback(CURL* curl, memory* response_data) {
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
+    zb_set_transport_options(curl);
 }
 
 long get_http_code(CURL* curl) {
@@ -560,6 +581,7 @@ ZeroBounce* new_zero_bounce_instance() {
     ZeroBounce* zb = (ZeroBounce*) malloc(sizeof(ZeroBounce));
 
     zb->api_key = NULL;
+    zb->api_key_rejected = false;
     zb->api_base_url = "https://api.zerobounce.net/v2";
     zb->bulk_api_root_url = "https://bulkapi.zerobounce.net";
     zb->list_evaluator_base_url = "https://bulkapi.zerobounce.net/v2/listevaluator";
@@ -603,31 +625,37 @@ bool zb_api_key_is_clean(const char *api_key) {
     return true;
 }
 
-void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
+/*
+ * A rejected key also drops the one set before it: carrying on with the old
+ * key would send requests the caller believes go out under the new one. Every
+ * call then reports the rejection to its error callback.
+ */
+static bool zb_accept_api_key(ZeroBounce *zb, const char *api_key) {
+    if (zb->api_key) {
+        free(zb->api_key);
+        zb->api_key = NULL;
+    }
     if (!zb_api_key_is_clean(api_key)) {
         fprintf(stderr,
             "ZeroBounce: api_key has surrounding whitespace or control characters; "
             "it was not accepted.\n");
-        return;
+        zb->api_key_rejected = true;
+        return false;
     }
-    if (zb->api_key) {
-        free(zb->api_key);
-    }
-    zb->api_key = strdup(api_key);
+    zb->api_key_rejected = false;
+    zb->api_key = api_key ? strdup(api_key) : NULL;
+    return true;
+}
+
+void zero_bounce_initialize(ZeroBounce* zb, const char* api_key) {
+    zb_accept_api_key(zb, api_key);
 }
 
 
 void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, ZBApiURL api_base_url) {
-    if (!zb_api_key_is_clean(api_key)) {
-        fprintf(stderr,
-            "ZeroBounce: api_key has surrounding whitespace or control characters; "
-            "it was not accepted.\n");
+    if (!zb_accept_api_key(zb, api_key)) {
         return;
     }
-    if (zb->api_key) {
-        free(zb->api_key);
-    }
-    zb->api_key = strdup(api_key);
     zb->api_base_url = base_url_string_from_zb_api_url(api_base_url);
 }
 
@@ -636,21 +664,37 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
  * regional base URL leaves them on the global bulk host. These three let a
  * caller point them somewhere else, as zb_check_request_url's warning says.
  */
+char *zb_normalized_base_url(const char *url) {
+    size_t len = strlen(url);
+    char *copy;
+    while (len > 0 && url[len - 1] == '/') {
+        len--;
+    }
+    copy = malloc(len + 1);
+    if (!copy) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(EXIT_FAILURE);
+    }
+    memcpy(copy, url, len);
+    copy[len] = '\0';
+    return copy;
+}
+
 void zero_bounce_set_bulk_api_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->bulk_api_base_url = url;
+        zb->bulk_api_base_url = zb_normalized_base_url(url);
     }
 }
 
 void zero_bounce_set_bulk_api_root_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->bulk_api_root_url = url;
+        zb->bulk_api_root_url = zb_normalized_base_url(url);
     }
 }
 
 void zero_bounce_set_bulk_api_scoring_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->bulk_api_scoring_base_url = url;
+        zb->bulk_api_scoring_base_url = zb_normalized_base_url(url);
     }
 }
 
@@ -674,7 +718,9 @@ bool zb_check_request_url(const char *url, OnErrorCallback error_callback) {
     static int warned_about_region = 0;
     char host[256];
 
-    if (!url || strncmp(url, "https://", 8) != 0) {
+    bool loopback = s_allow_loopback_http && url &&
+        (strncmp(url, "http://127.0.0.1:", 17) == 0 || strncmp(url, "http://localhost:", 17) == 0);
+    if (!loopback && (!url || strncmp(url, "https://", 8) != 0)) {
         if (error_callback) {
             error_callback(parse_error("url must be an https:// URL"));
         }
@@ -705,6 +751,12 @@ bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback)
         } else if (strstr(zb->api_base_url, "api-us.zerobounce.net")) {
             zb_tls_region = "US";
         }
+    }
+    if (zb->api_key_rejected) {
+        if (error_callback) {
+            error_callback(parse_error("api_key has surrounding whitespace or control characters"));
+        }
+        return true;
     }
     if (zb->api_key == NULL || strlen(zb->api_key) == 0) {
         ZBErrorResponse error_response = parse_error(
@@ -983,6 +1035,9 @@ static void send_file_internal(
     memory response_data = {0};
 
     zb_note_http_request("POST", url_path, NULL);
+    if (!zb_check_request_url(url_path, error_callback)) {
+        goto cleanup;
+    }
     note_send_file_fields(zb, scoring, email_address_column_index, options);
 
     if (s_http_perform) {
@@ -1284,11 +1339,13 @@ static void get_file_internal(
 
     if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0') {
         zb_report_body_error(body, http_code, error_callback);
-    } else if (success_callback) {
+    } else {
+        /* The file is written whether or not a success callback was passed. */
         if (zb_should_treat_getfile_body_as_error(body, content_type)) {
             if (error_callback) {
                 char *msg = zb_format_get_file_error_message(body);
-                error_callback(parse_error(msg ? msg : ""));
+                /* The API did answer: the status goes with the error. */
+                error_callback(parse_error_with_status(msg ? msg : "", http_code));
                 free(msg);
             }
         } else {
@@ -1318,16 +1375,25 @@ static void get_file_internal(
 
             FILE *file_stream = fopen(local_download_path, "wb");
             if (file_stream == NULL) {
-                perror("fopen");
+                if (error_callback) {
+                    error_callback(parse_error("Could not open local_download_path for writing"));
+                }
                 goto cleanup;
             }
-            fwrite(response_data.response, 1, response_data.size, file_stream);
-            fclose(file_stream);
+            size_t written = fwrite(response_data.response, 1, response_data.size, file_stream);
+            if (fclose(file_stream) != 0 || written != response_data.size) {
+                if (error_callback) {
+                    error_callback(parse_error("Could not write local_download_path"));
+                }
+                goto cleanup;
+            }
 
-            ZBGetFileResponse response = new_zb_get_file_response();
-            response.success = true;
-            response.local_file_path = local_download_path;
-            success_callback(response);
+            if (success_callback) {
+                ZBGetFileResponse response = new_zb_get_file_response();
+                response.success = true;
+                response.local_file_path = local_download_path;
+                success_callback(response);
+            }
         }
     }
 
@@ -2270,14 +2336,7 @@ static void get_file_streaming_internal(
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, zb_stream_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&stream);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
-#else
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
-#endif
+    zb_set_transport_options(curl);
 
     res = curl_easy_perform(curl);
     zb_stream_finish(&stream);

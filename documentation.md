@@ -569,8 +569,10 @@ SMTP login with HTTP 500, which arrives as an error with
 
 The bulk hosts, the list evaluator and the Inbox Placement Tester are not built
 from `api_base_url`, so `zero_bounce_initialize_with_base_url` alone leaves them
-pointing at the live API. Each one has a setter. They keep the pointer they are
-given rather than a copy, so the string has to outlive the client.
+pointing at the live API. Each one has a setter. Each setter keeps its own copy
+of the URL, without trailing slashes, so the string passed in need not outlive
+the client. Every base URL must be `https://`: a call to any other URL reports
+`url must be an https:// URL` to its error callback and sends nothing.
 
 ```c
 zero_bounce_set_bulk_api_base_url(zb, "https://bulkapi.zerobounce.net/v2");
@@ -591,11 +593,12 @@ repository root. The test binary writes downloaded files under
 
 ```bash
 ./build/bin/ZeroBounceTests
+./build/bin/ZeroBounceTransportTests
 ```
 
 You should see an output like this
 
 ```bash
-105 Tests 0 Failures 0 Ignored
+N Tests 0 Failures 0 Ignored
 OK
 ```
