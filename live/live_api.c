@@ -230,7 +230,21 @@ static void validation_free(void) {
 
     reset_result();
     get_credits(zb, on_credits_before, on_error);
-    check_ok("getCredits returns a balance");
+    /* LIVE: -1 is the API's answer for an INVALID key, not a balance.
+       check_ok() only asks whether the call came back, so whatever it carried
+       was accepted, and a dead key sailed through the one check meant to catch
+       it while every billable call below failed. */
+    if (!last_ok) {
+        fail("getCredits returns a positive balance",
+             last_error[0] ? last_error : "no response");
+    } else if (credits_before <= 0) {
+        char message[128];
+        snprintf(message, sizeof(message), "not a usable credit balance: %lld",
+                 credits_before);
+        fail("getCredits returns a positive balance", message);
+    } else {
+        pass("getCredits returns a positive balance");
+    }
 
     reset_result();
     {
