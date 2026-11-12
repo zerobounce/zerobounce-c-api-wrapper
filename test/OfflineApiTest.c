@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -2073,9 +2074,34 @@ void test_offline_base_url_setters_strip_trailing_slashes(void) {
     TEST_ASSERT_EQUAL_STRING("/ipt/providers", only_request().path);
 }
 
+/* The public request functions expect_every_call_refused has run, by name,
+   so test_offline_every_request_function_is_in_the_sweep can compare them
+   with the header. */
+#define SWEPT_MAX 128
+static char g_swept[SWEPT_MAX][96];
+static int g_swept_count;
+
+static void record_swept(const char *call) {
+    size_t len = strcspn(call, "(");
+    while (len > 0 && call[len - 1] == ' ') {
+        len--;
+    }
+    for (int i = 0; i < g_swept_count; i++) {
+        if (strlen(g_swept[i]) == len && strncmp(g_swept[i], call, len) == 0) {
+            return;
+        }
+    }
+    if (g_swept_count < SWEPT_MAX && len < sizeof(g_swept[0])) {
+        memcpy(g_swept[g_swept_count], call, len);
+        g_swept[g_swept_count][len] = '\0';
+        g_swept_count++;
+    }
+}
+
 /* Runs every public request function once; each must fail with `expected`
    and send nothing. */
 #define EXPECT_REFUSED(call) do { \
+        record_swept(#call); \
         reset_offline(); \
         call; \
         TEST_ASSERT_TRUE_MESSAGE(g_error_called, #call); \
@@ -2196,6 +2222,93 @@ void test_offline_every_call_is_https_only(void) {
     expect_every_call_refused(zb, "url must be an https:// URL");
 }
 
+static int was_swept(const char *name) {
+    for (int i = 0; i < g_swept_count; i++) {
+        if (strcmp(g_swept[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Reads ZeroBounce.h and fails for any public function taking an
+   OnErrorCallback (a request) that expect_every_call_refused does not run,
+   so a new request function cannot escape the HTTPS and key sweeps. */
+void test_offline_every_request_function_is_in_the_sweep(void) {
+    FILE *f = fopen(ZB_PUBLIC_HEADER, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, ZB_PUBLIC_HEADER);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *text = calloc((size_t)size + 1, 1);
+    TEST_ASSERT_NOT_NULL(text);
+    TEST_ASSERT_EQUAL_size_t((size_t)size, fread(text, 1, (size_t)size, f));
+    fclose(f);
+
+    /* Blank out comments and preprocessor lines, which hold parentheses. */
+    for (char *p = text; *p; p++) {
+        if (p[0] == '/' && p[1] == '*') {
+            char *close = strstr(p + 2, "*/");
+            char *stop = close ? close + 2 : p + strlen(p);
+            memset(p, ' ', (size_t)(stop - p));
+            p = stop - 1;
+        } else if (p[0] == '/' && p[1] == '/') {
+            while (*p && *p != '\n') {
+                *p++ = ' ';
+            }
+            if (!*p) break;
+        } else if (p[0] == '#' && (p == text || p[-1] == '\n')) {
+            while (*p && *p != '\n') {
+                *p++ = ' ';
+            }
+            if (!*p) break;
+        }
+    }
+
+    ZeroBounce *zb = client_with("sweep-key");
+    zero_bounce_set_bulk_api_base_url(zb, "http://bulk.example.test/v2");
+    zb->api_base_url = "http://api.example.test/v2";
+    zero_bounce_set_bulk_api_scoring_base_url(zb, "http://bulk.example.test/v2/scoring");
+    zero_bounce_set_bulk_api_root_url(zb, "http://bulk.example.test");
+    zero_bounce_set_list_evaluator_base_url(zb, "http://bulk.example.test/v2/listevaluator");
+    zero_bounce_set_inbox_placement_base_url(zb, "http://bulk.example.test/api/ipt");
+    g_swept_count = 0;
+    expect_every_call_refused(zb, "url must be an https:// URL");
+
+    /* Each declaration runs from the end of the previous one to its ';'. */
+    int declared = 0;
+    char message[160];
+    for (char *start = text, *end; (end = strchr(start, ';')) != NULL; start = end + 1) {
+        *end = '\0';
+        while (*start == ' ' || *start == '\n' || *start == '\r' || *start == '\t' || *start == '}') {
+            start++;
+        }
+        char *paren = strchr(start, '(');
+        if (paren == NULL || strstr(start, "OnErrorCallback") == NULL ||
+            strncmp(start, "typedef", 7) == 0 || strncmp(start, "static", 6) == 0) {
+            continue;
+        }
+        char *name_end = paren;
+        while (name_end > start && name_end[-1] == ' ') {
+            name_end--;
+        }
+        char *name = name_end;
+        while (name > start && (isalnum((unsigned char)name[-1]) || name[-1] == '_')) {
+            name--;
+        }
+        char saved = *name_end;
+        *name_end = '\0';
+        snprintf(message, sizeof message, "%s is missing from expect_every_call_refused", name);
+        TEST_ASSERT_TRUE_MESSAGE(was_swept(name), message);
+        *name_end = saved;
+        declared++;
+    }
+    free(text);
+    /* The scan found the request functions, and nothing else was swept. */
+    TEST_ASSERT_GREATER_THAN_INT(55, declared);
+    TEST_ASSERT_EQUAL_INT(declared, g_swept_count);
+}
+
 void test_offline_a_rejected_key_replaces_the_previous_one(void) {
     const char *dirty[] = {" padded", "trailing\n", "in\x01side"};
     for (int i = 0; i < 3; i++) {
@@ -2272,6 +2385,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_get_file_json_error_keeps_the_http_status);
     RUN_TEST(test_offline_base_url_setters_strip_trailing_slashes);
     RUN_TEST(test_offline_every_call_is_https_only);
+    RUN_TEST(test_offline_every_request_function_is_in_the_sweep);
     RUN_TEST(test_offline_a_rejected_key_replaces_the_previous_one);
     RUN_TEST(test_offline_a_json_object_in_place_of_a_file_is_an_error);
     RUN_TEST(test_offline_a_short_write_is_an_error_and_leaves_no_partial_file);

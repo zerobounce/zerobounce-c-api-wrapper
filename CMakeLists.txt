@@ -99,6 +99,10 @@ enable_testing()
 add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
 target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
+# The sweep's completeness test reads the public header to list the request
+# functions.
+target_compile_definitions(ZeroBounceTests PRIVATE
+  ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h")
 
 # The real-transport tests (local socket server: redirects, timeouts) are a
 # separate binary: ZeroBounceTests replaces curl_easy_perform and friends with
