@@ -55,6 +55,21 @@ void zb_set_redaction_key(const char *api_key) {
     zb_tls_api_key = (api_key && api_key[0]) ? strdup(api_key) : NULL;
 }
 
+/*
+ * Whether the response the current call on this thread just got was labelled
+ * text/html, noted where every request reads its status (and by the test
+ * hook), so zb_read_success_json can refuse an HTML page whatever its body.
+ */
+static _Thread_local bool zb_tls_html_response = false;
+
+void zb_note_response_content_type(const char *content_type) {
+    zb_tls_html_response = zb_content_type_is_html(content_type);
+}
+
+bool zb_response_was_html(void) {
+    return zb_tls_html_response;
+}
+
 /* Replaces every occurrence of secret in text with mask; frees text when it
    returns a new string. */
 static char *zb_replace_secret(char *text, const char *secret, const char *mask) {
@@ -115,19 +130,55 @@ static char *zb_json_escape(const char *secret, bool escape_slash) {
     return out;
 }
 
+/* A URL-encoded string with every %20 written as '+', as a form body has it.
+   NULL when there is no space to rewrite. The caller owns it. */
+static char *zb_plus_for_spaces(const char *escaped) {
+    char *out;
+    char *dst;
+    if (!escaped || !strstr(escaped, "%20")) {
+        return NULL;
+    }
+    out = malloc(strlen(escaped) + 1);
+    if (!out) {
+        return NULL;
+    }
+    for (dst = out; *escaped;) {
+        if (strncmp(escaped, "%20", 3) == 0) {
+            *dst++ = '+';
+            escaped += 3;
+        } else {
+            *dst++ = *escaped++;
+        }
+    }
+    *dst = '\0';
+    return out;
+}
+
 char *zb_mask_secret(char *text, const char *secret, const char *mask) {
-    char *forms[3];
+    enum { FORMS = 8 };
+    char *forms[FORMS] = {0};
+    char *json_slash;
+    char *json_plain;
     size_t i;
     if (!text || !secret || !secret[0]) {
         return text;
     }
-    /* A body may quote the secret raw, URL-encoded (a request URL or form) or
-       JSON-escaped (a request body echoed back); the escaped forms are
-       replaced first, as they can contain the raw one. */
-    forms[0] = zb_json_escape(secret, true);
-    forms[1] = zb_json_escape(secret, false);
-    forms[2] = zb_url_escape(secret);
-    for (i = 0; i < 3; i++) {
+    /* A body may quote the secret raw, URL-encoded (a request URL or form,
+       spaces as %20 or '+'), JSON-escaped (a request body echoed back; json-c
+       escapes '/', other encoders do not), or URL-encoded after being
+       JSON-escaped (an echoed JSON body put into a URL or form). The longer,
+       escaped forms are replaced first, as they can contain the raw one. */
+    json_slash = zb_json_escape(secret, true);
+    json_plain = zb_json_escape(secret, false);
+    forms[0] = zb_url_escape(json_slash);
+    forms[1] = zb_plus_for_spaces(forms[0]);
+    forms[2] = zb_url_escape(json_plain);
+    forms[3] = zb_plus_for_spaces(forms[2]);
+    forms[4] = json_slash;
+    forms[5] = json_plain;
+    forms[6] = zb_url_escape(secret);
+    forms[7] = zb_plus_for_spaces(forms[6]);
+    for (i = 0; i < FORMS; i++) {
         if (forms[i]) {
             text = zb_replace_secret(text, forms[i], mask);
             free(forms[i]);
@@ -575,7 +626,9 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
      * {"error": ...} on an HTTP 200; parsed, that used to reach the success
      * callback as an empty result.
      */
-    if (status_code > 299 || zb_body_looks_like_html(text) ||
+    /* A text/html page is a proxy's or a portal's, not the API's answer, even
+       when its body happens to parse as JSON. */
+    if (status_code > 299 || zb_body_looks_like_html(text) || zb_response_was_html() ||
         zb_skip_ws(text)[0] == '\0' || zb_success_means_failure(text) || zb_error_only_body(text)) {
         zb_report_body_error(text, status_code, error_callback);
         return false;

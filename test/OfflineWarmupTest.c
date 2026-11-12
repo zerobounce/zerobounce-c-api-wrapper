@@ -7,6 +7,7 @@
  * actually went out.
  */
 
+#include <dirent.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -478,6 +479,46 @@ void test_warmup_smtp_credentials_are_masked_in_every_form(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* The SMTP password with a space and every character JSON or URL encoding
+   changes, quoted in every form a server echoing the request could use. */
+void test_warmup_smtp_password_is_masked_in_every_encoded_form(void) {
+    static const char *const forms[] = {
+        "a b\"c/d+e%f&g=h<i>j'k\\l",
+        "a b\\\"c\\/d+e%f&g=h<i>j'k\\\\l",
+        "a b\\\"c/d+e%f&g=h<i>j'k\\\\l",
+        "a%20b%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5Cl",
+        "a+b%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5Cl",
+        "a%20b%5C%22c%5C%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+        "a+b%5C%22c%5C%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+        "a%20b%5C%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+        "a+b%5C%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+    };
+    char body[2048];
+    char expected[512];
+    size_t i;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client("warm-key");
+    snprintf(body, sizeof(body), "SMTP login failed:");
+    snprintf(expected, sizeof(expected), "SMTP login failed:");
+    for (i = 0; i < sizeof(forms) / sizeof(forms[0]); i++) {
+        size_t used = strlen(body);
+        snprintf(body + used, sizeof(body) - used, " [%s]", forms[i]);
+        used = strlen(expected);
+        snprintf(expected + used, sizeof(expected) - used, " [***]");
+    }
+    w_next_status = 500;
+    w_next_type = "text/plain";
+    w_next_body = body;
+    warmup_test_smtp_configuration(zbw, "sender@example.com", "smtp-user", "a b\"c/d+e%f&g=h<i>j'k\\l",
+                                   "smtp.example.com", 587, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_EQUAL_INT(500, (int)w_status);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, expected), w_error);
+    w_next_type = "application/json";
+    zero_bounce_warmup_free(zbw);
+}
+
 void test_warmup_test_smtp_configuration(void) {
     w_reset();
     ZeroBounceWarmup *zbw = w_client("warm-key");
@@ -612,6 +653,90 @@ void test_warmup_a_download_that_cannot_be_saved_is_not_a_success(void) {
     TEST_ASSERT_FALSE(w_success_called);
     zero_bounce_warmup_free(zbw);
     remove(blocker);
+}
+
+void test_warmup_a_failed_write_keeps_the_file_already_at_the_path(void) {
+    /* D4: the CSV downloads opened download_path with "wb", so a write that
+       failed (a file size limit, a full disk) destroyed a file already there.
+       They now write beside it and move the file into place when complete. */
+    const char *path = "test/downloads/warmup-keep-existing.csv";
+    const char *part_prefix = "warmup-keep-existing.csv.";
+    struct rlimit saved;
+    struct rlimit tight;
+    void (*previous)(int);
+    char kept[2][16];
+    int parts = 0;
+    FILE *handle;
+
+    mkdir("test/downloads", 0777);
+    ZeroBounceWarmup *zbw = w_client("warm-key");
+    /* Partial files left by an earlier run do not count. */
+    DIR *stale = opendir("test/downloads");
+    TEST_ASSERT_NOT_NULL(stale);
+    struct dirent *old_entry;
+    while ((old_entry = readdir(stale)) != NULL) {
+        if (strncmp(old_entry->d_name, part_prefix, strlen(part_prefix)) == 0) {
+            char old_path[512];
+            snprintf(old_path, sizeof(old_path), "test/downloads/%s", old_entry->d_name);
+            remove(old_path);
+        }
+    }
+    closedir(stale);
+    TEST_ASSERT_EQUAL_INT(0, getrlimit(RLIMIT_FSIZE, &saved));
+    tight = saved;
+    tight.rlim_cur = 8;
+    for (int call = 0; call < 2; call++) {
+        w_reset();
+        w_next_type = "text/csv";
+        w_next_body = "seed,provider\nseed@example.com,gmail\n";
+        handle = fopen(path, "wb");
+        TEST_ASSERT_NOT_NULL(handle);
+        fputs("OLD", handle);
+        fclose(handle);
+        previous = signal(SIGXFSZ, SIG_IGN);
+        TEST_ASSERT_EQUAL_INT(0, setrlimit(RLIMIT_FSIZE, &tight));
+        if (call == 0) {
+            warmup_download_seeds(zbw, (char *)path, w_on_raw, w_on_error);
+        } else {
+            warmup_download_statistics(zbw, "seed@example.com", path, w_on_raw, w_on_error);
+        }
+        setrlimit(RLIMIT_FSIZE, &saved);
+        signal(SIGXFSZ, previous);
+        TEST_ASSERT_TRUE(w_error_called);
+        TEST_ASSERT_FALSE(w_success_called);
+        handle = fopen(path, "rb");
+        kept[call][0] = '\0';
+        if (handle) {
+            size_t n = fread(kept[call], 1, sizeof(kept[call]) - 1, handle);
+            kept[call][n] = '\0';
+            fclose(handle);
+        }
+        TEST_ASSERT_EQUAL_STRING("OLD", kept[call]);
+        DIR *dir = opendir("test/downloads");
+        TEST_ASSERT_NOT_NULL(dir);
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (strncmp(entry->d_name, part_prefix, strlen(part_prefix)) == 0) {
+                parts++;
+            }
+        }
+        closedir(dir);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, parts, "a partial file was left beside download_path");
+    }
+    /* Without the limit the download replaces it. */
+    w_reset();
+    w_next_type = "text/csv";
+    w_next_body = "seed,provider\nseed@example.com,gmail\n";
+    warmup_download_seeds(zbw, (char *)path, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_success_called);
+    handle = fopen(path, "rb");
+    TEST_ASSERT_NOT_NULL(handle);
+    char replaced[64] = {0};
+    fread(replaced, 1, sizeof(replaced) - 1, handle);
+    fclose(handle);
+    TEST_ASSERT_EQUAL_STRING("seed,provider\nseed@example.com,gmail\n", replaced);
+    remove(path);
+    zero_bounce_warmup_free(zbw);
 }
 
 void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
@@ -938,6 +1063,35 @@ void test_warmup_no_error_on_a_200_carries_the_key(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* Each call got an error with status 200 and wrote nothing. */
+static void w_check_error_200(const char *call) {
+    char message[1300];
+    snprintf(message, sizeof message, "%s: %s", call, w_error);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, message);
+    TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+}
+
+/* A 200 labelled text/html is a proxy's or a portal's page, not the API's
+   answer, even when its body parses as JSON: every call reports an error with
+   the status, and the CSV downloads write nothing. */
+void test_warmup_a_text_html_200_is_an_error_on_every_call(void) {
+    const char *path = "test/downloads/warmup-html-ct.csv";
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client("warm-key");
+    w_sweep_check = w_check_error_200;
+    w_swept_count = 0;
+    w_next_status = 200;
+    w_next_type = "text/html; charset=UTF-8";
+    w_next_body = "{\"a\":1}";
+    w_run_every_call(zbw, path);
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+    w_next_type = "application/json";
+    zero_bounce_warmup_free(zbw);
+}
+
 /* Each call sent one request. */
 static void w_check_sent(const char *call) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, call);
@@ -980,14 +1134,17 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_check_domain_dmarc_needs_an_email);
     RUN_TEST(test_warmup_test_smtp_configuration);
     RUN_TEST(test_warmup_smtp_credentials_are_masked_in_every_form);
+    RUN_TEST(test_warmup_smtp_password_is_masked_in_every_encoded_form);
     RUN_TEST(test_warmup_csv_downloads);
     RUN_TEST(test_warmup_blank_arguments_are_rejected);
     RUN_TEST(test_warmup_a_rejected_key_replaces_the_previous_one);
     RUN_TEST(test_warmup_base_url_trailing_slashes_are_dropped);
     RUN_TEST(test_warmup_a_download_that_cannot_be_saved_is_not_a_success);
     RUN_TEST(test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file);
+    RUN_TEST(test_warmup_a_failed_write_keeps_the_file_already_at_the_path);
     RUN_TEST(test_warmup_no_error_carries_the_key);
     RUN_TEST(test_warmup_no_error_on_a_200_carries_the_key);
+    RUN_TEST(test_warmup_a_text_html_200_is_an_error_on_every_call);
     RUN_TEST(test_warmup_add_sending_account_sends_every_documented_field);
     RUN_TEST(test_warmup_timezone_offset_may_be_fractional);
     RUN_TEST(test_warmup_csv_downloads_reject_every_non_file_answer);

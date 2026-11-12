@@ -189,7 +189,8 @@ options.last_name_column = 5;		// The index of "last name" column in the file
 options.gender_column = 6;		// The index of "gender" column in the file
 options.ip_address_column = 7;		// The index of "IP address" column in the file
 options.has_header_row = true;		// If this is `true` the first row is considered as table headers
-options.remove_duplicate = true;	// Optional: `false` keeps duplicate emails; leave unset (-1) for the API default (true)
+options.remove_duplicate = false;	// Optional: `false` keeps duplicate emails (the API default is true)
+options.remove_duplicate_set = true;	// Send remove_duplicate; left false, it is not sent
 
 send_file(zb, file_path, email_address_column, options, on_success_send_file, on_error);
 ```

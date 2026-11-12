@@ -45,11 +45,25 @@ void zero_bounce_set_transport_for_test(long timeout_ms, long connect_timeout_ms
     s_allow_loopback_http = allow_loopback_http;
 }
 
+/* The test hook in place of libcurl. The content type is always asked for, so
+   it is noted for zb_read_success_json as a real response's is. */
+static int zb_mock_perform(memory *response_data, long *http_code, char **content_type_out) {
+    char *content_type = NULL;
+    int ok = s_http_perform(response_data, http_code, &content_type);
+    zb_note_response_content_type(ok ? content_type : NULL);
+    if (content_type_out) {
+        *content_type_out = content_type;
+    } else {
+        free(content_type);
+    }
+    return ok;
+}
+
 int zb_http_perform_if_mock(memory *response_data, long *http_code, char **content_type_out) {
     if (!s_http_perform) {
         return 0;
     }
-    return s_http_perform(response_data, http_code, content_type_out);
+    return zb_mock_perform(response_data, http_code, content_type_out);
 }
 
 const char* zero_bounce_get_last_request_url_for_test(void) {
@@ -246,11 +260,15 @@ void set_write_callback(CURL* curl, memory* response_data) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
     zb_set_transport_options(curl);
+    zb_note_response_content_type(NULL);
 }
 
+/* Every request reads its status here, so this is also where the response's
+   content type is noted for zb_read_success_json. */
 long get_http_code(CURL* curl) {
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    zb_note_response_content_type(get_content_type_value(curl));
 
     return http_code;
 }
@@ -266,6 +284,63 @@ char* get_content_type_value(CURL* curl) {
 }
 
 
+/*
+ * A name next to path for a file being written, unique among concurrent
+ * downloads to the same path: the process id and an address that belongs to
+ * this call. The caller frees it.
+ */
+char *zb_temp_path_for(const char *path, const void *owner) {
+    size_t length = strlen(path) + 64;
+    char *temp_path = malloc(length);
+    if (!temp_path) {
+        return NULL;
+    }
+#ifdef _WIN32
+    snprintf(temp_path, length, "%s.%ld-%lx.part", path,
+             (long)_getpid(), (unsigned long)(uintptr_t)owner);
+#else
+    snprintf(temp_path, length, "%s.%ld-%lx.part", path,
+             (long)getpid(), (unsigned long)(uintptr_t)owner);
+#endif
+    return temp_path;
+}
+
+/* Moves temp_path over path, replacing whatever was there. */
+bool zb_replace_file(const char *temp_path, const char *path) {
+#ifdef _WIN32
+    /* rename() does not replace an existing file on Windows. */
+    remove(path);
+#endif
+    return rename(temp_path, path) == 0;
+}
+
+int zb_write_file_replacing(const char *path, const char *data, size_t size) {
+    char *temp_path = zb_temp_path_for(path, &temp_path);
+    FILE *handle;
+    size_t written;
+    int closed;
+
+    if (!temp_path) {
+        return ZB_WRITE_OPEN_FAILED;
+    }
+    handle = fopen(temp_path, "wb");
+    if (!handle) {
+        free(temp_path);
+        return ZB_WRITE_OPEN_FAILED;
+    }
+    written = fwrite(data, 1, size, handle);
+    closed = fclose(handle);
+    if (closed != 0 || written != size || !zb_replace_file(temp_path, path)) {
+        /* Only this call's own partial file goes; a file at path is kept. */
+        remove(temp_path);
+        free(temp_path);
+        return ZB_WRITE_FAILED;
+    }
+    free(temp_path);
+    return 0;
+}
+
+
 SendFileOptions new_send_file_options() {
     SendFileOptions options;
 
@@ -275,9 +350,10 @@ SendFileOptions new_send_file_options() {
     options.gender_column = 0;
     options.ip_address_column = 0;
     options.has_header_row = true;
-    options.remove_duplicate = -1;
+    options.remove_duplicate = true;
     options.allow_phase_2_is_set = false;
     options.allow_phase_2 = false;
+    options.remove_duplicate_set = false;
 
     return options;
 }
@@ -841,7 +917,7 @@ int zb_make_request_with_extra_header_ct(
     }
 
     if (s_http_perform) {
-        return s_http_perform(response_data, http_code, content_type_out);
+        return zb_mock_perform(response_data, http_code, content_type_out);
     }
 
     CURL* curl = curl_easy_init();
@@ -906,7 +982,7 @@ int zb_make_request_with_post_body(
     }
 
     if (s_http_perform) {
-        return s_http_perform(response_data, http_code, NULL);
+        return zb_mock_perform(response_data, http_code, NULL);
     }
 
     CURL* curl = curl_easy_init();
@@ -965,7 +1041,7 @@ int zb_make_request(
         return 0;
     }
     if (s_http_perform) {
-        return s_http_perform(response_data, http_code, NULL);
+        return zb_mock_perform(response_data, http_code, NULL);
     }
 
     CURL* curl = curl_easy_init();
@@ -1041,7 +1117,7 @@ static void note_send_file_fields(
         zb_note_http_field("return_url", options.return_url);
     }
     zb_note_http_field("has_header_row", options.has_header_row ? "true" : "false");
-    if (options.remove_duplicate >= 0) {
+    if (options.remove_duplicate_set) {
         zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
     }
     if (!scoring && options.allow_phase_2_is_set) {
@@ -1087,7 +1163,7 @@ static void send_file_internal(
 
     if (s_http_perform) {
         long http_code = 0;
-        if (!s_http_perform(&response_data, &http_code, NULL)) {
+        if (!zb_mock_perform(&response_data, &http_code, NULL)) {
             if (error_callback) error_callback(parse_error("Mock request failed"));
             goto cleanup;
         }
@@ -1178,7 +1254,7 @@ static void send_file_internal(
     curl_mime_data(part, options.has_header_row ? "true" : "false", CURL_ZERO_TERMINATED);
 
     /* Only when the caller set it: the API defaults it to true. */
-    if (options.remove_duplicate >= 0) {
+    if (options.remove_duplicate_set) {
         part = curl_mime_addpart(multipart);
         curl_mime_name(part, "remove_duplicate");
         curl_mime_data(part, options.remove_duplicate ? "true" : "false", CURL_ZERO_TERMINATED);
@@ -1333,7 +1409,7 @@ static void get_file_internal(
     }
 
     if (s_http_perform) {
-        if (!s_http_perform(&response_data, &http_code, &content_type)) {
+        if (!zb_mock_perform(&response_data, &http_code, &content_type)) {
             if (error_callback) error_callback(parse_error("Mock request failed"));
             goto cleanup;
         }
@@ -1427,17 +1503,18 @@ static void get_file_internal(
             }
             free(dir_path);
 
-            FILE *file_stream = fopen(local_download_path, "wb");
-            if (file_stream == NULL) {
+            /* Written next to the path and moved into place when complete, so
+               a failed write neither leaves a partial file nor touches a file
+               already at the path. */
+            int write_result = zb_write_file_replacing(
+                local_download_path, response_data.response, response_data.size);
+            if (write_result == ZB_WRITE_OPEN_FAILED) {
                 if (error_callback) {
                     error_callback(parse_error("Could not open local_download_path for writing"));
                 }
                 goto cleanup;
             }
-            size_t written = fwrite(response_data.response, 1, response_data.size, file_stream);
-            if (fclose(file_stream) != 0 || written != response_data.size) {
-                /* Part of the file may be on disk: it is not left looking like a result. */
-                remove(local_download_path);
+            if (write_result != 0) {
                 if (error_callback) {
                     error_callback(parse_error("Could not write local_download_path"));
                 }
@@ -2088,7 +2165,7 @@ void validate_email_batch_with_options(
 
     if (s_http_perform) {
         json_object_put(payload);
-        if (!s_http_perform(&response_data, &http_code, NULL)) {
+        if (!zb_mock_perform(&response_data, &http_code, NULL)) {
             if (error_callback) error_callback(parse_error("Mock request failed"));
             return;
         }
@@ -2245,7 +2322,6 @@ static bool zb_stream_open(ZbDownloadStream *stream) {
     struct stat sb;
     char *dir_path;
     char *end;
-    size_t length;
 #ifdef _WIN32
     const char path_separator = '\\';
 #else
@@ -2264,20 +2340,10 @@ static bool zb_stream_open(ZbDownloadStream *stream) {
         }
         free(dir_path);
     }
-    /* The process id and this call's own stream make the name unique among
-       concurrent downloads to the same path. */
-    length = strlen(stream->path) + 64;
-    stream->temp_path = malloc(length);
+    stream->temp_path = zb_temp_path_for(stream->path, stream);
     if (!stream->temp_path) {
         return false;
     }
-#ifdef _WIN32
-    snprintf(stream->temp_path, length, "%s.%ld-%lx.part", stream->path,
-             (long)_getpid(), (unsigned long)(uintptr_t)stream);
-#else
-    snprintf(stream->temp_path, length, "%s.%ld-%lx.part", stream->path,
-             (long)getpid(), (unsigned long)(uintptr_t)stream);
-#endif
     stream->file = fopen(stream->temp_path, "wb");
     if (!stream->file) {
         free(stream->temp_path);
@@ -2376,11 +2442,7 @@ static bool zb_stream_commit(ZbDownloadStream *stream) {
     if (!stream->temp_path) {
         return true;
     }
-#ifdef _WIN32
-    /* rename() does not replace an existing file on Windows. */
-    remove(stream->path);
-#endif
-    moved = rename(stream->temp_path, stream->path) == 0;
+    moved = zb_replace_file(stream->temp_path, stream->path);
     if (!moved) {
         zb_stream_discard(stream);
         return false;
@@ -2440,7 +2502,7 @@ static void get_file_streaming_internal(
         memory buffer = {0};
         char *content_type = NULL;
         buffer.max_bytes = ZB_MAX_GETFILE_BYTES;
-        if (!s_http_perform(&buffer, &http_code, &content_type)) {
+        if (!zb_mock_perform(&buffer, &http_code, &content_type)) {
             free(buffer.response);
             free(content_type);
             free(url_path);

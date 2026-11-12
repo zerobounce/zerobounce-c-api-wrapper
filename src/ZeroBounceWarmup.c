@@ -319,7 +319,9 @@ static void warmup_send(
     }
 
     text = response_data.response ? response_data.response : "";
-    if (http_code > 299 || zb_body_looks_like_html(text)) {
+    /* An HTML page, by its body or its text/html content type, is not the
+       API's answer, even when its body parses as JSON. */
+    if (http_code > 299 || zb_body_looks_like_html(text) || zb_content_type_is_html(content_type)) {
         zb_report_body_error(text, http_code, warmup_on_error);
     } else if (expect_csv) {
         /* An error comes back labelled as JSON or HTML, so it is not a file:
@@ -329,29 +331,23 @@ static void warmup_send(
         while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') {
             start++;
         }
-        if (!start[0] || start[0] == '[' || zb_download_body_is_json(start, content_type) ||
-            zb_content_type_is_html(content_type)) {
+        if (!start[0] || start[0] == '[' || zb_download_body_is_json(start, content_type)) {
             zb_report_body_error(text, http_code, warmup_on_error);
         } else {
             bool saved = true;
             if (download_path && download_path[0]) {
-                FILE *handle = fopen(download_path, "wb");
-                size_t length = strlen(text);
-                if (!handle) {
+                /* Moved into place only when complete: a failed write leaves
+                   no partial file and keeps a file already at the path. */
+                int write_result = zb_write_file_replacing(download_path, text, strlen(text));
+                if (write_result == ZB_WRITE_OPEN_FAILED) {
                     saved = false;
                     if (error_callback) {
                         error_callback(parse_error("Could not open download_path for writing"));
                     }
-                } else {
-                    size_t written = fwrite(text, 1, length, handle);
-                    if (fclose(handle) != 0 || written != length) {
-                        saved = false;
-                        /* Part of the file may be on disk: it is not left
-                           looking like a result. */
-                        remove(download_path);
-                        if (error_callback) {
-                            error_callback(parse_error("Could not write download_path"));
-                        }
+                } else if (write_result != 0) {
+                    saved = false;
+                    if (error_callback) {
+                        error_callback(parse_error("Could not write download_path"));
                     }
                 }
             }

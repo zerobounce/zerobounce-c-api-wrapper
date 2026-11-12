@@ -53,14 +53,19 @@ typedef struct {
     int ip_address_column;
     bool has_header_row;
     /**
-     * -1 (the new_send_file_options default) omits it, so the API's default
-     * (true) applies; 0 sends "false", 1 sends "true". Assigning true or false
-     * still works.
+     * Sent as remove_duplicate only when remove_duplicate_set is true;
+     * otherwise the field is left out and the API's default (true) applies.
      */
-    int remove_duplicate;
+    bool remove_duplicate;
     /** When set, sent as allow_phase_2 on validation sendfile only (not scoring). */
     bool allow_phase_2_is_set;
     bool allow_phase_2;
+    /**
+     * true sends remove_duplicate; false (new_send_file_options and zero
+     * initialisation) leaves it out. Kept last so positional initialisers
+     * written for earlier versions still compile and leave it unset.
+     */
+    bool remove_duplicate_set;
 } SendFileOptions;
 
 /** Bulk getfile download_type query values (validation and scoring). */

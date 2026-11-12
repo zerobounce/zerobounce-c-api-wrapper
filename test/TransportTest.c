@@ -771,6 +771,7 @@ void test_transport_send_file_sends_exactly_these_parts(void) {
     options.ip_address_column = 7;
     options.has_header_row = false;
     options.remove_duplicate = false;
+    options.remove_duplicate_set = true;
     options.allow_phase_2_is_set = true;
     options.allow_phase_2 = true;
     t_expect_parts(0, options,

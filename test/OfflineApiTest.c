@@ -6,6 +6,8 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include "unity.h"
 #include "ZeroBounce/ZeroBounce.h"
@@ -222,6 +224,15 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
             set_body(response_data, "Bad Request: {\"api_key\":\"" LEAK_KEY_JSON "\",\"k\":\""
                      LEAK_KEY_JSON_PLAIN "\"} raw " LEAK_KEY);
             content = "text/plain";
+            break;
+        case 7:
+            /* A portal's page that is labelled text/html but parses as JSON. */
+            set_body(response_data, "{\"a\":1}");
+            content = "text/html";
+            break;
+        case 8:
+            /* A file-looking body labelled as JSON. */
+            set_body(response_data, "email\nlabelled-json@example.com\n");
             break;
         default:
             *http_code = 400;
@@ -589,6 +600,7 @@ void test_offline_send_file_bools_and_zero_column(void) {
     options.allow_phase_2_is_set = true;
     options.allow_phase_2 = false;
     options.remove_duplicate = false;
+    options.remove_duplicate_set = true;
     options.has_header_row = true;
     send_file(zb, "email_file.csv", 0, options, on_send, on_error);
     TEST_ASSERT_EQUAL_STRING("file-key", g_echo);
@@ -2091,8 +2103,23 @@ void test_offline_send_file_sends_remove_duplicate_only_when_set(void) {
         only_request();
         TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
         TEST_ASSERT_TRUE(has_field("has_header_row", "true"));
+        /* A value without remove_duplicate_set is not sent either, so code
+           written for 3.0.1 that assigns it keeps compiling. */
         for (int value = 0; value < 2; value++) {
             options.remove_duplicate = value;
+            options.remove_duplicate_set = false;
+            reset_offline();
+            if (scoring) {
+                scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+            } else {
+                send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+            }
+            only_request();
+            TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
+        }
+        for (int value = 0; value < 2; value++) {
+            options.remove_duplicate = value;
+            options.remove_duplicate_set = true;
             reset_offline();
             if (scoring) {
                 scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
@@ -2103,6 +2130,167 @@ void test_offline_send_file_sends_remove_duplicate_only_when_set(void) {
             TEST_ASSERT_TRUE(has_field("remove_duplicate", value ? "true" : "false"));
         }
     }
+}
+
+/* The files in dir, so a test can tell that nothing was left beside the target. */
+static int count_dir_entries(const char *dir) {
+    int count = 0;
+    struct dirent *entry;
+    DIR *handle = opendir(dir);
+    if (!handle) {
+        return -1;
+    }
+    while ((entry = readdir(handle)) != NULL) {
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            count++;
+        }
+    }
+    closedir(handle);
+    return count;
+}
+
+/* Empties dir, so files left by an earlier run do not count. */
+static void empty_dir(const char *dir) {
+    struct dirent *entry;
+    char path[512];
+    DIR *handle = opendir(dir);
+    if (!handle) {
+        return;
+    }
+    while ((entry = readdir(handle)) != NULL) {
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+            remove(path);
+        }
+    }
+    closedir(handle);
+}
+
+static void write_text_file(const char *path, const char *text) {
+    FILE *handle = fopen(path, "wb");
+    if (handle) {
+        fputs(text, handle);
+        fclose(handle);
+    }
+}
+
+static void read_text_file(const char *path, char *out, size_t size) {
+    FILE *handle = fopen(path, "rb");
+    size_t n = 0;
+    out[0] = '\0';
+    if (handle) {
+        n = fread(out, 1, size - 1, handle);
+        out[n] = '\0';
+        fclose(handle);
+    } else {
+        snprintf(out, size, "<missing>");
+    }
+}
+
+void test_offline_a_failed_write_keeps_the_file_already_at_the_path(void) {
+    /* D4: get_file, scoring_get_file, email_finder_get_file and
+       domain_search_get_file opened the target with "wb" and removed it after
+       a short write, so a file size limit (or a full disk) deleted a result
+       that was already there. Every download now writes beside it and moves
+       the file into place only when complete. */
+    static char long_body[6001];
+    const char *bodies[2] = {"email\nkeep-existing@example.com\n", long_body};
+    const char *dir = "test/downloads/keep-existing";
+    const char *path = "test/downloads/keep-existing/result.csv";
+    int errors[2][DOWNLOAD_KINDS];
+    int successes[2][DOWNLOAD_KINDS];
+    int entries[2][DOWNLOAD_KINDS];
+    char kept[2][DOWNLOAD_KINDS][16];
+    struct rlimit saved;
+    struct rlimit tight;
+    void (*previous)(int);
+    char message[96];
+    ZeroBounce *zb = client_with("keep-existing-key");
+
+    memset(long_body, 'a', sizeof(long_body) - 1);
+    memcpy(long_body, "email\n", 6);
+    long_body[sizeof(long_body) - 1] = '\0';
+    mkdir("test/downloads", 0777);
+    mkdir(dir, 0777);
+    empty_dir(dir);
+    zero_bounce_set_http_perform_for_test(scripted_perform);
+    g_scripted_type = "text/csv";
+    write_text_file(path, "OLD");
+
+    TEST_ASSERT_EQUAL_INT(0, getrlimit(RLIMIT_FSIZE, &saved));
+    tight = saved;
+    tight.rlim_cur = 8;
+    previous = signal(SIGXFSZ, SIG_IGN);
+    TEST_ASSERT_EQUAL_INT(0, setrlimit(RLIMIT_FSIZE, &tight));
+    /* No assertion until the limit is lifted (see the short-write test). */
+    for (int b = 0; b < 2; b++) {
+        g_scripted_body = bodies[b];
+        for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+            g_scripted_errors = g_scripted_successes = 0;
+            download(kind, zb, path);
+            errors[b][kind] = g_scripted_errors;
+            successes[b][kind] = g_scripted_successes;
+            read_text_file(path, kept[b][kind], sizeof(kept[b][kind]));
+            entries[b][kind] = count_dir_entries(dir);
+            write_text_file(path, "OLD");
+        }
+    }
+    setrlimit(RLIMIT_FSIZE, &saved);
+    signal(SIGXFSZ, previous);
+
+    /* Without the limit the download replaces the old file. */
+    g_scripted_body = bodies[0];
+    for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+        char replaced[64];
+        write_text_file(path, "OLD");
+        g_scripted_errors = g_scripted_successes = 0;
+        download(kind, zb, path);
+        read_text_file(path, replaced, sizeof(replaced));
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_scripted_successes, download_name(kind));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(bodies[0], replaced, download_name(kind));
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, count_dir_entries(dir), download_name(kind));
+    }
+    zero_bounce_set_http_perform_for_test(offline_perform);
+    remove(path);
+    rmdir(dir);
+
+    for (int b = 0; b < 2; b++) {
+        for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+            snprintf(message, sizeof(message), "%s, %zu-byte body", download_name(kind), strlen(bodies[b]));
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, errors[b][kind], message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, successes[b][kind], message);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE("OLD", kept[b][kind], message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, entries[b][kind], message);
+        }
+    }
+}
+
+/* SendFileOptions keeps the 3.0.1 shape: remove_duplicate is a bool (a
+   bool pointer to it compiles), and remove_duplicate_set comes last, so a
+   positional initialiser written for 3.0.1 compiles and leaves it unset. */
+void test_offline_send_file_options_stay_source_compatible(void) {
+    SendFileOptions options = new_send_file_options();
+    bool *p = &options.remove_duplicate;
+    *p = false;
+    bool b = options.remove_duplicate;
+    TEST_ASSERT_FALSE(b);
+    TEST_ASSERT_FALSE(options.remove_duplicate_set);
+    TEST_ASSERT_TRUE(new_send_file_options().remove_duplicate);
+    _Static_assert(sizeof(((SendFileOptions *)0)->remove_duplicate) == sizeof(bool),
+                   "remove_duplicate must stay a bool");
+    SendFileOptions positional = {"", 0, 0, 0, 0, true, false, false, false};
+    TEST_ASSERT_FALSE(positional.remove_duplicate_set);
+    SendFileOptions zeroed = {0};
+    ZeroBounce *zb = client_with("file-key");
+    reset_offline();
+    send_file(zb, "email_file.csv", 1, positional, on_send, on_error);
+    only_request();
+    TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
+    reset_offline();
+    zeroed.return_url = "";
+    send_file(zb, "email_file.csv", 1, zeroed, on_send, on_error);
+    only_request();
+    TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
 }
 
 void test_offline_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
@@ -2520,6 +2708,40 @@ static void check_no_key_in_error(const char *call) {
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "REDACTED"), message);
 }
 
+/* Every form a secret can take in an echoed body, for one with a space and
+   every character JSON or URL encoding changes. Written out by hand, so each
+   form zb_mask_secret knows is needed: dropping any one leaves its line
+   unmasked. */
+#define EVERY_FORM_SECRET "a b\"c/d+e%f&g=h<i>j'k\\l"
+static const char *const every_form_of_the_secret[] = {
+    /* raw */
+    "a b\"c/d+e%f&g=h<i>j'k\\l",
+    /* JSON-escaped, '/' escaped (json-c) and not */
+    "a b\\\"c\\/d+e%f&g=h<i>j'k\\\\l",
+    "a b\\\"c/d+e%f&g=h<i>j'k\\\\l",
+    /* URL-encoded, space as %20 and as '+' */
+    "a%20b%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5Cl",
+    "a+b%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5Cl",
+    /* URL-encoded after JSON escaping, each JSON form, %20 and '+' */
+    "a%20b%5C%22c%5C%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+    "a+b%5C%22c%5C%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+    "a%20b%5C%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+    "a+b%5C%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+};
+
+void test_offline_every_form_of_a_secret_is_masked(void) {
+    char message[200];
+    for (size_t i = 0; i < sizeof(every_form_of_the_secret) / sizeof(every_form_of_the_secret[0]); i++) {
+        char *text = malloc(strlen(every_form_of_the_secret[i]) + 3);
+        TEST_ASSERT_NOT_NULL(text);
+        sprintf(text, "[%s]", every_form_of_the_secret[i]);
+        text = zb_mask_secret(text, EVERY_FORM_SECRET, "***");
+        snprintf(message, sizeof(message), "form %zu: %s", i, every_form_of_the_secret[i]);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("[***]", text, message);
+        free(text);
+    }
+}
+
 /* Standard section 3: the key is never in an error. Every call gets each
    echoing body; no error text may carry the key, raw, URL-encoded or
    JSON-escaped. */
@@ -2528,6 +2750,23 @@ void test_offline_no_error_carries_the_key(void) {
     g_sweep_check = check_no_key_in_error;
     if (TEST_PROTECT()) {
         for (g_leak_mode = 1; g_leak_mode <= 6; g_leak_mode++) {
+            run_every_call(zb);
+        }
+    }
+    g_leak_mode = 0;
+}
+
+/* A 200 labelled text/html whose body parses as JSON ({"a":1}) is a portal's
+   or a proxy's page, not the API's answer: an error with the status on every
+   call, and no file. A file-looking body labelled application/json is an
+   error too: a JSON call cannot parse it, and a download takes the label as
+   the API's error. Either guard's content-type half alone is what catches
+   these bodies. */
+void test_offline_the_content_type_alone_makes_a_200_an_error(void) {
+    ZeroBounce *zb = client_with("content-type-sweep");
+    g_sweep_check = check_success_false;
+    if (TEST_PROTECT()) {
+        for (g_leak_mode = 7; g_leak_mode <= 8; g_leak_mode++) {
             run_every_call(zb);
         }
     }
@@ -2572,6 +2811,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_batch_explicit_false);
     RUN_TEST(test_offline_send_file_bools_and_zero_column);
     RUN_TEST(test_offline_send_file_sends_remove_duplicate_only_when_set);
+    RUN_TEST(test_offline_send_file_options_stay_source_compatible);
     RUN_TEST(test_offline_scoring_send_omits_validation_fields);
     RUN_TEST(test_offline_file_status_and_delete);
     RUN_TEST(test_offline_get_file_options);
@@ -2618,9 +2858,12 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_every_request_function_is_in_the_sweep);
     RUN_TEST(test_offline_a_rejected_key_replaces_the_previous_one);
     RUN_TEST(test_offline_success_false_is_an_error_on_every_call);
+    RUN_TEST(test_offline_every_form_of_a_secret_is_masked);
     RUN_TEST(test_offline_no_error_carries_the_key);
+    RUN_TEST(test_offline_the_content_type_alone_makes_a_200_an_error);
     RUN_TEST(test_offline_an_empty_body_is_a_success_only_for_an_inbox_placement_delete);
     RUN_TEST(test_offline_a_json_object_in_place_of_a_file_is_an_error);
     RUN_TEST(test_offline_an_html_page_in_place_of_a_file_is_an_error);
     RUN_TEST(test_offline_a_short_write_is_an_error_and_leaves_no_partial_file);
+    RUN_TEST(test_offline_a_failed_write_keeps_the_file_already_at_the_path);
 }

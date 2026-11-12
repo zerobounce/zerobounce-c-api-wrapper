@@ -25,6 +25,26 @@ char *zb_url_escape(const char *value);
  * replaced by mask. Takes ownership of text and returns the string to use.
  */
 char *zb_mask_secret(char *text, const char *secret, const char *mask);
+/*
+ * Notes the content type of the response the current call on this thread just
+ * got (NULL before a request); zb_read_success_json refuses a text/html one.
+ */
+void zb_note_response_content_type(const char *content_type);
+/* Whether that response was labelled text/html. */
+bool zb_response_was_html(void);
+/* zb_write_file_replacing results besides 0 (written). */
+#define ZB_WRITE_OPEN_FAILED (-1)
+#define ZB_WRITE_FAILED (-2)
+/*
+ * Writes data to a temporary file next to path and moves it over path only
+ * when the whole of it was written. On failure the temporary file is removed
+ * and a file already at path is left as it was.
+ */
+int zb_write_file_replacing(const char *path, const char *data, size_t size);
+/* A temporary file name next to path, unique to owner. The caller frees it. */
+char *zb_temp_path_for(const char *path, const void *owner);
+/* Moves temp_path over path, replacing what was there. */
+bool zb_replace_file(const char *temp_path, const char *path);
 /* A copy of a base URL without its trailing slashes. The caller owns it. */
 char *zb_normalized_base_url(const char *url);
 /* The timeouts, no-redirect and https-only options every request gets. */

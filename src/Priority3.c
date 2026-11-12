@@ -143,7 +143,7 @@ static void p3_send_json_success(
     /* LIVE: the filters answer an invalid or drained key with an HTTP 200 and
        {"Error": ...}, which used to be handed over as a successful result.
        "success": false on a 200 is an error too, as on every other path. */
-    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' ||
+    if (http_code > 299 || zb_body_looks_like_html(body) || zb_response_was_html() || body[0] == '\0' ||
         zb_success_means_failure(body) || zb_error_only_body(body)) {
         zb_report_body_error(body, http_code, error_callback);
         return;
@@ -452,16 +452,16 @@ static void p3_bulk_root_get_file(
         zb_report_body_error(body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
-        FILE *file_stream = fopen(local_download_path, "wb");
-        if (file_stream == NULL) {
+        /* Moved into place only when complete: a failed write leaves no
+           partial file and keeps a file already at the path. */
+        int write_result = zb_write_file_replacing(
+            local_download_path, response_data.response, response_data.size);
+        if (write_result == ZB_WRITE_OPEN_FAILED) {
             if (error_callback) {
                 error_callback(parse_error("Invalid file path"));
             }
         } else {
-            size_t written = fwrite(response_data.response, 1, response_data.size, file_stream);
-            if (fclose(file_stream) != 0 || written != response_data.size) {
-                /* Part of the file may be on disk: it is not left looking like a result. */
-                remove(local_download_path);
+            if (write_result != 0) {
                 if (error_callback) {
                     error_callback(parse_error("Could not write local_download_path"));
                 }
