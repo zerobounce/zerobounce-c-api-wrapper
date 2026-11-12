@@ -39,6 +39,77 @@ ZBErrorResponse parse_error(const char* error) {
     return parse_error_with_status(error, 0);
 }
 
+/*
+ * The API key of the client making the current call on this thread, recorded
+ * by the key check every public call runs first (zb_set_redaction_key), so that
+ * every error built below has it taken out without each path carrying the
+ * client around. Kept until the next call on the thread replaces it.
+ */
+static _Thread_local char *zb_tls_api_key = NULL;
+
+void zb_set_redaction_key(const char *api_key) {
+    if (zb_tls_api_key && api_key && strcmp(zb_tls_api_key, api_key) == 0) {
+        return;
+    }
+    free(zb_tls_api_key);
+    zb_tls_api_key = (api_key && api_key[0]) ? strdup(api_key) : NULL;
+}
+
+/* Replaces every occurrence of secret in text, in place, with REDACTED. */
+static char *zb_replace_secret(char *text, const char *secret) {
+    static const char mask[] = "REDACTED";
+    size_t secret_len;
+    size_t count = 0;
+    const char *at;
+    char *out;
+    char *dst;
+    const char *src;
+
+    if (!text || !secret || !secret[0]) {
+        return text;
+    }
+    secret_len = strlen(secret);
+    for (at = strstr(text, secret); at; at = strstr(at + secret_len, secret)) {
+        count++;
+    }
+    if (count == 0) {
+        return text;
+    }
+    out = malloc(strlen(text) + count * (sizeof(mask) - 1) + 1);
+    if (!out) {
+        return text;
+    }
+    dst = out;
+    src = text;
+    while ((at = strstr(src, secret)) != NULL) {
+        memcpy(dst, src, (size_t)(at - src));
+        dst += at - src;
+        memcpy(dst, mask, sizeof(mask) - 1);
+        dst += sizeof(mask) - 1;
+        src = at + secret_len;
+    }
+    strcpy(dst, src);
+    free(text);
+    return out;
+}
+
+/*
+ * A copy of text with any api_key parameter's value and the current call's
+ * key, raw and URL-encoded, replaced. The caller owns it.
+ */
+static char *zb_redact_error_text(const char *text) {
+    char *out = zb_redact_api_key(text);
+    if (out && zb_tls_api_key) {
+        char *escaped = zb_url_escape(zb_tls_api_key);
+        out = zb_replace_secret(out, zb_tls_api_key);
+        if (escaped && strcmp(escaped, zb_tls_api_key) != 0) {
+            out = zb_replace_secret(out, escaped);
+        }
+        free(escaped);
+    }
+    return out;
+}
+
 ZBErrorResponse parse_error_with_status(const char* error, long status_code) {
     ZBErrorResponse response = new_zb_error_response();
     response.status_code = status_code;
@@ -88,6 +159,16 @@ ZBErrorResponse parse_error_with_status(const char* error, long status_code) {
         }
     } else {
         string_vector_append(&errors, error);
+    }
+
+    /* Every error a caller sees is built here, so this is where the key is
+       taken out: a body may quote the request URL or the key itself. */
+    for (size_t i = 0; i < errors.size; i++) {
+        char *safe = zb_redact_error_text(errors.data[i]);
+        if (safe) {
+            free(errors.data[i]);
+            errors.data[i] = safe;
+        }
     }
 
     response.errors = errors;
@@ -307,7 +388,6 @@ char *zb_redact_api_key(const char *text) {
 
 void zb_report_body_error(const char *body, long status_code, OnErrorCallback error_callback) {
     char *message;
-    char *safe;
     if (!error_callback) {
         return;
     }
@@ -320,9 +400,8 @@ void zb_report_body_error(const char *body, long status_code, OnErrorCallback er
         return;
     }
     message = zb_message_from_body(body, status_code);
-    safe = zb_redact_api_key(message);
-    error_callback(parse_error_with_status(safe ? safe : message, status_code));
-    free(safe);
+    /* parse_error_with_status takes the key out. */
+    error_callback(parse_error_with_status(message, status_code));
     free(message);
 }
 

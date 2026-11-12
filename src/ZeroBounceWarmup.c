@@ -94,6 +94,7 @@ static bool warmup_is_blank(const char *value) {
 }
 
 static bool warmup_ready(ZeroBounceWarmup *zbw, OnErrorCallback error_callback) {
+    zb_set_redaction_key(zbw && !zbw->api_key_rejected ? zbw->api_key : NULL);
     if (zbw && zbw->api_key_rejected) {
         if (error_callback) {
             error_callback(parse_error("api_key has surrounding whitespace or control characters"));

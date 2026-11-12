@@ -617,6 +617,155 @@ void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* -- every call ------------------------------------------------------------ */
+
+int offline_count_swept_request_functions(const char *header_path, int (*is_swept)(const char *name));
+
+#define W_LEAK_KEY "leak-W4rm/x+y"
+#define W_LEAK_KEY_ESCAPED "leak-W4rm%2Fx%2By"
+#define W_SWEPT_MAX 64
+static char w_swept[W_SWEPT_MAX][96];
+static int w_swept_count;
+static void (*w_sweep_check)(const char *call);
+
+static void w_record_swept(const char *call) {
+    size_t len = strcspn(call, "(");
+    int i;
+    for (i = 0; i < w_swept_count; i++) {
+        if (strlen(w_swept[i]) == len && strncmp(w_swept[i], call, len) == 0) {
+            return;
+        }
+    }
+    if (w_swept_count < W_SWEPT_MAX && len < sizeof(w_swept[0])) {
+        memcpy(w_swept[w_swept_count], call, len);
+        w_swept[w_swept_count][len] = '\0';
+        w_swept_count++;
+    }
+}
+
+static int w_was_swept(const char *name) {
+    int i;
+    for (i = 0; i < w_swept_count; i++) {
+        if (strcmp(w_swept[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The answer every request gets stays as set by the test; only the request
+   record is cleared. */
+#define W_SWEEP(call) do { \
+        w_record_swept(#call); \
+        w_url[0] = w_error[0] = w_raw[0] = '\0'; \
+        w_requests = 0; \
+        w_error_called = w_success_called = 0; \
+        w_status = 0; \
+        call; \
+        w_sweep_check(#call); \
+    } while (0)
+
+/* Runs every public Warmup request function once, with valid arguments. */
+static void w_run_every_call(ZeroBounceWarmup *zbw, const char *path) {
+    ZBWarmupAddSendingAccountOptions add = new_warmup_add_sending_account_options();
+    add.engagement_rule_id = 2;
+    W_SWEEP(warmup_list_sending_accounts(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_sending_account(zbw, "sender@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_SELF_MANAGED, &add,
+                                       w_on_raw, w_on_error));
+    W_SWEEP(warmup_update_sending_account(zbw, "sender@example.com", 1, 4, true, w_on_raw, w_on_error));
+    W_SWEEP(warmup_delete_sending_account(zbw, "sender@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_change_from_address(zbw, "old@example.com", "new@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_list_from_addresses(zbw, NULL, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_engagement_rules(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_set_engagement_rule(zbw, "sender@example.com", 3, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_custom_engagement(zbw, "sender@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_create_custom_engagement(zbw, "sender@example.com", 10, 20, 30, w_on_raw, w_on_error));
+    W_SWEEP(warmup_update_custom_engagement(zbw, "sender@example.com", 10, 20, 30, w_on_raw, w_on_error));
+    W_SWEEP(warmup_delete_custom_engagement(zbw, "sender@example.com", 2, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_seeds(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_download_seeds(zbw, path, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_seed_count(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_progress_today(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_sent_today(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_emails_per_day(zbw, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_statistics(zbw, "sender@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_statistics_per_day(zbw, "sender@example.com", "2026-10-01", "2026-10-07",
+                                          w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_statistics_detailed(zbw, "sender@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_download_statistics(zbw, "sender@example.com", path, w_on_raw, w_on_error));
+    W_SWEEP(warmup_get_from_address_statistics(zbw, "sender@example.com", w_on_raw, w_on_error));
+    W_SWEEP(warmup_check_domain_dmarc(zbw, "sender@example.com", "selector1", w_on_raw, w_on_error));
+    W_SWEEP(warmup_test_smtp_configuration(zbw, "sender@example.com", "sender@example.com", "sekrit",
+                                           "smtp.example.com", 587, w_on_raw, w_on_error));
+}
+
+static void w_check_no_key_in_error(const char *call) {
+    char message[1300];
+    snprintf(message, sizeof message, "%s: %s", call, w_error);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, message);
+    TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(400, (int)w_status, message);
+    TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY), message);
+    TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY_ESCAPED), message);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "REDACTED"), message);
+}
+
+/* Standard section 3: the key is never in an error, also when the Warmup API
+   (or a proxy in front of it) quotes it, raw or URL-encoded, in an error. */
+void test_warmup_no_error_carries_the_key(void) {
+    static const char *const bodies[] = {
+        "{\"error\":\"Bad key " W_LEAK_KEY "\"}",
+        "{\"success\":false,\"message\":\"Bad key " W_LEAK_KEY "\"}",
+        "Bad Request: GET https://warmup-api.zerobounce.net/api/v1/warmup/seeds?key=" W_LEAK_KEY_ESCAPED,
+        "Rejected key " W_LEAK_KEY,
+    };
+    const char *path = "test/downloads/warmup-leak.csv";
+    size_t i;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client(W_LEAK_KEY);
+    w_sweep_check = w_check_no_key_in_error;
+    w_swept_count = 0;
+    for (i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+        w_next_status = 400;
+        w_next_body = bodies[i];
+        w_run_every_call(zbw, path);
+    }
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+    zero_bounce_warmup_free(zbw);
+}
+
+/* Each call sent one request. */
+static void w_check_sent(const char *call) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, call);
+}
+
+/* Fails for any request function in ZeroBounceWarmup.h that w_run_every_call
+   does not run. */
+void test_warmup_every_request_function_is_in_the_sweep(void) {
+    char header[1024];
+    size_t len = strlen(ZB_PUBLIC_HEADER) - strlen("ZeroBounce.h");
+    int declared;
+    ZeroBounceWarmup *zbw;
+    TEST_ASSERT_TRUE(len + strlen("ZeroBounceWarmup.h") < sizeof(header));
+    memcpy(header, ZB_PUBLIC_HEADER, len);
+    strcpy(header + len, "ZeroBounceWarmup.h");
+
+    w_reset();
+    zbw = w_client("warm-key");
+    w_sweep_check = w_check_sent;
+    w_swept_count = 0;
+    w_run_every_call(zbw, "test/downloads/warmup-sweep.csv");
+    remove("test/downloads/warmup-sweep.csv");
+    zero_bounce_warmup_free(zbw);
+
+    declared = offline_count_swept_request_functions(header, w_was_swept);
+    TEST_ASSERT_GREATER_THAN_INT(20, declared);
+    TEST_ASSERT_EQUAL_INT(declared, w_swept_count);
+}
+
 void warmup_run_tests(void) {
     RUN_TEST(test_warmup_api_key_header_and_own_host);
     RUN_TEST(test_warmup_uninitialized_sends_nothing);
@@ -635,5 +784,7 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_base_url_trailing_slashes_are_dropped);
     RUN_TEST(test_warmup_a_download_that_cannot_be_saved_is_not_a_success);
     RUN_TEST(test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file);
+    RUN_TEST(test_warmup_no_error_carries_the_key);
+    RUN_TEST(test_warmup_every_request_function_is_in_the_sweep);
     zero_bounce_set_http_perform_for_test(NULL);
 }
