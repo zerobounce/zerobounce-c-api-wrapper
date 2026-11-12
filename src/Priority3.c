@@ -141,8 +141,10 @@ static void p3_send_json_success(
 ) {
     const char *body = response_data->response ? response_data->response : "";
     /* LIVE: the filters answer an invalid or drained key with an HTTP 200 and
-       {"Error": ...}, which used to be handed over as a successful result. */
-    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' || zb_error_only_body(body)) {
+       {"Error": ...}, which used to be handed over as a successful result.
+       "success": false on a 200 is an error too, as on every other path. */
+    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' ||
+        zb_success_means_failure(body) || zb_error_only_body(body)) {
         zb_report_body_error(body, http_code, error_callback);
         return;
     }
@@ -1343,8 +1345,10 @@ static void p3_inbox_placement_request(
         return;
     }
 
-    /* DELETE answers with an empty body. */
-    if (http_code <= 299 && (!response_data.response || response_data.response[0] == '\0')) {
+    /* DELETE answers with an empty body. Any other call's empty 2xx is an
+       error, reported below with its status. */
+    if (http_code <= 299 && strcmp(method, "DELETE") == 0 &&
+        (!response_data.response || response_data.response[0] == '\0')) {
         if (success_callback) {
             success_callback("{}");
         }

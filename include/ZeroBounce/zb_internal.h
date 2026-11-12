@@ -13,6 +13,12 @@ bool zb_api_key_is_clean(const char *api_key);
 bool zb_check_request_url(const char *url, OnErrorCallback error_callback);
 /* Replaces the value of any api_key parameter in a message with REDACTED. */
 char *zb_redact_api_key(const char *text);
+/*
+ * Records the key of the client making the current call on this thread (NULL
+ * forgets it). parse_error_with_status replaces it, raw and URL-encoded, in
+ * every error it builds, as it does any api_key parameter's value.
+ */
+void zb_set_redaction_key(const char *api_key);
 char *zb_url_escape(const char *value);
 /* A copy of a base URL without its trailing slashes. The caller owns it. */
 char *zb_normalized_base_url(const char *url);

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `get_file_streaming` and `scoring_get_file_streaming` deleted a file that was already at `local_download_path` when the download failed: a refused connection, a JSON error body, a non-2xx status or a body cut short removed the earlier file, although nothing had been written to it. `get_file` leaves it alone. The streaming download now writes to a temporary file next to `local_download_path` (`<path>.<pid>-<id>.part`) and moves it into place only when the whole file has arrived; a failed download removes only that temporary file, so a file already at the path is kept as it was, also when the connection closes part-way through the body.
 - A Warmup CSV download (`warmup_download_seeds`, `warmup_download_statistics`) that could be written only in part (a full disk, a file size limit) reported `Could not write download_path` but left the truncated file behind. It is now removed, as the bulk downloads already did.
+- `"success": false` on an HTTP 200 reached the success callback on every raw-JSON call: `add_filter`, `list_filters`, `delete_filter`, `get_list_evaluator_result`, `list_s3_files` and the Inbox Placement Tester calls. It now goes to the error callback with status 200, as on every other call.
+- **Behaviour change:** the Inbox Placement Tester calls treated an empty 2xx body as a success and passed `"{}"` to the success callback, whatever the call. Only `delete_inbox_placement_test` answers with an empty body, so it alone still does; an empty 2xx from any other Inbox Placement call (providers, test types, create, get, list, the webhook calls) is now an error with its status (`Empty response from ZeroBounce (HTTP 200)`).
+
+### Security
+
+- An error built from a response body could carry the API key. Only an `api_key=` parameter's value was masked, so a body quoting the key itself reached the error callback whole: `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting it, or the key in its URL-encoded form. The Warmup client masked only the SMTP credentials of `warmup_test_smtp_configuration`, so a Warmup error quoting the key came through too. `parse_error_with_status`, which builds every error a callback gets, now replaces the calling client's key, raw and URL-encoded, with `REDACTED` on every call of both clients, besides any `api_key=` value. `zb_set_redaction_key` (internal) records the key per thread at the check every call runs first.
 
 ## [3.0.1] - 2026-11-11
 

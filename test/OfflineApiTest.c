@@ -34,6 +34,14 @@ static int g_success_called;
 static char g_echo[256];
 static _Thread_local char tls_echo[256];
 
+/* The key-echo sweeps: which echoing body the fake answers every request with
+   (0 for none), and whether an error has carried the key. LEAK_KEY needs
+   escaping in a URL, so its raw and URL-encoded forms differ. */
+#define LEAK_KEY "leak-K3y/x+y"
+#define LEAK_KEY_ESCAPED "leak-K3y%2Fx%2By"
+static int g_leak_mode;
+static int g_error_leaked;
+
 static const char *html_page(void) {
     static char *page = NULL;
     if (!page) {
@@ -180,11 +188,41 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
     snprintf(request.api_key, sizeof(request.api_key), "%s", key);
     remember(&request);
 
-    usleep((useconds_t)(rand() % 21) * 1000);
+    usleep((useconds_t)(g_leak_mode ? 0 : rand() % 21) * 1000);
 
     const char *content = "application/json";
     *http_code = 200;
-    if (strncmp(key, "html-403-", 9) == 0 || strncmp(key, "html-200-", 9) == 0) {
+    if (g_leak_mode) {
+        /* Bodies that quote the key: a dead-key error and "success": false on
+           a 200, a proxy quoting the request URL, a JSON error and a text one
+           quoting the URL-encoded key. */
+        switch (g_leak_mode) {
+        case 1:
+            set_body(response_data, "{\"error\":\"Invalid API key " LEAK_KEY "\"}");
+            break;
+        case 2:
+            set_body(response_data, "{\"success\":false,\"message\":\"Invalid API key " LEAK_KEY "\"}");
+            break;
+        case 3:
+            *http_code = 400;
+            set_body(response_data,
+                "Bad Request: GET https://api.zerobounce.net/v2/validate?api_key=" LEAK_KEY_ESCAPED "&email=a");
+            content = "text/plain";
+            break;
+        case 4:
+            *http_code = 400;
+            set_body(response_data, "{\"error\":\"Bad key " LEAK_KEY "\"}");
+            break;
+        default:
+            *http_code = 400;
+            set_body(response_data, "Rejected key " LEAK_KEY_ESCAPED);
+            content = "text/plain";
+            break;
+        }
+    } else if (strncmp(key, "empty-404-", 10) == 0) {
+        *http_code = 404;
+        set_body(response_data, "");
+    } else if (strncmp(key, "html-403-", 9) == 0 || strncmp(key, "html-200-", 9) == 0) {
         *http_code = strncmp(key, "html-403-", 9) == 0 ? 403 : 200;
         set_body(response_data, html_page());
         content = "text/html; charset=UTF-8";
@@ -297,6 +335,8 @@ static void reset_offline(void) {
     g_count = 0;
     pthread_mutex_unlock(&g_mu);
     g_error_called = 0;
+    g_error_leaked = 0;
+    g_error_status = 0;
     g_success_called = 0;
     g_error_text[0] = '\0';
     g_echo[0] = '\0';
@@ -317,6 +357,9 @@ static void on_error(ZBErrorResponse error) {
     for (size_t i = 0; i < error.errors.size; i++) {
         const char *part = error.errors.data[i] ? error.errors.data[i] : "";
         size_t n = strlen(part);
+        if (strstr(part, LEAK_KEY) || strstr(part, LEAK_KEY_ESCAPED)) {
+            g_error_leaked = 1;
+        }
         if (used && used + 1 < sizeof(g_error_text)) {
             g_error_text[used++] = ' ';
         }
@@ -2074,7 +2117,7 @@ void test_offline_base_url_setters_strip_trailing_slashes(void) {
     TEST_ASSERT_EQUAL_STRING("/ipt/providers", only_request().path);
 }
 
-/* The public request functions expect_every_call_refused has run, by name,
+/* The public request functions run_every_call has run, by name,
    so test_offline_every_request_function_is_in_the_sweep can compare them
    with the header. */
 #define SWEPT_MAX 128
@@ -2098,19 +2141,20 @@ static void record_swept(const char *call) {
     }
 }
 
-/* Runs every public request function once; each must fail with `expected`
-   and send nothing. */
-#define EXPECT_REFUSED(call) do { \
+/* What run_every_call checks after each call, given the call's text. */
+typedef void (*SweepCheck)(const char *call);
+static SweepCheck g_sweep_check;
+static const char *g_sweep_expected;
+
+#define SWEEP(call) do { \
         record_swept(#call); \
         reset_offline(); \
         call; \
-        TEST_ASSERT_TRUE_MESSAGE(g_error_called, #call); \
-        TEST_ASSERT_FALSE_MESSAGE(g_success_called, #call); \
-        TEST_ASSERT_EQUAL_STRING_MESSAGE(expected, g_error_text, #call); \
-        TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_count, #call); \
+        g_sweep_check(#call); \
     } while (0)
 
-static void expect_every_call_refused(ZeroBounce *zb, const char *expected) {
+/* Runs every public request function once, then g_sweep_check. */
+static void run_every_call(ZeroBounce *zb) {
     const char *path = "test/downloads/refused.csv";
     struct tm day = {0};
     EmailToValidateVector emails = email_to_validate_vector_init();
@@ -2135,79 +2179,93 @@ static void expect_every_call_refused(ZeroBounce *zb, const char *expected) {
     s3.return_url = score.return_url = job.return_url = "https://example.com/done";
     remove(path);
 
-    EXPECT_REFUSED(get_credits(zb, on_credits, on_error));
-    EXPECT_REFUSED(get_api_usage(zb, day, day, on_usage, on_error));
-    EXPECT_REFUSED(validate_email(zb, "a@example.com", "", on_validate, on_error));
-    EXPECT_REFUSED(validate_email_with_options(zb, "a@example.com", "", &post, on_validate, on_error));
-    EXPECT_REFUSED(validate_email_batch(zb, emails, on_batch, on_error));
-    EXPECT_REFUSED(validate_email_batch_with_options(zb, emails, &post, on_batch, on_error));
-    EXPECT_REFUSED(send_file(zb, "email_file.csv", 1, send_options, on_send, on_error));
-    EXPECT_REFUSED(file_status(zb, "fid", on_status, on_error));
-    EXPECT_REFUSED(get_file(zb, "fid", (char *)path, on_get, on_error));
-    EXPECT_REFUSED(get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error));
-    EXPECT_REFUSED(scoring_get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error));
-    EXPECT_REFUSED(get_file_with_options(zb, "fid", (char *)path, &get_options, on_get, on_error));
-    EXPECT_REFUSED(delete_file(zb, "fid", on_delete, on_error));
-    EXPECT_REFUSED(scoring_send_file(zb, "email_file.csv", 1, send_options, on_send, on_error));
-    EXPECT_REFUSED(scoring_file_status(zb, "fid", on_status, on_error));
-    EXPECT_REFUSED(scoring_get_file(zb, "fid", (char *)path, on_get, on_error));
-    EXPECT_REFUSED(scoring_get_file_with_options(zb, "fid", (char *)path, &get_options, on_get, on_error));
-    EXPECT_REFUSED(scoring_delete_file(zb, "fid", on_delete, on_error));
-    EXPECT_REFUSED(get_activity_data(zb, "a@example.com", on_activity, on_error));
-    EXPECT_REFUSED(score_email(zb, "a@example.com", on_score, on_error));
-    EXPECT_REFUSED(score_email_post(zb, "a@example.com", on_score, on_error));
-    EXPECT_REFUSED(find_email_by_domain_first_middle_last_name(zb, "example.com", "A", "B", "C", on_find, on_error));
-    EXPECT_REFUSED(find_email_by_domain_first_last_name(zb, "example.com", "A", "C", on_find, on_error));
-    EXPECT_REFUSED(find_email_by_domain_first_name(zb, "example.com", "A", on_find, on_error));
-    EXPECT_REFUSED(find_email_by_company_name_first_middle_last_name(zb, "Co", "A", "B", "C", on_find, on_error));
-    EXPECT_REFUSED(find_email_by_company_name_first_last_name(zb, "Co", "A", "C", on_find, on_error));
-    EXPECT_REFUSED(find_email_by_company_name_first_name(zb, "Co", "A", on_find, on_error));
-    EXPECT_REFUSED(search_domain_by_domain(zb, "example.com", on_domain, on_error));
-    EXPECT_REFUSED(search_domain_by_company_name(zb, "Co", on_domain, on_error));
-    EXPECT_REFUSED(send_email_finder_file(zb, "email_file.csv", 1, &finder, on_send, on_error));
-    EXPECT_REFUSED(email_finder_file_status(zb, "fid", on_status, on_error));
-    EXPECT_REFUSED(email_finder_get_file(zb, "fid", (char *)path, on_get, on_error));
-    EXPECT_REFUSED(email_finder_delete_file(zb, "fid", on_delete, on_error));
-    EXPECT_REFUSED(send_domain_search_file(zb, "email_file.csv", 1, &domain, on_send, on_error));
-    EXPECT_REFUSED(domain_search_file_status(zb, "fid", on_status, on_error));
-    EXPECT_REFUSED(domain_search_get_file(zb, "fid", (char *)path, on_get, on_error));
-    EXPECT_REFUSED(domain_search_delete_file(zb, "fid", on_delete, on_error));
-    EXPECT_REFUSED(send_list_evaluator_file(zb, "email_file.csv", 1, on_send, on_error));
-    EXPECT_REFUSED(get_list_evaluator_result(zb, "fid", on_raw, on_error));
-    EXPECT_REFUSED(send_evaluated_file(zb, "fid", on_send, on_error));
-    EXPECT_REFUSED(add_filter(zb, "allow", "domain", "example.com", on_raw, on_error));
-    EXPECT_REFUSED(list_filters(zb, false, on_raw, on_error));
-    EXPECT_REFUSED(list_filters(zb, true, on_raw, on_error));
-    EXPECT_REFUSED(delete_filter(zb, "allow", "domain", "example.com", on_raw, on_error));
-    EXPECT_REFUSED(validate_s3_file(zb, &s3, on_send, on_error));
-    EXPECT_REFUSED(score_s3_file(zb, &score, on_send, on_error));
-    EXPECT_REFUSED(export_s3_file(zb, "fid", NULL, on_send, on_error));
-    EXPECT_REFUSED(list_s3_files(zb, NULL, NULL, on_raw, on_error));
-    EXPECT_REFUSED(email_finder_s3_file(zb, &job, on_send, on_error));
-    EXPECT_REFUSED(domain_search_s3_file(zb, &job, on_send, on_error));
-    EXPECT_REFUSED(validate_sftp_file(zb, &job, on_send, on_error));
-    EXPECT_REFUSED(score_sftp_file(zb, &job, on_send, on_error));
-    EXPECT_REFUSED(email_finder_sftp_file(zb, &job, on_send, on_error));
-    EXPECT_REFUSED(domain_search_sftp_file(zb, &job, on_send, on_error));
-    EXPECT_REFUSED(export_sftp_file(zb, "fid", NULL, on_send, on_error));
-    EXPECT_REFUSED(get_inbox_placement_providers(zb, on_raw, on_error));
-    EXPECT_REFUSED(get_inbox_placement_test_types(zb, on_raw, on_error));
-    EXPECT_REFUSED(create_inbox_placement_test(zb, "t", &create, on_raw, on_error));
-    EXPECT_REFUSED(get_inbox_placement_test(zb, "t1", on_raw, on_error));
-    EXPECT_REFUSED(list_inbox_placement_tests(zb, &list, on_raw, on_error));
-    EXPECT_REFUSED(delete_inbox_placement_test(zb, "t1", on_raw, on_error));
-    EXPECT_REFUSED(get_inbox_placement_webhook(zb, on_raw, on_error));
-    EXPECT_REFUSED(set_inbox_placement_webhook(zb, "https://example.com/hook", on_raw, on_error));
+    SWEEP(get_credits(zb, on_credits, on_error));
+    SWEEP(get_api_usage(zb, day, day, on_usage, on_error));
+    SWEEP(validate_email(zb, "a@example.com", "", on_validate, on_error));
+    SWEEP(validate_email_with_options(zb, "a@example.com", "", &post, on_validate, on_error));
+    SWEEP(validate_email_batch(zb, emails, on_batch, on_error));
+    SWEEP(validate_email_batch_with_options(zb, emails, &post, on_batch, on_error));
+    SWEEP(send_file(zb, "email_file.csv", 1, send_options, on_send, on_error));
+    SWEEP(file_status(zb, "fid", on_status, on_error));
+    SWEEP(get_file(zb, "fid", (char *)path, on_get, on_error));
+    SWEEP(get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error));
+    SWEEP(scoring_get_file_streaming(zb, "fid", (char *)path, NULL, on_get, on_error));
+    SWEEP(get_file_with_options(zb, "fid", (char *)path, &get_options, on_get, on_error));
+    SWEEP(delete_file(zb, "fid", on_delete, on_error));
+    SWEEP(scoring_send_file(zb, "email_file.csv", 1, send_options, on_send, on_error));
+    SWEEP(scoring_file_status(zb, "fid", on_status, on_error));
+    SWEEP(scoring_get_file(zb, "fid", (char *)path, on_get, on_error));
+    SWEEP(scoring_get_file_with_options(zb, "fid", (char *)path, &get_options, on_get, on_error));
+    SWEEP(scoring_delete_file(zb, "fid", on_delete, on_error));
+    SWEEP(get_activity_data(zb, "a@example.com", on_activity, on_error));
+    SWEEP(score_email(zb, "a@example.com", on_score, on_error));
+    SWEEP(score_email_post(zb, "a@example.com", on_score, on_error));
+    SWEEP(find_email_by_domain_first_middle_last_name(zb, "example.com", "A", "B", "C", on_find, on_error));
+    SWEEP(find_email_by_domain_first_last_name(zb, "example.com", "A", "C", on_find, on_error));
+    SWEEP(find_email_by_domain_first_name(zb, "example.com", "A", on_find, on_error));
+    SWEEP(find_email_by_company_name_first_middle_last_name(zb, "Co", "A", "B", "C", on_find, on_error));
+    SWEEP(find_email_by_company_name_first_last_name(zb, "Co", "A", "C", on_find, on_error));
+    SWEEP(find_email_by_company_name_first_name(zb, "Co", "A", on_find, on_error));
+    SWEEP(search_domain_by_domain(zb, "example.com", on_domain, on_error));
+    SWEEP(search_domain_by_company_name(zb, "Co", on_domain, on_error));
+    SWEEP(send_email_finder_file(zb, "email_file.csv", 1, &finder, on_send, on_error));
+    SWEEP(email_finder_file_status(zb, "fid", on_status, on_error));
+    SWEEP(email_finder_get_file(zb, "fid", (char *)path, on_get, on_error));
+    SWEEP(email_finder_delete_file(zb, "fid", on_delete, on_error));
+    SWEEP(send_domain_search_file(zb, "email_file.csv", 1, &domain, on_send, on_error));
+    SWEEP(domain_search_file_status(zb, "fid", on_status, on_error));
+    SWEEP(domain_search_get_file(zb, "fid", (char *)path, on_get, on_error));
+    SWEEP(domain_search_delete_file(zb, "fid", on_delete, on_error));
+    SWEEP(send_list_evaluator_file(zb, "email_file.csv", 1, on_send, on_error));
+    SWEEP(get_list_evaluator_result(zb, "fid", on_raw, on_error));
+    SWEEP(send_evaluated_file(zb, "fid", on_send, on_error));
+    SWEEP(add_filter(zb, "allow", "domain", "example.com", on_raw, on_error));
+    SWEEP(list_filters(zb, false, on_raw, on_error));
+    SWEEP(list_filters(zb, true, on_raw, on_error));
+    SWEEP(delete_filter(zb, "allow", "domain", "example.com", on_raw, on_error));
+    SWEEP(validate_s3_file(zb, &s3, on_send, on_error));
+    SWEEP(score_s3_file(zb, &score, on_send, on_error));
+    SWEEP(export_s3_file(zb, "fid", NULL, on_send, on_error));
+    SWEEP(list_s3_files(zb, NULL, NULL, on_raw, on_error));
+    SWEEP(email_finder_s3_file(zb, &job, on_send, on_error));
+    SWEEP(domain_search_s3_file(zb, &job, on_send, on_error));
+    SWEEP(validate_sftp_file(zb, &job, on_send, on_error));
+    SWEEP(score_sftp_file(zb, &job, on_send, on_error));
+    SWEEP(email_finder_sftp_file(zb, &job, on_send, on_error));
+    SWEEP(domain_search_sftp_file(zb, &job, on_send, on_error));
+    SWEEP(export_sftp_file(zb, "fid", NULL, on_send, on_error));
+    SWEEP(get_inbox_placement_providers(zb, on_raw, on_error));
+    SWEEP(get_inbox_placement_test_types(zb, on_raw, on_error));
+    SWEEP(create_inbox_placement_test(zb, "t", &create, on_raw, on_error));
+    SWEEP(get_inbox_placement_test(zb, "t1", on_raw, on_error));
+    SWEEP(list_inbox_placement_tests(zb, &list, on_raw, on_error));
+    SWEEP(delete_inbox_placement_test(zb, "t1", on_raw, on_error));
+    SWEEP(get_inbox_placement_webhook(zb, on_raw, on_error));
+    SWEEP(set_inbox_placement_webhook(zb, "https://example.com/hook", on_raw, on_error));
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-    EXPECT_REFUSED(find_email(zb, "example.com", "A", "B", "C", on_find, on_error));
+    SWEEP(find_email(zb, "example.com", "A", "B", "C", on_find, on_error));
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
     TEST_ASSERT_NULL(fopen(path, "rb"));
     email_to_validate_vector_free(&emails);
+}
+
+/* Each call must fail with g_sweep_expected and send nothing. */
+static void check_refused(const char *call) {
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, call);
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, call);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(g_sweep_expected, g_error_text, call);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_count, call);
+}
+
+static void expect_every_call_refused(ZeroBounce *zb, const char *expected) {
+    g_sweep_expected = expected;
+    g_sweep_check = check_refused;
+    run_every_call(zb);
 }
 
 void test_offline_every_call_is_https_only(void) {
@@ -2231,12 +2289,11 @@ static int was_swept(const char *name) {
     return 0;
 }
 
-/* Reads ZeroBounce.h and fails for any public function taking an
-   OnErrorCallback (a request) that expect_every_call_refused does not run,
-   so a new request function cannot escape the HTTPS and key sweeps. */
-void test_offline_every_request_function_is_in_the_sweep(void) {
-    FILE *f = fopen(ZB_PUBLIC_HEADER, "rb");
-    TEST_ASSERT_NOT_NULL_MESSAGE(f, ZB_PUBLIC_HEADER);
+/* Reads a public header and fails for any function taking an OnErrorCallback
+   (a request) that is_swept does not know. Returns how many it declares. */
+int offline_count_swept_request_functions(const char *header_path, int (*is_swept)(const char *name)) {
+    FILE *f = fopen(header_path, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, header_path);
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -2265,16 +2322,6 @@ void test_offline_every_request_function_is_in_the_sweep(void) {
         }
     }
 
-    ZeroBounce *zb = client_with("sweep-key");
-    zero_bounce_set_bulk_api_base_url(zb, "http://bulk.example.test/v2");
-    zb->api_base_url = "http://api.example.test/v2";
-    zero_bounce_set_bulk_api_scoring_base_url(zb, "http://bulk.example.test/v2/scoring");
-    zero_bounce_set_bulk_api_root_url(zb, "http://bulk.example.test");
-    zero_bounce_set_list_evaluator_base_url(zb, "http://bulk.example.test/v2/listevaluator");
-    zero_bounce_set_inbox_placement_base_url(zb, "http://bulk.example.test/api/ipt");
-    g_swept_count = 0;
-    expect_every_call_refused(zb, "url must be an https:// URL");
-
     /* Each declaration runs from the end of the previous one to its ';'. */
     int declared = 0;
     char message[160];
@@ -2298,12 +2345,30 @@ void test_offline_every_request_function_is_in_the_sweep(void) {
         }
         char saved = *name_end;
         *name_end = '\0';
-        snprintf(message, sizeof message, "%s is missing from expect_every_call_refused", name);
-        TEST_ASSERT_TRUE_MESSAGE(was_swept(name), message);
+        snprintf(message, sizeof message, "%s is missing from the sweep", name);
+        TEST_ASSERT_TRUE_MESSAGE(is_swept(name), message);
         *name_end = saved;
         declared++;
     }
     free(text);
+    return declared;
+}
+
+/* Fails for any request function in ZeroBounce.h that run_every_call does not
+   run, so a new request function cannot escape the HTTPS, key and
+   response-body sweeps. */
+void test_offline_every_request_function_is_in_the_sweep(void) {
+    ZeroBounce *zb = client_with("sweep-key");
+    zero_bounce_set_bulk_api_base_url(zb, "http://bulk.example.test/v2");
+    zb->api_base_url = "http://api.example.test/v2";
+    zero_bounce_set_bulk_api_scoring_base_url(zb, "http://bulk.example.test/v2/scoring");
+    zero_bounce_set_bulk_api_root_url(zb, "http://bulk.example.test");
+    zero_bounce_set_list_evaluator_base_url(zb, "http://bulk.example.test/v2/listevaluator");
+    zero_bounce_set_inbox_placement_base_url(zb, "http://bulk.example.test/api/ipt");
+    g_swept_count = 0;
+    expect_every_call_refused(zb, "url must be an https:// URL");
+
+    int declared = offline_count_swept_request_functions(ZB_PUBLIC_HEADER, was_swept);
     /* The scan found the request functions, and nothing else was swept. */
     TEST_ASSERT_GREATER_THAN_INT(55, declared);
     TEST_ASSERT_EQUAL_INT(declared, g_swept_count);
@@ -2333,6 +2398,86 @@ void test_offline_a_rejected_key_replaces_the_previous_one(void) {
         TEST_ASSERT_FALSE(g_error_called);
         TEST_ASSERT_TRUE(g_success_called);
     }
+}
+
+/* A request went out and came back as an error with `status`, never a
+   success. */
+static void check_error_with_status(const char *call, long status) {
+    char message[200];
+    snprintf(message, sizeof message, "%s (body %d)", call, g_leak_mode);
+    TEST_ASSERT_TRUE_MESSAGE(g_count > 0, message);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)status, (int)g_error_status, message);
+}
+
+static void check_success_false(const char *call) {
+    check_error_with_status(call, 200);
+}
+
+/* "success": false on an HTTP 200 is an error with that status on every
+   call; the raw-JSON calls (filters, list evaluator, list_s3_files, Inbox
+   Placement) used to hand it to the success callback. */
+void test_offline_success_false_is_an_error_on_every_call(void) {
+    ZeroBounce *zb = client_with("success-false-sweep");
+    g_sweep_check = check_success_false;
+    g_leak_mode = 2;
+    if (TEST_PROTECT()) {
+        run_every_call(zb);
+    }
+    g_leak_mode = 0;
+}
+
+static void check_no_key_in_error(const char *call) {
+    char message[1400];
+    check_error_with_status(call, g_leak_mode <= 2 ? 200 : 400);
+    snprintf(message, sizeof message, "%s (body %d): %s", call, g_leak_mode, g_error_text);
+    TEST_ASSERT_FALSE_MESSAGE(g_error_leaked, message);
+    /* The message is kept, with the key masked, not dropped. */
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "REDACTED"), message);
+}
+
+/* Standard section 3: the key is never in an error. Every call gets each
+   echoing body; no error text may carry the key, raw or URL-encoded. */
+void test_offline_no_error_carries_the_key(void) {
+    ZeroBounce *zb = client_with(LEAK_KEY);
+    g_sweep_check = check_no_key_in_error;
+    if (TEST_PROTECT()) {
+        for (g_leak_mode = 1; g_leak_mode <= 5; g_leak_mode++) {
+            run_every_call(zb);
+        }
+    }
+    g_leak_mode = 0;
+}
+
+static long g_empty_status;
+
+static void check_empty_body(const char *call) {
+    char message[200];
+    snprintf(message, sizeof message, "%s (HTTP %ld)", call, g_empty_status);
+    TEST_ASSERT_TRUE_MESSAGE(g_count > 0, message);
+    if (g_empty_status < 300 && strncmp(call, "delete_inbox_placement_test(", 28) == 0) {
+        /* DELETE answers with an empty body: a success with an empty result. */
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("{}", g_raw, message);
+    } else {
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE((int)g_empty_status, (int)g_error_status, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "Empty response"), message);
+    }
+}
+
+/* An empty 2xx is a success only for delete_inbox_placement_test. Every other
+   call, the other Inbox Placement calls included, reports it as an error with
+   its status, and an empty non-2xx is an error everywhere. */
+void test_offline_an_empty_body_is_a_success_only_for_an_inbox_placement_delete(void) {
+    g_sweep_check = check_empty_body;
+    g_empty_status = 200;
+    run_every_call(client_with("empty-sweep"));
+    g_empty_status = 404;
+    run_every_call(client_with("empty-404-sweep"));
 }
 
 void offline_run_tests(void) {
@@ -2387,6 +2532,9 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_every_call_is_https_only);
     RUN_TEST(test_offline_every_request_function_is_in_the_sweep);
     RUN_TEST(test_offline_a_rejected_key_replaces_the_previous_one);
+    RUN_TEST(test_offline_success_false_is_an_error_on_every_call);
+    RUN_TEST(test_offline_no_error_carries_the_key);
+    RUN_TEST(test_offline_an_empty_body_is_a_success_only_for_an_inbox_placement_delete);
     RUN_TEST(test_offline_a_json_object_in_place_of_a_file_is_an_error);
     RUN_TEST(test_offline_a_short_write_is_an_error_and_leaves_no_partial_file);
 }

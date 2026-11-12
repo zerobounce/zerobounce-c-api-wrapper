@@ -760,6 +760,8 @@ bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback)
             zb_tls_region = "US";
         }
     }
+    /* Every error this call reports has the key taken out. */
+    zb_set_redaction_key(zb->api_key_rejected ? NULL : zb->api_key);
     if (zb->api_key_rejected) {
         if (error_callback) {
             error_callback(parse_error("api_key has surrounding whitespace or control characters"));
