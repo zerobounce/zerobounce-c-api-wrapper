@@ -53,12 +53,22 @@ typedef struct {
     int weekdays_only;
     const char *timezone;
     /**
-     * Hours from UTC: -99 to omit, otherwise -11.0 to 14.0, fractional zones
-     * such as 5.5 included. An int up to 3.0.1; an int still assigns.
+     * Deprecated: use timezone_offset_hours, which takes fractional zones
+     * such as 5.5. Whole hours from UTC: -99 to omit, otherwise -11 to 14.
+     * Ignored when timezone_offset_hours_set is true.
      */
-    double timezone_offset;
+    int timezone_offset;
     /** YYYY-MM-DD, or NULL to omit. */
     const char *warmup_start_date;
+    /**
+     * Hours from UTC, -11.0 to 14.0, fractional zones such as 5.5 (India) or
+     * 5.75 (Nepal) included; sent only when timezone_offset_hours_set is
+     * true, and then in place of timezone_offset. A whole number is sent as
+     * an integer (3). Added at the end, so the fields above keep their
+     * offsets and positional initialisers keep compiling.
+     */
+    double timezone_offset_hours;
+    bool timezone_offset_hours_set;
 } ZBWarmupManagedSending;
 
 /** Options for warmup_add_sending_account. */

@@ -234,6 +234,10 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
             /* A file-looking body labelled as JSON. */
             set_body(response_data, "email\nlabelled-json@example.com\n");
             break;
+        case 9:
+            /* A JSON object with text after it is not JSON. */
+            set_body(response_data, "{\"a\":1} <- proxy note");
+            break;
         default:
             *http_code = 400;
             set_body(response_data, "Rejected key " LEAK_KEY_ESCAPED);
@@ -2742,6 +2746,90 @@ void test_offline_every_form_of_a_secret_is_masked(void) {
     }
 }
 
+/*
+ * Every spelling a secret can take in an echoed body, composed here from the
+ * encoders a server or proxy applies, independently of zb_mask_secret:
+ * {raw, JSON-escaped, JSON-escaped with '/' as '\\/'} x {as is, URL-encoded
+ * with a space as %20, URL-encoded with '+'}, and JSON-escaped twice (with
+ * and without '\\/'). Each form must be masked whole, and since every form
+ * differs, dropping any one generator from zb_mask_secret leaves its form
+ * readable.
+ */
+static char *t_json_escape(const char *in, int escape_slash) {
+    char *out = malloc(strlen(in) * 2 + 1);
+    char *dst = out;
+    for (; *in; in++) {
+        if (*in == '"' || *in == '\\' || (escape_slash && *in == '/')) {
+            *dst++ = '\\';
+        }
+        *dst++ = *in;
+    }
+    *dst = '\0';
+    return out;
+}
+
+static char *t_url_encode(const char *in, int plus_for_space) {
+    static const char hex[] = "0123456789ABCDEF";
+    char *out = malloc(strlen(in) * 3 + 1);
+    char *dst = out;
+    for (; *in; in++) {
+        unsigned char c = (unsigned char)*in;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '.' || c == '_' || c == '~') {
+            *dst++ = (char)c;
+        } else if (c == ' ' && plus_for_space) {
+            *dst++ = '+';
+        } else {
+            *dst++ = '%';
+            *dst++ = hex[c >> 4];
+            *dst++ = hex[c & 15];
+        }
+    }
+    *dst = '\0';
+    return out;
+}
+
+void test_offline_every_composed_spelling_of_a_secret_is_masked(void) {
+    char *bases[3];
+    char *forms[11];
+    size_t count = 0;
+    size_t b;
+    size_t i;
+    size_t j;
+    char message[300];
+    bases[0] = strdup(EVERY_FORM_SECRET);
+    bases[1] = t_json_escape(EVERY_FORM_SECRET, 0);
+    bases[2] = t_json_escape(EVERY_FORM_SECRET, 1);
+    for (b = 0; b < 3; b++) {
+        forms[count++] = strdup(bases[b]);
+        forms[count++] = t_url_encode(bases[b], 0);
+        forms[count++] = t_url_encode(bases[b], 1);
+    }
+    forms[count++] = t_json_escape(bases[1], 0);
+    forms[count++] = t_json_escape(bases[2], 1);
+    TEST_ASSERT_EQUAL_INT(11, (int)count);
+    for (i = 0; i < count; i++) {
+        char *text;
+        /* Distinct forms, so each generator is needed. */
+        for (j = 0; j < i; j++) {
+            TEST_ASSERT_FALSE_MESSAGE(strcmp(forms[i], forms[j]) == 0, forms[i]);
+        }
+        text = malloc(strlen(forms[i]) + 32);
+        TEST_ASSERT_NOT_NULL(text);
+        sprintf(text, "echo [%s] end", forms[i]);
+        text = zb_mask_secret(text, EVERY_FORM_SECRET, "***");
+        snprintf(message, sizeof(message), "form %zu: %s -> %s", i, forms[i], text);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("echo [***] end", text, message);
+        free(text);
+    }
+    for (i = 0; i < count; i++) {
+        free(forms[i]);
+    }
+    for (b = 0; b < 3; b++) {
+        free(bases[b]);
+    }
+}
+
 /* Standard section 3: the key is never in an error. Every call gets each
    echoing body; no error text may carry the key, raw, URL-encoded or
    JSON-escaped. */
@@ -2766,7 +2854,7 @@ void test_offline_the_content_type_alone_makes_a_200_an_error(void) {
     ZeroBounce *zb = client_with("content-type-sweep");
     g_sweep_check = check_success_false;
     if (TEST_PROTECT()) {
-        for (g_leak_mode = 7; g_leak_mode <= 8; g_leak_mode++) {
+        for (g_leak_mode = 7; g_leak_mode <= 9; g_leak_mode++) {
             run_every_call(zb);
         }
     }
@@ -2859,6 +2947,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_a_rejected_key_replaces_the_previous_one);
     RUN_TEST(test_offline_success_false_is_an_error_on_every_call);
     RUN_TEST(test_offline_every_form_of_a_secret_is_masked);
+    RUN_TEST(test_offline_every_composed_spelling_of_a_secret_is_masked);
     RUN_TEST(test_offline_no_error_carries_the_key);
     RUN_TEST(test_offline_the_content_type_alone_makes_a_200_an_error);
     RUN_TEST(test_offline_an_empty_body_is_a_success_only_for_an_inbox_placement_delete);

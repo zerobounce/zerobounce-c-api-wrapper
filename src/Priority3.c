@@ -149,7 +149,7 @@ static void p3_send_json_success(
         return;
     }
     if (body[0] == '{' || body[0] == '[') {
-        json_object *parsed = json_tokener_parse(body);
+        json_object *parsed = zb_parse_json_whole(body);
         if (!parsed) {
             zb_report_body_error(body, http_code, error_callback);
             return;

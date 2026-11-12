@@ -155,7 +155,7 @@ static char *zb_plus_for_spaces(const char *escaped) {
 }
 
 char *zb_mask_secret(char *text, const char *secret, const char *mask) {
-    enum { FORMS = 8 };
+    enum { FORMS = 10 };
     char *forms[FORMS] = {0};
     char *json_slash;
     char *json_plain;
@@ -165,19 +165,22 @@ char *zb_mask_secret(char *text, const char *secret, const char *mask) {
     }
     /* A body may quote the secret raw, URL-encoded (a request URL or form,
        spaces as %20 or '+'), JSON-escaped (a request body echoed back; json-c
-       escapes '/', other encoders do not), or URL-encoded after being
+       escapes '/', other encoders do not), JSON-escaped twice (an echoed body
+       quoted inside another JSON string), or URL-encoded after being
        JSON-escaped (an echoed JSON body put into a URL or form). The longer,
        escaped forms are replaced first, as they can contain the raw one. */
     json_slash = zb_json_escape(secret, true);
     json_plain = zb_json_escape(secret, false);
-    forms[0] = zb_url_escape(json_slash);
-    forms[1] = zb_plus_for_spaces(forms[0]);
-    forms[2] = zb_url_escape(json_plain);
+    forms[0] = json_slash ? zb_json_escape(json_slash, true) : NULL;
+    forms[1] = json_plain ? zb_json_escape(json_plain, false) : NULL;
+    forms[2] = zb_url_escape(json_slash);
     forms[3] = zb_plus_for_spaces(forms[2]);
-    forms[4] = json_slash;
-    forms[5] = json_plain;
-    forms[6] = zb_url_escape(secret);
-    forms[7] = zb_plus_for_spaces(forms[6]);
+    forms[4] = zb_url_escape(json_plain);
+    forms[5] = zb_plus_for_spaces(forms[4]);
+    forms[6] = json_slash;
+    forms[7] = json_plain;
+    forms[8] = zb_url_escape(secret);
+    forms[9] = zb_plus_for_spaces(forms[8]);
     for (i = 0; i < FORMS; i++) {
         if (forms[i]) {
             text = zb_replace_secret(text, forms[i], mask);
@@ -608,6 +611,36 @@ static bool zb_message_only_body(const char *body) {
     return only_messages && has_text;
 }
 
+/*
+ * The JSON value text holds, or NULL when it is not exactly one JSON value:
+ * json_tokener_parse stops after the first value and ignores what follows,
+ * so {"a":1} followed by a proxy's text would pass as JSON. Whitespace may
+ * surround the value.
+ */
+json_object *zb_parse_json_whole(const char *text) {
+    json_tokener *tok;
+    json_object *parsed;
+    const char *rest;
+    text = zb_skip_ws(text ? text : "");
+    tok = json_tokener_new();
+    if (!tok) {
+        return NULL;
+    }
+    parsed = json_tokener_parse_ex(tok, text, (int)strlen(text));
+    if (parsed && json_tokener_get_error(tok) == json_tokener_success) {
+        rest = zb_skip_ws(text + json_tokener_get_parse_end(tok));
+        if (rest[0] != '\0') {
+            json_object_put(parsed);
+            parsed = NULL;
+        }
+    } else if (parsed) {
+        json_object_put(parsed);
+        parsed = NULL;
+    }
+    json_tokener_free(tok);
+    return parsed;
+}
+
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback) {
     const char *text = body ? body : "";
     json_object *parsed;
@@ -633,7 +666,7 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
         zb_report_body_error(text, status_code, error_callback);
         return false;
     }
-    parsed = json_tokener_parse(text);
+    parsed = zb_parse_json_whole(text);
     if (!parsed) {
         zb_report_body_error(text, status_code, error_callback);
         return false;

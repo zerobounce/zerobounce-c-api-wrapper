@@ -131,6 +131,8 @@ bool zb_body_looks_like_html(const char *body);
 /* Whether a Content-Type names an HTML page (text/html), in any letter case. */
 bool zb_content_type_is_html(const char *content_type);
 void zb_report_body_error(const char *body, long status_code, OnErrorCallback error_callback);
+/** The one JSON value text holds (whitespace around it allowed), or NULL. */
+json_object *zb_parse_json_whole(const char *text);
 /** Parses a 2xx non-HTML JSON body. On failure, reports a short error and returns false. */
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback);
 /**

@@ -8,6 +8,7 @@
  */
 
 #include <dirent.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -796,7 +797,8 @@ void test_warmup_add_sending_account_sends_every_documented_field(void) {
     content.example_email = "Hello,\nWelcome.";
     sending.weekdays_only = 0;
     sending.timezone = "Asia/Kolkata";
-    sending.timezone_offset = 5.5;
+    sending.timezone_offset_hours = 5.5;
+    sending.timezone_offset_hours_set = true;
     sending.warmup_start_date = "2026-11-02";
     options.ignore_conflict = 1;
     options.email_content = &content;
@@ -818,11 +820,11 @@ void test_warmup_add_sending_account_sends_every_documented_field(void) {
 }
 
 /* timezone_offset is hours from UTC, -11.0 to 14.0, fractional zones
-   included. */
+   included, sent through timezone_offset_hours; only a real number. */
 void test_warmup_timezone_offset_may_be_fractional(void) {
-    static const double accepted[] = {5.5, 3.0, -11.0, 14.0, -9.5, 5.75};
-    static const char *const sent[] = {"5.5", "3", "-11", "14", "-9.5", "5.75"};
-    static const double rejected[] = {-11.5, 14.5, 15, -12};
+    static const double accepted[] = {5.5, 3.0, -11.0, 14.0, -9.5, 5.75, 0.0};
+    static const char *const sent[] = {"5.5", "3", "-11", "14", "-9.5", "5.75", "0"};
+    const double rejected[] = {-11.5, 14.5, 15, -12, NAN, INFINITY, -INFINITY};
     ZeroBounceWarmup *zbw;
     ZBWarmupAddSendingAccountOptions options = new_warmup_add_sending_account_options();
     ZBWarmupManagedSending sending = new_warmup_managed_sending();
@@ -833,7 +835,8 @@ void test_warmup_timezone_offset_may_be_fractional(void) {
     options.managed_sending = &sending;
     for (i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
         w_reset();
-        sending.timezone_offset = accepted[i];
+        sending.timezone_offset_hours = accepted[i];
+        sending.timezone_offset_hours_set = true;
         warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
                                    w_on_raw, w_on_error);
         TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
@@ -842,13 +845,71 @@ void test_warmup_timezone_offset_may_be_fractional(void) {
     }
     for (i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
         w_reset();
-        sending.timezone_offset = rejected[i];
+        sending.timezone_offset_hours = rejected[i];
+        sending.timezone_offset_hours_set = true;
         warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
                                    w_on_raw, w_on_error);
         TEST_ASSERT_TRUE(w_error_called);
         TEST_ASSERT_NOT_NULL(strstr(w_error, "timezone_offset"));
         TEST_ASSERT_EQUAL_INT(0, w_requests);
     }
+    zero_bounce_warmup_free(zbw);
+}
+
+/* Code written for 3.0.x keeps compiling and behaving the same: the
+   deprecated timezone_offset is still an int (a positional initialiser, an
+   int pointer, %d), -99 omits it, and a whole number goes out as before.
+   timezone_offset_hours, appended at the end, wins when it is set. */
+void test_warmup_timezone_offset_keeps_its_3_0_x_type(void) {
+    ZBWarmupManagedSending positional = {1, "Europe/Bucharest", 3, "2026-11-02"};
+    ZBWarmupManagedSending sending = new_warmup_managed_sending();
+    ZBWarmupAddSendingAccountOptions options = new_warmup_add_sending_account_options();
+    int *offset = &positional.timezone_offset;
+    char printed[16];
+    ZeroBounceWarmup *zbw;
+    snprintf(printed, sizeof printed, "%d", *offset);
+    TEST_ASSERT_EQUAL_STRING("3", printed);
+    TEST_ASSERT_EQUAL_INT(-99, sending.timezone_offset);
+    TEST_ASSERT_FALSE(sending.timezone_offset_hours_set);
+    TEST_ASSERT_FALSE(positional.timezone_offset_hours_set);
+
+    w_reset();
+    zbw = w_client("warm-key");
+    options.managed_sending = &positional;
+    warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                               w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_body,
+        "\"managed_sending\": { \"weekdays_only\": true, \"timezone\": \"Europe\\/Bucharest\", "
+        "\"timezone_offset\": 3, \"warmup_start_date\": \"2026-11-02\" }"), w_body);
+
+    /* -99 (the default) leaves it out. */
+    w_reset();
+    options.managed_sending = &sending;
+    warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                               w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+    TEST_ASSERT_NULL_MESSAGE(strstr(w_body, "timezone_offset"), w_body);
+
+    /* Both set: the new field wins. */
+    w_reset();
+    sending.timezone_offset = 3;
+    sending.timezone_offset_hours = 5.75;
+    sending.timezone_offset_hours_set = true;
+    warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                               w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_body, "\"managed_sending\": { \"timezone_offset\": 5.75 }"), w_body);
+
+    /* The deprecated int keeps its range check. */
+    w_reset();
+    sending.timezone_offset_hours_set = false;
+    sending.timezone_offset = -12;
+    warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                               w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_NOT_NULL(strstr(w_error, "timezone_offset"));
+    TEST_ASSERT_EQUAL_INT(0, w_requests);
     zero_bounce_warmup_free(zbw);
 }
 
@@ -1092,6 +1153,60 @@ void test_warmup_a_text_html_200_is_an_error_on_every_call(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* E7: a 2xx JSON call whose body is not JSON is an error with status 200.
+   The CSV downloads take a non-JSON body as the file, so for them only an
+   application/json label must make it an error. */
+static const char *w_e7_type;
+static void w_check_non_json_200(const char *call) {
+    char message[1300];
+    snprintf(message, sizeof message, "%s (%s): %s", call, w_e7_type, w_error);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, message);
+    if (strstr(call, "warmup_download_") && strcmp(w_e7_type, "application/json") != 0) {
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+}
+
+void test_warmup_a_non_json_200_is_an_error_on_every_json_call(void) {
+    static const char *const bodies[] = {
+        "not json", "hello", "email,status\na@example.com,valid\n", "{\"a\":1", "[1,2", "{\"a\":1} trailing",
+        "\"just a string\"", "42",
+    };
+    static const char *const types[] = {"application/json", "text/plain", "text/csv"};
+    const char *path = "test/downloads/warmup-non-json.csv";
+    size_t i;
+    size_t t;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client("warm-key");
+    w_sweep_check = w_check_non_json_200;
+    w_swept_count = 0;
+    for (t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        for (i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+            w_next_status = 200;
+            w_next_type = types[t];
+            w_e7_type = types[t];
+            w_next_body = bodies[i];
+            w_run_every_call(zbw, path);
+            remove(path);
+        }
+    }
+    /* A JSON body after whitespace and an empty body stay results. */
+    w_reset();
+    w_next_body = " \n {\"ok\":true} \n";
+    warmup_get_seed_count(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+    TEST_ASSERT_TRUE(w_success_called);
+    w_reset();
+    w_next_body = "  ";
+    warmup_get_seed_count(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+    TEST_ASSERT_TRUE(w_success_called);
+    zero_bounce_warmup_free(zbw);
+}
+
 /* Each call sent one request. */
 static void w_check_sent(const char *call) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, call);
@@ -1147,6 +1262,8 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_a_text_html_200_is_an_error_on_every_call);
     RUN_TEST(test_warmup_add_sending_account_sends_every_documented_field);
     RUN_TEST(test_warmup_timezone_offset_may_be_fractional);
+    RUN_TEST(test_warmup_timezone_offset_keeps_its_3_0_x_type);
+    RUN_TEST(test_warmup_a_non_json_200_is_an_error_on_every_json_call);
     RUN_TEST(test_warmup_csv_downloads_reject_every_non_file_answer);
     RUN_TEST(test_warmup_every_request_function_is_in_the_sweep);
     zero_bounce_set_http_perform_for_test(NULL);

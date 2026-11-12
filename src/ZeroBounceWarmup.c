@@ -19,7 +19,7 @@ ZBWarmupEmailContent new_warmup_email_content(void) {
 }
 
 ZBWarmupManagedSending new_warmup_managed_sending(void) {
-    ZBWarmupManagedSending sending = {-1, NULL, -99.0, NULL};
+    ZBWarmupManagedSending sending = {-1, NULL, -99, NULL, 0.0, false};
     return sending;
 }
 
@@ -137,7 +137,7 @@ static bool warmup_in_range(int value, int low, int high, const char *name, OnEr
     return false;
 }
 
-/* -11.0 to 14.0; NaN is out of range too. */
+/* -11.0 to 14.0; NaN and the infinities are out of range too. */
 static bool warmup_offset_in_range(double value, OnErrorCallback error_callback) {
     if (value >= -11.0 && value <= 14.0) {
         return true;
@@ -170,6 +170,25 @@ static json_object *warmup_offset_json(double value) {
         text[--len] = '\0';
     }
     return json_object_new_double_s(value, text);
+}
+
+/* An empty body (204, an empty 200), or a JSON object or array and nothing
+   after it. */
+static bool warmup_body_is_empty_or_json(const char *text) {
+    const char *start = text;
+    json_object *parsed;
+    while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') {
+        start++;
+    }
+    if (!start[0]) {
+        return true;
+    }
+    if (start[0] != '{' && start[0] != '[') {
+        return false;
+    }
+    parsed = zb_parse_json_whole(start);
+    json_object_put(parsed);
+    return parsed != NULL;
 }
 
 static bool warmup_iso_date(const char *value, const char *name, OnErrorCallback error_callback) {
@@ -356,6 +375,10 @@ static void warmup_send(
                 success_callback(text);
             }
         }
+    } else if (!warmup_body_is_empty_or_json(text)) {
+        /* A 2xx JSON call whose body is not JSON (a proxy's text, a CSV under
+           application/json) did not get the API's answer. */
+        zb_report_body_error(text, http_code, warmup_on_error);
     } else if (success_callback) {
         /* 204 and an empty 200 are the documented empty successes. */
         success_callback(text);
@@ -513,14 +536,16 @@ void warmup_add_sending_account(
         if (sending->timezone) {
             json_object_object_add(node, "timezone", json_object_new_string(sending->timezone));
         }
-        if (sending->timezone_offset != -99.0) {
-            if (!warmup_offset_in_range(sending->timezone_offset, error_callback)) {
+        /* timezone_offset_hours, when set, wins over the deprecated int. */
+        if (sending->timezone_offset_hours_set || sending->timezone_offset != -99) {
+            double offset = sending->timezone_offset_hours_set
+                ? sending->timezone_offset_hours : (double)sending->timezone_offset;
+            if (!warmup_offset_in_range(offset, error_callback)) {
                 json_object_put(node);
                 json_object_put(payload);
                 return;
             }
-            json_object_object_add(
-                node, "timezone_offset", warmup_offset_json(sending->timezone_offset));
+            json_object_object_add(node, "timezone_offset", warmup_offset_json(offset));
         }
         if (sending->warmup_start_date) {
             if (!warmup_iso_date(sending->warmup_start_date, "warmup_start_date", error_callback)) {
