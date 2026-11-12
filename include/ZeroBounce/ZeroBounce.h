@@ -52,7 +52,12 @@ typedef struct {
     int gender_column;
     int ip_address_column;
     bool has_header_row;
-    bool remove_duplicate;
+    /**
+     * -1 (the new_send_file_options default) omits it, so the API's default
+     * (true) applies; 0 sends "false", 1 sends "true". Assigning true or false
+     * still works.
+     */
+    int remove_duplicate;
     /** When set, sent as allow_phase_2 on validation sendfile only (not scoring). */
     bool allow_phase_2_is_set;
     bool allow_phase_2;

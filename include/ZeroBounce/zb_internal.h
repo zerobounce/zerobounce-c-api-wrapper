@@ -20,10 +20,17 @@ char *zb_redact_api_key(const char *text);
  */
 void zb_set_redaction_key(const char *api_key);
 char *zb_url_escape(const char *value);
+/*
+ * text with every raw, URL-encoded and JSON-escaped occurrence of secret
+ * replaced by mask. Takes ownership of text and returns the string to use.
+ */
+char *zb_mask_secret(char *text, const char *secret, const char *mask);
 /* A copy of a base URL without its trailing slashes. The caller owns it. */
 char *zb_normalized_base_url(const char *url);
 /* The timeouts, no-redirect and https-only options every request gets. */
 void zb_set_transport_options(CURL *curl);
+/* The total and connect timeouts zb_set_transport_options sets, in ms. */
+void zb_transport_timeouts(long *timeout_ms, long *connect_timeout_ms);
 /*
  * Test hook: request timeouts in milliseconds (0 restores 120 s and 30 s), and
  * whether http://127.0.0.1:<port> and http://localhost:<port> are allowed, so
@@ -101,6 +108,8 @@ int zb_http_perform_if_mock(memory *response_data, long *http_code, char **conte
 
 char *zb_message_from_body(const char *body, long status_code);
 bool zb_body_looks_like_html(const char *body);
+/* Whether a Content-Type names an HTML page (text/html), in any letter case. */
+bool zb_content_type_is_html(const char *content_type);
 void zb_report_body_error(const char *body, long status_code, OnErrorCallback error_callback);
 /** Parses a 2xx non-HTML JSON body. On failure, reports a short error and returns false. */
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback);

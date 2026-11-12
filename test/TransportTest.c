@@ -700,11 +700,116 @@ void test_transport_a_column_number_of_any_int_is_sent_whole(void) {
     zero_bounce_set_transport_for_test(0, 0, false);
 }
 
+/* The multipart parts a request carried, in order: "name=value" joined by
+   '&', the file part by its name only. */
+static void t_parts(const char *request, char *out, size_t size) {
+    const char *at = request;
+    size_t used = 0;
+    out[0] = '\0';
+    while ((at = strstr(at, "Content-Disposition: form-data; name=\"")) != NULL) {
+        const char *name = at + 38;
+        const char *name_end = strchr(name, '"');
+        const char *value;
+        const char *value_end;
+        if (!name_end) {
+            break;
+        }
+        value = strstr(name_end, "\r\n\r\n");
+        value_end = value ? strstr(value + 4, "\r\n--") : NULL;
+        if (!value || !value_end) {
+            break;
+        }
+        value += 4;
+        if (strncmp(name, "file\"", 5) == 0) {
+            used += (size_t)snprintf(out + used, size - used, "%sfile", used ? "&" : "");
+        } else {
+            used += (size_t)snprintf(out + used, size - used, "%s%.*s=%.*s", used ? "&" : "",
+                                     (int)(name_end - name), name, (int)(value_end - value), value);
+        }
+        if (used >= size) {
+            break;
+        }
+        at = value_end;
+    }
+}
+
+static void t_expect_parts(int scoring, SendFileOptions options, const char *expected) {
+    TServer server;
+    char parts[2048];
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(5000, 5000, true);
+    t_start(&server, 2);
+    ZeroBounce *zb = t_client("http", server.port);
+    t_errors = t_successes = 0;
+    if (scoring) {
+        scoring_send_file(zb, "email_file.csv", 3, options, t_on_send, t_on_error);
+    } else {
+        send_file(zb, "email_file.csv", 3, options, t_on_send, t_on_error);
+    }
+    pthread_mutex_lock(&server.mu);
+    t_parts(server.last_request, parts, sizeof(parts));
+    pthread_mutex_unlock(&server.mu);
+    t_stop(&server);
+    zero_bounce_set_transport_for_test(0, 0, false);
+    TEST_ASSERT_EQUAL_STRING(expected, parts);
+}
+
+/* The multipart sendfile actually sends, field names and values, through the
+   real libcurl transport: renaming a part or sending one the caller did not
+   set fails here. */
+void test_transport_send_file_sends_exactly_these_parts(void) {
+    SendFileOptions options = new_send_file_options();
+    t_expect_parts(0, options,
+        "api_key=transport-key&file&email_address_column=3&has_header_row=true");
+    t_expect_parts(1, options,
+        "api_key=transport-key&file&email_address_column=3&has_header_row=true");
+
+    options.return_url = "https://example.com/hook";
+    options.first_name_column = 4;
+    options.last_name_column = 5;
+    options.gender_column = 6;
+    options.ip_address_column = 7;
+    options.has_header_row = false;
+    options.remove_duplicate = false;
+    options.allow_phase_2_is_set = true;
+    options.allow_phase_2 = true;
+    t_expect_parts(0, options,
+        "api_key=transport-key&file&email_address_column=3&first_name_column=4"
+        "&last_name_column=5&gender_column=6&ip_address_column=7"
+        "&return_url=https://example.com/hook&has_header_row=false"
+        "&remove_duplicate=false&allow_phase_2=true");
+    /* Scoring takes no name, gender, IP or phase-2 fields. */
+    options.remove_duplicate = true;
+    t_expect_parts(1, options,
+        "api_key=transport-key&file&email_address_column=3"
+        "&return_url=https://example.com/hook&has_header_row=false&remove_duplicate=true");
+}
+
+/* The defaults every request gets: 120 s in total and 30 s to connect, read
+   from where zb_set_transport_options takes them. Run first, before any test
+   changes them, and again after restoring them. */
+void test_transport_default_timeouts_are_120_s_and_30_s(void) {
+    long timeout_ms = -1;
+    long connect_timeout_ms = -1;
+    zb_transport_timeouts(&timeout_ms, &connect_timeout_ms);
+    TEST_ASSERT_EQUAL_INT(120000, (int)timeout_ms);
+    TEST_ASSERT_EQUAL_INT(30000, (int)connect_timeout_ms);
+    zero_bounce_set_transport_for_test(300, 400, true);
+    zb_transport_timeouts(&timeout_ms, &connect_timeout_ms);
+    TEST_ASSERT_EQUAL_INT(300, (int)timeout_ms);
+    TEST_ASSERT_EQUAL_INT(400, (int)connect_timeout_ms);
+    zero_bounce_set_transport_for_test(0, 0, false);
+    zb_transport_timeouts(&timeout_ms, &connect_timeout_ms);
+    TEST_ASSERT_EQUAL_INT(120000, (int)timeout_ms);
+    TEST_ASSERT_EQUAL_INT(30000, (int)connect_timeout_ms);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_transport_default_timeouts_are_120_s_and_30_s);
     RUN_TEST(test_transport_a_downloaded_file_is_saved);
     RUN_TEST(test_transport_redirects_are_not_followed);
     RUN_TEST(test_transport_every_path_has_a_total_timeout);
@@ -716,5 +821,6 @@ int main(void) {
     RUN_TEST(test_transport_a_failed_download_keeps_the_file_already_there);
     RUN_TEST(test_transport_a_download_replaces_the_file_already_there);
     RUN_TEST(test_transport_a_column_number_of_any_int_is_sent_whole);
+    RUN_TEST(test_transport_send_file_sends_exactly_these_parts);
     return UNITY_END();
 }

@@ -206,7 +206,8 @@ static void warmup_add_query(char *query, size_t query_len, const char *name, co
 
 /*
  * The Warmup key never travels in a URL, but a transport error may quote the
- * header, and test-smtp-configuration carries SMTP credentials in its body.
+ * header, and test-smtp-configuration carries SMTP credentials in its body:
+ * each is masked raw, URL-encoded and JSON-escaped.
  */
 static char *warmup_redact(const char *text, const char *const *secrets, int secret_count) {
     char *out = strdup(text ? text : "");
@@ -215,17 +216,7 @@ static char *warmup_redact(const char *text, const char *const *secrets, int sec
         return NULL;
     }
     for (i = 0; i < secret_count; i++) {
-        const char *secret = secrets[i];
-        char *at;
-        size_t len;
-        if (!secret || !secret[0]) {
-            continue;
-        }
-        len = strlen(secret);
-        while ((at = strstr(out, secret)) != NULL) {
-            memmove(at + 3, at + len, strlen(at + len) + 1);
-            memcpy(at, "***", 3);
-        }
+        out = zb_mask_secret(out, secrets[i], "***");
     }
     return out;
 }
@@ -260,21 +251,6 @@ static _Thread_local WarmupErrorCtx warmup_error_ctx;
 static void warmup_on_error(ZBErrorResponse error) {
     warmup_report(error, warmup_error_ctx.secrets, warmup_error_ctx.secret_count,
                   warmup_error_ctx.error_callback);
-}
-
-/* Whether a Content-Type names an HTML page, in any letter case. */
-static bool warmup_content_type_is_html(const char *content_type) {
-    static const char html[] = "text/html";
-    const char *p;
-    size_t i;
-    for (p = content_type; *p; p++) {
-        for (i = 0; html[i] && p[i] && tolower((unsigned char)p[i]) == html[i]; i++) {
-        }
-        if (!html[i]) {
-            return true;
-        }
-    }
-    return false;
 }
 
 /*
@@ -354,7 +330,7 @@ static void warmup_send(
             start++;
         }
         if (!start[0] || start[0] == '[' || zb_download_body_is_json(start, content_type) ||
-            (content_type && warmup_content_type_is_html(content_type))) {
+            zb_content_type_is_html(content_type)) {
             zb_report_body_error(text, http_code, warmup_on_error);
         } else {
             bool saved = true;

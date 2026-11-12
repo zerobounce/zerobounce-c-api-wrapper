@@ -36,9 +36,12 @@ static _Thread_local char tls_echo[256];
 
 /* The key-echo sweeps: which echoing body the fake answers every request with
    (0 for none), and whether an error has carried the key. LEAK_KEY needs
-   escaping in a URL, so its raw and URL-encoded forms differ. */
-#define LEAK_KEY "leak-K3y/x+y"
-#define LEAK_KEY_ESCAPED "leak-K3y%2Fx%2By"
+   escaping in a URL and in JSON, so its raw, URL-encoded and JSON-escaped
+   forms (with '/' escaped or not) all differ. */
+#define LEAK_KEY "leak-K3y/x+y\"q%z"
+#define LEAK_KEY_ESCAPED "leak-K3y%2Fx%2By%22q%25z"
+#define LEAK_KEY_JSON "leak-K3y\\/x+y\\\"q%z"
+#define LEAK_KEY_JSON_PLAIN "leak-K3y/x+y\\\"q%z"
 static int g_leak_mode;
 static int g_error_leaked;
 
@@ -198,10 +201,10 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
            quoting the URL-encoded key. */
         switch (g_leak_mode) {
         case 1:
-            set_body(response_data, "{\"error\":\"Invalid API key " LEAK_KEY "\"}");
+            set_body(response_data, "{\"error\":\"Invalid API key " LEAK_KEY_JSON "\"}");
             break;
         case 2:
-            set_body(response_data, "{\"success\":false,\"message\":\"Invalid API key " LEAK_KEY "\"}");
+            set_body(response_data, "{\"success\":false,\"message\":\"Invalid API key " LEAK_KEY_JSON_PLAIN "\"}");
             break;
         case 3:
             *http_code = 400;
@@ -211,7 +214,14 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
             break;
         case 4:
             *http_code = 400;
-            set_body(response_data, "{\"error\":\"Bad key " LEAK_KEY "\"}");
+            set_body(response_data, "{\"error\":\"Bad key " LEAK_KEY_JSON "\"}");
+            break;
+        case 6:
+            /* A proxy quoting the JSON it was sent, '/' escaped and not. */
+            *http_code = 400;
+            set_body(response_data, "Bad Request: {\"api_key\":\"" LEAK_KEY_JSON "\",\"k\":\""
+                     LEAK_KEY_JSON_PLAIN "\"} raw " LEAK_KEY);
+            content = "text/plain";
             break;
         default:
             *http_code = 400;
@@ -357,7 +367,8 @@ static void on_error(ZBErrorResponse error) {
     for (size_t i = 0; i < error.errors.size; i++) {
         const char *part = error.errors.data[i] ? error.errors.data[i] : "";
         size_t n = strlen(part);
-        if (strstr(part, LEAK_KEY) || strstr(part, LEAK_KEY_ESCAPED)) {
+        if (strstr(part, LEAK_KEY) || strstr(part, LEAK_KEY_ESCAPED) ||
+            strstr(part, LEAK_KEY_JSON) || strstr(part, LEAK_KEY_JSON_PLAIN)) {
             g_error_leaked = 1;
         }
         if (used && used + 1 < sizeof(g_error_text)) {
@@ -2022,6 +2033,78 @@ void test_offline_a_json_object_in_place_of_a_file_is_an_error(void) {
     zero_bounce_set_http_perform_for_test(offline_perform);
 }
 
+void test_offline_an_html_page_in_place_of_a_file_is_an_error(void) {
+    /* A proxy or captive portal answers 200 with an HTML page. Whether the
+       content type or the body says HTML, it is an error with the status and
+       nothing is written. A short page without <html> used to be saved. */
+    const char *bodies[] = {"<p>Access denied by proxy</p>", "Access denied", "<html><body>x</body></html>"};
+    const char *types[] = {"text/html", "TEXT/HTML; charset=UTF-8", "text/csv"};
+    const char *path = "test/downloads/offline-html.csv";
+    char message[200];
+    ZeroBounce *zb = client_with("html-ct-key");
+
+    zero_bounce_set_http_perform_for_test(scripted_perform);
+    for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+        for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+            /* A body that is not HTML under text/csv is a file. */
+            int is_file = t == 2 && b < 2;
+            for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+                FILE *handle;
+                g_scripted_body = bodies[b];
+                g_scripted_type = types[t];
+                g_scripted_errors = g_scripted_successes = 0;
+                g_scripted_status = -1;
+                remove(path);
+                download(kind, zb, path);
+                handle = fopen(path, "rb");
+                if (handle) {
+                    fclose(handle);
+                    remove(path);
+                }
+                snprintf(message, sizeof(message), "%s %s %s", download_name(kind), bodies[b], types[t]);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(is_file ? 0 : 1, g_scripted_errors, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(is_file ? 1 : 0, g_scripted_successes, message);
+                if (is_file) {
+                    TEST_ASSERT_NOT_NULL_MESSAGE(handle, message);
+                } else {
+                    TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_scripted_status, message);
+                    TEST_ASSERT_NULL_MESSAGE(handle, message);
+                }
+            }
+        }
+    }
+    zero_bounce_set_http_perform_for_test(offline_perform);
+}
+
+/* remove_duplicate goes out only when the caller sets it: the API's own
+   default (true) applies otherwise. */
+void test_offline_send_file_sends_remove_duplicate_only_when_set(void) {
+    ZeroBounce *zb = client_with("file-key");
+    for (int scoring = 0; scoring < 2; scoring++) {
+        SendFileOptions options = new_send_file_options();
+        reset_offline();
+        if (scoring) {
+            scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+        } else {
+            send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+        }
+        only_request();
+        TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
+        TEST_ASSERT_TRUE(has_field("has_header_row", "true"));
+        for (int value = 0; value < 2; value++) {
+            options.remove_duplicate = value;
+            reset_offline();
+            if (scoring) {
+                scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+            } else {
+                send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+            }
+            only_request();
+            TEST_ASSERT_TRUE(has_field("remove_duplicate", value ? "true" : "false"));
+        }
+    }
+}
+
 void test_offline_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
     /* A file size limit stops the write part-way, as a full disk would. Every
        download reports it and removes the partial file; the streaming one
@@ -2438,12 +2521,13 @@ static void check_no_key_in_error(const char *call) {
 }
 
 /* Standard section 3: the key is never in an error. Every call gets each
-   echoing body; no error text may carry the key, raw or URL-encoded. */
+   echoing body; no error text may carry the key, raw, URL-encoded or
+   JSON-escaped. */
 void test_offline_no_error_carries_the_key(void) {
     ZeroBounce *zb = client_with(LEAK_KEY);
     g_sweep_check = check_no_key_in_error;
     if (TEST_PROTECT()) {
-        for (g_leak_mode = 1; g_leak_mode <= 5; g_leak_mode++) {
+        for (g_leak_mode = 1; g_leak_mode <= 6; g_leak_mode++) {
             run_every_call(zb);
         }
     }
@@ -2487,6 +2571,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_batch_omits_and_keeps_zero_ip);
     RUN_TEST(test_offline_batch_explicit_false);
     RUN_TEST(test_offline_send_file_bools_and_zero_column);
+    RUN_TEST(test_offline_send_file_sends_remove_duplicate_only_when_set);
     RUN_TEST(test_offline_scoring_send_omits_validation_fields);
     RUN_TEST(test_offline_file_status_and_delete);
     RUN_TEST(test_offline_get_file_options);
@@ -2536,5 +2621,6 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_no_error_carries_the_key);
     RUN_TEST(test_offline_an_empty_body_is_a_success_only_for_an_inbox_placement_delete);
     RUN_TEST(test_offline_a_json_object_in_place_of_a_file_is_an_error);
+    RUN_TEST(test_offline_an_html_page_in_place_of_a_file_is_an_error);
     RUN_TEST(test_offline_a_short_write_is_an_error_and_leaves_no_partial_file);
 }

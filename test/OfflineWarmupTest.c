@@ -445,6 +445,39 @@ void test_warmup_check_domain_dmarc_needs_an_email(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* The SMTP credentials never come back in an error, in any form an echo can
+   take: raw, URL-encoded, or JSON-escaped with '/' escaped or not. The body
+   is not JSON, so nothing decodes the escaped forms first. */
+void test_warmup_smtp_credentials_are_masked_in_every_form(void) {
+    static const char *const leaks[] = {
+        "Pa/ss\"w%rd+", "Pa%2Fss%22w%25rd%2B", "Pa\\/ss\\\"w%rd+", "Pa/ss\\\"w%rd+",
+        "us\"er/n+%", "us%22er%2Fn%2B%25", "us\\\"er\\/n+%", "us\\\"er/n+%",
+    };
+    char body[1024];
+    size_t i;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client("warm-key");
+    snprintf(body, sizeof(body), "SMTP login failed:");
+    for (i = 0; i < sizeof(leaks) / sizeof(leaks[0]); i++) {
+        size_t used = strlen(body);
+        snprintf(body + used, sizeof(body) - used, " [%s]", leaks[i]);
+    }
+    w_next_status = 500;
+    w_next_type = "text/plain";
+    w_next_body = body;
+    warmup_test_smtp_configuration(zbw, "sender@example.com", "us\"er/n+%", "Pa/ss\"w%rd+",
+                                   "smtp.example.com", 587, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_EQUAL_INT(500, (int)w_status);
+    for (i = 0; i < sizeof(leaks) / sizeof(leaks[0]); i++) {
+        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, leaks[i]), w_error);
+    }
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "SMTP login failed: [***]"), w_error);
+    w_next_type = "application/json";
+    zero_bounce_warmup_free(zbw);
+}
+
 void test_warmup_test_smtp_configuration(void) {
     w_reset();
     ZeroBounceWarmup *zbw = w_client("warm-key");
@@ -738,8 +771,15 @@ void test_warmup_csv_downloads_reject_every_non_file_answer(void) {
 
 int offline_count_swept_request_functions(const char *header_path, int (*is_swept)(const char *name));
 
-#define W_LEAK_KEY "leak-W4rm/x+y"
-#define W_LEAK_KEY_ESCAPED "leak-W4rm%2Fx%2By"
+#define W_LEAK_KEY "leak-W4rm/x+y\"q%z"
+#define W_LEAK_KEY_ESCAPED "leak-W4rm%2Fx%2By%22q%25z"
+#define W_LEAK_KEY_JSON "leak-W4rm\\/x+y\\\"q%z"
+#define W_LEAK_KEY_JSON_PLAIN "leak-W4rm/x+y\\\"q%z"
+/* Whether text carries the Warmup key in any form. */
+static int w_has_key(const char *text) {
+    return strstr(text, W_LEAK_KEY) || strstr(text, W_LEAK_KEY_ESCAPED) ||
+        strstr(text, W_LEAK_KEY_JSON) || strstr(text, W_LEAK_KEY_JSON_PLAIN);
+}
 #define W_SWEPT_MAX 64
 static char w_swept[W_SWEPT_MAX][96];
 static int w_swept_count;
@@ -824,19 +864,20 @@ static void w_check_no_key_in_error(const char *call) {
     TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
     TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
     TEST_ASSERT_EQUAL_INT_MESSAGE(400, (int)w_status, message);
-    TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY), message);
-    TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY_ESCAPED), message);
+    TEST_ASSERT_FALSE_MESSAGE(w_has_key(w_error), message);
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "REDACTED"), message);
 }
 
 /* Standard section 3: the key is never in an error, also when the Warmup API
-   (or a proxy in front of it) quotes it, raw or URL-encoded, in an error. */
+   (or a proxy in front of it) quotes it, raw, URL-encoded or JSON-escaped,
+   in an error. */
 void test_warmup_no_error_carries_the_key(void) {
     static const char *const bodies[] = {
-        "{\"error\":\"Bad key " W_LEAK_KEY "\"}",
-        "{\"success\":false,\"message\":\"Bad key " W_LEAK_KEY "\"}",
+        "{\"error\":\"Bad key " W_LEAK_KEY_JSON "\"}",
+        "{\"success\":false,\"message\":\"Bad key " W_LEAK_KEY_JSON_PLAIN "\"}",
         "Bad Request: GET https://warmup-api.zerobounce.net/api/v1/warmup/seeds?key=" W_LEAK_KEY_ESCAPED,
         "Rejected key " W_LEAK_KEY,
+        "Bad Request: {\"key\":\"" W_LEAK_KEY_JSON "\",\"k\":\"" W_LEAK_KEY_JSON_PLAIN "\"}",
     };
     const char *path = "test/downloads/warmup-leak.csv";
     size_t i;
@@ -867,8 +908,7 @@ static void w_check_no_key_if_error(const char *call) {
     }
     if (w_error_called) {
         TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
-        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY), message);
-        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY_ESCAPED), message);
+        TEST_ASSERT_FALSE_MESSAGE(w_has_key(w_error), message);
         if (strstr(call, "smtp")) {
             TEST_ASSERT_NULL_MESSAGE(strstr(w_error, "sekrit"), message);
         }
@@ -877,10 +917,10 @@ static void w_check_no_key_if_error(const char *call) {
 
 void test_warmup_no_error_on_a_200_carries_the_key(void) {
     static const char *const bodies[] = {
-        "{\"error\":\"Invalid API key " W_LEAK_KEY " sekrit\"}",
-        "{\"success\":false,\"message\":\"Bad key " W_LEAK_KEY " " W_LEAK_KEY_ESCAPED " sekrit\"}",
-        "{\"message\":\"Invalid API-Key " W_LEAK_KEY " " W_LEAK_KEY_ESCAPED " sekrit\"}",
-        "{\"detail\":\"Invalid API-Key " W_LEAK_KEY " " W_LEAK_KEY_ESCAPED " sekrit\"}",
+        "{\"error\":\"Invalid API key " W_LEAK_KEY_JSON " sekrit\"}",
+        "{\"success\":false,\"message\":\"Bad key " W_LEAK_KEY_JSON " " W_LEAK_KEY_ESCAPED " sekrit\"}",
+        "{\"message\":\"Invalid API-Key " W_LEAK_KEY_JSON_PLAIN " " W_LEAK_KEY_ESCAPED " sekrit\"}",
+        "{\"detail\":\"Invalid API-Key " W_LEAK_KEY_JSON " " W_LEAK_KEY_ESCAPED " sekrit\"}",
     };
     const char *path = "test/downloads/warmup-leak200.csv";
     size_t i;
@@ -939,6 +979,7 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_statistics_per_day_dates);
     RUN_TEST(test_warmup_check_domain_dmarc_needs_an_email);
     RUN_TEST(test_warmup_test_smtp_configuration);
+    RUN_TEST(test_warmup_smtp_credentials_are_masked_in_every_form);
     RUN_TEST(test_warmup_csv_downloads);
     RUN_TEST(test_warmup_blank_arguments_are_rejected);
     RUN_TEST(test_warmup_a_rejected_key_replaces_the_previous_one);

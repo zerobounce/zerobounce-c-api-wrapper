@@ -447,8 +447,8 @@ static void p3_bulk_root_get_file(
     const char *body = response_data.response ? response_data.response : "";
     /* A JSON body, whatever its keys or content type, is the API saying why
        there is no file. */
-    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0' ||
-        zb_download_body_is_json(body, content_type)) {
+    if (http_code > 299 || zb_body_looks_like_html(body) || zb_content_type_is_html(content_type) ||
+        body[0] == '\0' || zb_download_body_is_json(body, content_type)) {
         zb_report_body_error(body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */

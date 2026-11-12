@@ -27,8 +27,10 @@
 static ZBHttpPerformFn s_http_perform = NULL;
 /* Timeouts for every request, and whether http to 127.0.0.1 is allowed. Only
    zero_bounce_set_transport_for_test changes them. */
-static long s_timeout_ms = 120000L;
-static long s_connect_timeout_ms = 30000L;
+#define ZB_DEFAULT_TIMEOUT_MS 120000L
+#define ZB_DEFAULT_CONNECT_TIMEOUT_MS 30000L
+static long s_timeout_ms = ZB_DEFAULT_TIMEOUT_MS;
+static long s_connect_timeout_ms = ZB_DEFAULT_CONNECT_TIMEOUT_MS;
 static bool s_allow_loopback_http = false;
 static char s_last_request_url_for_test[1024] = {0};
 static char s_last_post_body_for_test[4096] = {0};
@@ -38,8 +40,8 @@ void zero_bounce_set_http_perform_for_test(ZBHttpPerformFn fn) {
 }
 
 void zero_bounce_set_transport_for_test(long timeout_ms, long connect_timeout_ms, bool allow_loopback_http) {
-    s_timeout_ms = timeout_ms > 0 ? timeout_ms : 120000L;
-    s_connect_timeout_ms = connect_timeout_ms > 0 ? connect_timeout_ms : 30000L;
+    s_timeout_ms = timeout_ms > 0 ? timeout_ms : ZB_DEFAULT_TIMEOUT_MS;
+    s_connect_timeout_ms = connect_timeout_ms > 0 ? connect_timeout_ms : ZB_DEFAULT_CONNECT_TIMEOUT_MS;
     s_allow_loopback_http = allow_loopback_http;
 }
 
@@ -218,9 +220,17 @@ static size_t write_callback(void *data, size_t size, size_t nmemb, void *client
  * timeout (120 s and 30 s; the connect one covers the TLS handshake), no
  * redirects, and https only.
  */
+void zb_transport_timeouts(long *timeout_ms, long *connect_timeout_ms) {
+    *timeout_ms = s_timeout_ms;
+    *connect_timeout_ms = s_connect_timeout_ms;
+}
+
 void zb_set_transport_options(CURL* curl) {
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, s_timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, s_connect_timeout_ms);
+    long timeout_ms;
+    long connect_timeout_ms;
+    zb_transport_timeouts(&timeout_ms, &connect_timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout_ms);
     /* A redirect could send the api_key to another host, so one is reported
        rather than followed, and only https is ever dialled. */
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -265,7 +275,7 @@ SendFileOptions new_send_file_options() {
     options.gender_column = 0;
     options.ip_address_column = 0;
     options.has_header_row = true;
-    options.remove_duplicate = true;
+    options.remove_duplicate = -1;
     options.allow_phase_2_is_set = false;
     options.allow_phase_2 = false;
 
@@ -1031,7 +1041,9 @@ static void note_send_file_fields(
         zb_note_http_field("return_url", options.return_url);
     }
     zb_note_http_field("has_header_row", options.has_header_row ? "true" : "false");
-    zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
+    if (options.remove_duplicate >= 0) {
+        zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
+    }
     if (!scoring && options.allow_phase_2_is_set) {
         zb_note_http_field("allow_phase_2", options.allow_phase_2 ? "true" : "false");
     }
@@ -1165,9 +1177,12 @@ static void send_file_internal(
     curl_mime_name(part, "has_header_row");
     curl_mime_data(part, options.has_header_row ? "true" : "false", CURL_ZERO_TERMINATED);
 
-    part = curl_mime_addpart(multipart);
-    curl_mime_name(part, "remove_duplicate");
-    curl_mime_data(part, options.remove_duplicate ? "true" : "false", CURL_ZERO_TERMINATED);
+    /* Only when the caller set it: the API defaults it to true. */
+    if (options.remove_duplicate >= 0) {
+        part = curl_mime_addpart(multipart);
+        curl_mime_name(part, "remove_duplicate");
+        curl_mime_data(part, options.remove_duplicate ? "true" : "false", CURL_ZERO_TERMINATED);
+    }
 
     if (!scoring && options.allow_phase_2_is_set) {
         part = curl_mime_addpart(multipart);
@@ -1371,7 +1386,10 @@ static void get_file_internal(
 
     const char *body = response_data.response ? response_data.response : "";
 
-    if (http_code > 299 || zb_body_looks_like_html(body) || body[0] == '\0') {
+    /* An HTML page, by its body or its content type, is a proxy or portal
+       answering, not the file. */
+    if (http_code > 299 || zb_body_looks_like_html(body) || zb_content_type_is_html(content_type) ||
+        body[0] == '\0') {
         zb_report_body_error(body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
@@ -2210,8 +2228,8 @@ static bool zb_stream_probe_is_error(ZbDownloadStream *stream) {
             content_type = from_curl;
         }
     }
-    return zb_body_looks_like_html(stream->probe) || zb_success_means_failure(stream->probe) ||
-        zb_download_body_is_json(stream->probe, content_type);
+    return zb_body_looks_like_html(stream->probe) || zb_content_type_is_html(content_type) ||
+        zb_success_means_failure(stream->probe) || zb_download_body_is_json(stream->probe, content_type);
 }
 
 /* Writes one chunk; a short write stops the transfer (CURLE_WRITE_ERROR). */

@@ -55,9 +55,10 @@ void zb_set_redaction_key(const char *api_key) {
     zb_tls_api_key = (api_key && api_key[0]) ? strdup(api_key) : NULL;
 }
 
-/* Replaces every occurrence of secret in text, in place, with REDACTED. */
-static char *zb_replace_secret(char *text, const char *secret) {
-    static const char mask[] = "REDACTED";
+/* Replaces every occurrence of secret in text with mask; frees text when it
+   returns a new string. */
+static char *zb_replace_secret(char *text, const char *secret, const char *mask) {
+    size_t mask_len = strlen(mask);
     size_t secret_len;
     size_t count = 0;
     const char *at;
@@ -75,7 +76,7 @@ static char *zb_replace_secret(char *text, const char *secret) {
     if (count == 0) {
         return text;
     }
-    out = malloc(strlen(text) + count * (sizeof(mask) - 1) + 1);
+    out = malloc(strlen(text) + count * mask_len + 1);
     if (!out) {
         return text;
     }
@@ -84,8 +85,8 @@ static char *zb_replace_secret(char *text, const char *secret) {
     while ((at = strstr(src, secret)) != NULL) {
         memcpy(dst, src, (size_t)(at - src));
         dst += at - src;
-        memcpy(dst, mask, sizeof(mask) - 1);
-        dst += sizeof(mask) - 1;
+        memcpy(dst, mask, mask_len);
+        dst += mask_len;
         src = at + secret_len;
     }
     strcpy(dst, src);
@@ -94,18 +95,55 @@ static char *zb_replace_secret(char *text, const char *secret) {
 }
 
 /*
+ * secret as it appears inside a JSON string: '"' and '\\' escaped, and '/'
+ * escaped too when escape_slash is set (both are valid JSON). The caller
+ * owns it.
+ */
+static char *zb_json_escape(const char *secret, bool escape_slash) {
+    char *out = malloc(strlen(secret) * 2 + 1);
+    char *dst = out;
+    if (!out) {
+        return NULL;
+    }
+    for (; *secret; secret++) {
+        if (*secret == '"' || *secret == '\\' || (escape_slash && *secret == '/')) {
+            *dst++ = '\\';
+        }
+        *dst++ = *secret;
+    }
+    *dst = '\0';
+    return out;
+}
+
+char *zb_mask_secret(char *text, const char *secret, const char *mask) {
+    char *forms[3];
+    size_t i;
+    if (!text || !secret || !secret[0]) {
+        return text;
+    }
+    /* A body may quote the secret raw, URL-encoded (a request URL or form) or
+       JSON-escaped (a request body echoed back); the escaped forms are
+       replaced first, as they can contain the raw one. */
+    forms[0] = zb_json_escape(secret, true);
+    forms[1] = zb_json_escape(secret, false);
+    forms[2] = zb_url_escape(secret);
+    for (i = 0; i < 3; i++) {
+        if (forms[i]) {
+            text = zb_replace_secret(text, forms[i], mask);
+            free(forms[i]);
+        }
+    }
+    return zb_replace_secret(text, secret, mask);
+}
+
+/*
  * A copy of text with any api_key parameter's value and the current call's
- * key, raw and URL-encoded, replaced. The caller owns it.
+ * key, raw, URL-encoded and JSON-escaped, replaced. The caller owns it.
  */
 static char *zb_redact_error_text(const char *text) {
     char *out = zb_redact_api_key(text);
     if (out && zb_tls_api_key) {
-        char *escaped = zb_url_escape(zb_tls_api_key);
-        out = zb_replace_secret(out, zb_tls_api_key);
-        if (escaped && strcmp(escaped, zb_tls_api_key) != 0) {
-            out = zb_replace_secret(out, escaped);
-        }
-        free(escaped);
+        out = zb_mask_secret(out, zb_tls_api_key, "REDACTED");
     }
     return out;
 }
@@ -234,6 +272,23 @@ static void zb_lower_prefix(const char *value, char *out, size_t out_len) {
         out[i] = (char)tolower((unsigned char)value[i]);
     }
     out[i] = '\0';
+}
+
+bool zb_content_type_is_html(const char *content_type) {
+    static const char html[] = "text/html";
+    const char *p;
+    size_t i;
+    if (!content_type) {
+        return false;
+    }
+    for (p = content_type; *p; p++) {
+        for (i = 0; html[i] && p[i] && tolower((unsigned char)p[i]) == html[i]; i++) {
+        }
+        if (!html[i]) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool zb_body_looks_like_html(const char *body) {
