@@ -154,7 +154,181 @@ static char *zb_plus_for_spaces(const char *escaped) {
     return out;
 }
 
+static int zb_hex_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+/* text URL-decoded: each %XX as its byte, and '+' as a space when
+   plus_as_space is set (a form body). The caller owns it. */
+static char *zb_url_decode_view(const char *text, bool plus_as_space) {
+    char *out = malloc(strlen(text) + 1);
+    char *dst = out;
+    if (!out) {
+        return NULL;
+    }
+    while (*text) {
+        int hi;
+        int lo;
+        if (text[0] == '%' && (hi = zb_hex_value(text[1])) >= 0 && (lo = zb_hex_value(text[2])) >= 0) {
+            *dst++ = (char)(hi * 16 + lo);
+            text += 3;
+        } else if (plus_as_space && *text == '+') {
+            *dst++ = ' ';
+            text++;
+        } else {
+            *dst++ = *text++;
+        }
+    }
+    *dst = '\0';
+    return out;
+}
+
+static char *zb_put_utf8(char *dst, unsigned long cp) {
+    if (cp < 0x80) {
+        *dst++ = (char)cp;
+    } else if (cp < 0x800) {
+        *dst++ = (char)(0xC0 | (cp >> 6));
+        *dst++ = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        *dst++ = (char)(0xE0 | (cp >> 12));
+        *dst++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+        *dst++ = (char)(0x80 | (cp & 0x3F));
+    } else {
+        *dst++ = (char)(0xF0 | (cp >> 18));
+        *dst++ = (char)(0x80 | ((cp >> 12) & 0x3F));
+        *dst++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+        *dst++ = (char)(0x80 | (cp & 0x3F));
+    }
+    return dst;
+}
+
+static long zb_hex4(const char *text) {
+    long value = 0;
+    int i;
+    for (i = 0; i < 4; i++) {
+        int digit = zb_hex_value(text[i]);
+        if (digit < 0) {
+            return -1;
+        }
+        value = value * 16 + digit;
+    }
+    return value;
+}
+
+/* text with JSON string escapes undone (\" \\ \/ \b \f \n \r \t \uXXXX,
+   surrogate pairs included); anything else is kept. The caller owns it. */
+static char *zb_json_unescape_view(const char *text) {
+    /* \uXXXX (6 bytes) becomes at most 4, so the text never grows. */
+    char *out = malloc(strlen(text) + 1);
+    char *dst = out;
+    if (!out) {
+        return NULL;
+    }
+    while (*text) {
+        long cp;
+        if (text[0] != '\\' || !text[1]) {
+            *dst++ = *text++;
+            continue;
+        }
+        switch (text[1]) {
+        case '"': case '\\': case '/':
+            *dst++ = text[1];
+            text += 2;
+            continue;
+        case 'b': *dst++ = '\b'; text += 2; continue;
+        case 'f': *dst++ = '\f'; text += 2; continue;
+        case 'n': *dst++ = '\n'; text += 2; continue;
+        case 'r': *dst++ = '\r'; text += 2; continue;
+        case 't': *dst++ = '\t'; text += 2; continue;
+        case 'u':
+            cp = zb_hex4(text + 2);
+            if (cp < 0) {
+                break;
+            }
+            text += 6;
+            if (cp >= 0xD800 && cp <= 0xDBFF && text[0] == '\\' && text[1] == 'u') {
+                long low = zb_hex4(text + 2);
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                    text += 6;
+                }
+            }
+            dst = zb_put_utf8(dst, (unsigned long)cp);
+            continue;
+        default:
+            break;
+        }
+        *dst++ = *text++;
+    }
+    *dst = '\0';
+    return out;
+}
+
+/*
+ * Whether secret can be read in text or in any view of it decoded up to
+ * layers more times: URL-decoded (%XX), form-decoded ('+' as a space too) and
+ * JSON-unescaped, in any order. A view that decodes to itself is not followed.
+ */
+static bool zb_secret_in_decoded_views(const char *text, const char *secret, int layers) {
+    char *views[3];
+    bool found = false;
+    int i;
+    if (strstr(text, secret)) {
+        return true;
+    }
+    if (layers == 0) {
+        return false;
+    }
+    views[0] = zb_url_decode_view(text, false);
+    views[1] = zb_url_decode_view(text, true);
+    views[2] = zb_json_unescape_view(text);
+    for (i = 0; i < 3; i++) {
+        if (!views[i]) {
+            /* Out of memory: assume the worst. */
+            found = true;
+        } else if (!found && strcmp(views[i], text) != 0) {
+            found = zb_secret_in_decoded_views(views[i], secret, layers - 1);
+        }
+        free(views[i]);
+    }
+    return found;
+}
+
+/*
+ * text with every spelling of secret zb_mask_secret generates replaced by
+ * mask, then checked by decoding (standard: redaction is closed under
+ * encoding). When any view of what is left, decoded up to three layers, still
+ * holds the secret, the text is dropped for ZB_SECRET_OMITTED_MESSAGE.
+ */
+static char *zb_mask_known_spellings(char *text, const char *secret, const char *mask);
+
 char *zb_mask_secret(char *text, const char *secret, const char *mask) {
+    if (!text || !secret || !secret[0]) {
+        return text;
+    }
+    text = zb_mask_known_spellings(text, secret, mask);
+    if (zb_secret_in_decoded_views(text, secret, 3)) {
+        char *omitted = strdup(ZB_SECRET_OMITTED_MESSAGE);
+        if (omitted) {
+            free(text);
+            return omitted;
+        }
+        /* Out of memory: never hand the secret on. */
+        text[0] = '\0';
+    }
+    return text;
+}
+
+static char *zb_mask_known_spellings(char *text, const char *secret, const char *mask) {
     enum { FORMS = 10 };
     char *forms[FORMS] = {0};
     char *json_slash;
@@ -428,7 +602,7 @@ char *zb_message_from_body(const char *body, long status_code) {
         return message;
     }
     if (trimmed[0] == '{' || trimmed[0] == '[') {
-        json_object *parsed = json_tokener_parse(trimmed);
+        json_object *parsed = zb_parse_json_whole(body);
         if (!parsed) {
             return strdup("ZeroBounce returned a response that is not valid JSON.");
         }
@@ -612,23 +786,246 @@ static bool zb_message_only_body(const char *body) {
 }
 
 /*
- * The JSON value text holds, or NULL when it is not exactly one JSON value:
- * json_tokener_parse stops after the first value and ignores what follows,
- * so {"a":1} followed by a proxy's text would pass as JSON. Whitespace may
- * surround the value.
+ * A strict RFC 8259 check. json-c's tokener is lenient: it takes single
+ * quotes, trailing commas, NaN and Infinity, TRUE, leading zeros, raw control
+ * characters in strings and comments, so a proxy's or a portal's almost-JSON
+ * would pass as the API's answer. Only space, tab, CR and LF may surround the
+ * value; anything else (a BOM, a vertical tab, a no-break space) is not JSON.
+ */
+typedef struct {
+    const char *p;
+    const char *end;
+} ZBJsonScan;
+
+#define ZB_JSON_MAX_DEPTH 512
+
+static void zb_json_ws(ZBJsonScan *s) {
+    while (s->p < s->end && (*s->p == ' ' || *s->p == '\t' || *s->p == '\n' || *s->p == '\r')) {
+        s->p++;
+    }
+}
+
+static bool zb_json_digit(ZBJsonScan *s) {
+    return s->p < s->end && *s->p >= '0' && *s->p <= '9';
+}
+
+static bool zb_json_digits(ZBJsonScan *s) {
+    if (!zb_json_digit(s)) {
+        return false;
+    }
+    while (zb_json_digit(s)) {
+        s->p++;
+    }
+    return true;
+}
+
+static bool zb_json_number(ZBJsonScan *s) {
+    if (s->p < s->end && *s->p == '-') {
+        s->p++;
+    }
+    if (s->p < s->end && *s->p == '0') {
+        s->p++;
+    } else if (!zb_json_digits(s)) {
+        return false;
+    }
+    if (s->p < s->end && *s->p == '.') {
+        s->p++;
+        if (!zb_json_digits(s)) {
+            return false;
+        }
+    }
+    if (s->p < s->end && (*s->p == 'e' || *s->p == 'E')) {
+        s->p++;
+        if (s->p < s->end && (*s->p == '+' || *s->p == '-')) {
+            s->p++;
+        }
+        if (!zb_json_digits(s)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool zb_json_string(ZBJsonScan *s) {
+    if (s->p >= s->end || *s->p != '"') {
+        return false;
+    }
+    s->p++;
+    while (s->p < s->end) {
+        unsigned char c = (unsigned char)*s->p++;
+        if (c == '"') {
+            return true;
+        }
+        if (c < 0x20) {
+            return false;
+        }
+        if (c == '\\') {
+            int i;
+            if (s->p >= s->end) {
+                return false;
+            }
+            c = (unsigned char)*s->p++;
+            if (c == 'u') {
+                for (i = 0; i < 4; i++) {
+                    if (s->p >= s->end || !isxdigit((unsigned char)*s->p)) {
+                        return false;
+                    }
+                    s->p++;
+                }
+            } else if (c != '"' && c != '\\' && c != '/' && c != 'b' && c != 'f' &&
+                       c != 'n' && c != 'r' && c != 't') {
+                return false;
+            }
+        }
+    }
+    return false;
+}
+
+static bool zb_json_literal(ZBJsonScan *s, const char *word) {
+    size_t n = strlen(word);
+    if ((size_t)(s->end - s->p) < n || memcmp(s->p, word, n) != 0) {
+        return false;
+    }
+    s->p += n;
+    return true;
+}
+
+static bool zb_json_value(ZBJsonScan *s, int depth) {
+    if (s->p >= s->end || depth > ZB_JSON_MAX_DEPTH) {
+        return false;
+    }
+    switch (*s->p) {
+    case '{':
+        s->p++;
+        zb_json_ws(s);
+        if (s->p < s->end && *s->p == '}') {
+            s->p++;
+            return true;
+        }
+        for (;;) {
+            if (!zb_json_string(s)) {
+                return false;
+            }
+            zb_json_ws(s);
+            if (s->p >= s->end || *s->p != ':') {
+                return false;
+            }
+            s->p++;
+            zb_json_ws(s);
+            if (!zb_json_value(s, depth + 1)) {
+                return false;
+            }
+            zb_json_ws(s);
+            if (s->p < s->end && *s->p == ',') {
+                s->p++;
+                zb_json_ws(s);
+                continue;
+            }
+            if (s->p < s->end && *s->p == '}') {
+                s->p++;
+                return true;
+            }
+            return false;
+        }
+    case '[':
+        s->p++;
+        zb_json_ws(s);
+        if (s->p < s->end && *s->p == ']') {
+            s->p++;
+            return true;
+        }
+        for (;;) {
+            zb_json_ws(s);
+            if (!zb_json_value(s, depth + 1)) {
+                return false;
+            }
+            zb_json_ws(s);
+            if (s->p < s->end && *s->p == ',') {
+                s->p++;
+                continue;
+            }
+            if (s->p < s->end && *s->p == ']') {
+                s->p++;
+                return true;
+            }
+            return false;
+        }
+    case '"':
+        return zb_json_string(s);
+    case 't':
+        return zb_json_literal(s, "true");
+    case 'f':
+        return zb_json_literal(s, "false");
+    case 'n':
+        return zb_json_literal(s, "null");
+    default:
+        return zb_json_number(s);
+    }
+}
+
+bool zb_json_is_strict(const char *text, size_t length) {
+    ZBJsonScan s;
+    if (!text) {
+        return false;
+    }
+    s.p = text;
+    s.end = text + length;
+    zb_json_ws(&s);
+    if (!zb_json_value(&s, 0)) {
+        return false;
+    }
+    zb_json_ws(&s);
+    return s.p == s.end;
+}
+
+/*
+ * Whether the body the current call on this thread just got held a NUL byte.
+ * Bodies travel as C strings, so one would end the text early and hide
+ * whatever came after it from the check above.
+ */
+static _Thread_local bool zb_tls_body_has_nul = false;
+
+void zb_note_response_bytes(const char *data, size_t size, bool first) {
+    if (first) {
+        zb_tls_body_has_nul = false;
+    }
+    if (data && size && memchr(data, '\0', size)) {
+        zb_tls_body_has_nul = true;
+    }
+}
+
+bool zb_body_is_strict_json(const char *text) {
+    return text && !zb_tls_body_has_nul && zb_json_is_strict(text, strlen(text));
+}
+
+/*
+ * The JSON value text holds, or NULL when it is not exactly one strict
+ * RFC 8259 JSON value (zb_json_is_strict): json_tokener_parse stops after the
+ * first value and ignores what follows, so {"a":1} followed by a proxy's text
+ * would pass as JSON, and it takes almost-JSON besides. Space, tab, CR and LF
+ * may surround the value.
  */
 json_object *zb_parse_json_whole(const char *text) {
     json_tokener *tok;
     json_object *parsed;
     const char *rest;
-    text = zb_skip_ws(text ? text : "");
+    size_t length;
+    text = text ? text : "";
+    if (!zb_body_is_strict_json(text)) {
+        return NULL;
+    }
+    text = zb_skip_ws(text);
     tok = json_tokener_new();
     if (!tok) {
         return NULL;
     }
-    parsed = json_tokener_parse_ex(tok, text, (int)strlen(text));
+    /* The terminating NUL is passed too, so a bare number (0) ends there
+       rather than waiting for more input. */
+    length = strlen(text);
+    parsed = json_tokener_parse_ex(tok, text, (int)length + 1);
     if (parsed && json_tokener_get_error(tok) == json_tokener_success) {
-        rest = zb_skip_ws(text + json_tokener_get_parse_end(tok));
+        size_t end = json_tokener_get_parse_end(tok);
+        rest = zb_skip_ws(end < length ? text + end : "");
         if (rest[0] != '\0') {
             json_object_put(parsed);
             parsed = NULL;

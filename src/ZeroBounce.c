@@ -51,6 +51,7 @@ static int zb_mock_perform(memory *response_data, long *http_code, char **conten
     char *content_type = NULL;
     int ok = s_http_perform(response_data, http_code, &content_type);
     zb_note_response_content_type(ok ? content_type : NULL);
+    zb_note_response_bytes(ok ? response_data->response : NULL, ok ? response_data->size : 0, true);
     if (content_type_out) {
         *content_type_out = content_type;
     } else {
@@ -225,6 +226,7 @@ static size_t write_callback(void *data, size_t size, size_t nmemb, void *client
   memcpy(&(mem->response[mem->size]), data, real_size);
   mem->size += real_size;
   mem->response[mem->size] = 0;
+  zb_note_response_bytes(data, real_size, false);
 
   return real_size;
 }
@@ -261,6 +263,7 @@ void set_write_callback(CURL* curl, memory* response_data) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)response_data);
     zb_set_transport_options(curl);
     zb_note_response_content_type(NULL);
+    zb_note_response_bytes(NULL, 0, true);
 }
 
 /* Every request reads its status here, so this is also where the response's
@@ -1117,9 +1120,7 @@ static void note_send_file_fields(
         zb_note_http_field("return_url", options.return_url);
     }
     zb_note_http_field("has_header_row", options.has_header_row ? "true" : "false");
-    if (options.remove_duplicate_set) {
-        zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
-    }
+    zb_note_http_field("remove_duplicate", options.remove_duplicate ? "true" : "false");
     if (!scoring && options.allow_phase_2_is_set) {
         zb_note_http_field("allow_phase_2", options.allow_phase_2 ? "true" : "false");
     }
@@ -1253,12 +1254,11 @@ static void send_file_internal(
     curl_mime_name(part, "has_header_row");
     curl_mime_data(part, options.has_header_row ? "true" : "false", CURL_ZERO_TERMINATED);
 
-    /* Only when the caller set it: the API defaults it to true. */
-    if (options.remove_duplicate_set) {
-        part = curl_mime_addpart(multipart);
-        curl_mime_name(part, "remove_duplicate");
-        curl_mime_data(part, options.remove_duplicate ? "true" : "false", CURL_ZERO_TERMINATED);
-    }
+    /* Always sent, with the caller's value (true from new_send_file_options),
+       as in 3.0.x. */
+    part = curl_mime_addpart(multipart);
+    curl_mime_name(part, "remove_duplicate");
+    curl_mime_data(part, options.remove_duplicate ? "true" : "false", CURL_ZERO_TERMINATED);
 
     if (!scoring && options.allow_phase_2_is_set) {
         part = curl_mime_addpart(multipart);

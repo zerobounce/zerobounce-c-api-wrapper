@@ -53,17 +53,17 @@ typedef struct {
     int ip_address_column;
     bool has_header_row;
     /**
-     * Sent as remove_duplicate only when remove_duplicate_set is true;
-     * otherwise the field is left out and the API's default (true) applies.
+     * Always sent as remove_duplicate: true (the default from
+     * new_send_file_options, and the API's) removes duplicate emails, false
+     * keeps them.
      */
     bool remove_duplicate;
     /** When set, sent as allow_phase_2 on validation sendfile only (not scoring). */
     bool allow_phase_2_is_set;
     bool allow_phase_2;
     /**
-     * true sends remove_duplicate; false (new_send_file_options and zero
-     * initialisation) leaves it out. Kept last so positional initialisers
-     * written for earlier versions still compile and leave it unset.
+     * No longer needed and ignored: remove_duplicate is always sent. Kept,
+     * last, so code that sets it keeps compiling.
      */
     bool remove_duplicate_set;
 } SendFileOptions;

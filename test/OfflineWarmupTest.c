@@ -36,6 +36,8 @@ static long w_status;
 static long w_next_status = 200;
 static const char *w_next_body = "{\"ok\":true}";
 static const char *w_next_type = "application/json";
+/* The length of w_next_body when it holds a NUL byte; (size_t)-1 for strlen. */
+static size_t w_next_len = (size_t)-1;
 
 static void w_on_raw(const char *json_response) {
     w_success_called = 1;
@@ -70,9 +72,10 @@ static int warmup_perform(memory *response_data, long *http_code, char **content
     snprintf(w_body, sizeof(w_body), "%s", body ? body : "");
     snprintf(w_header, sizeof(w_header), "%s", header ? header : "");
 
-    len = strlen(w_next_body);
+    len = w_next_len == (size_t)-1 ? strlen(w_next_body) : w_next_len;
     response_data->response = malloc(len + 1);
-    memcpy(response_data->response, w_next_body, len + 1);
+    memcpy(response_data->response, w_next_body, len);
+    response_data->response[len] = '\0';
     response_data->size = len;
     *http_code = w_next_status;
     if (content_type_out) {
@@ -91,6 +94,7 @@ static void w_reset(void) {
     w_next_status = 200;
     w_next_body = "{\"ok\":true}";
     w_next_type = "application/json";
+    w_next_len = (size_t)-1;
 }
 
 static ZeroBounceWarmup *w_client(const char *key) {
@@ -1172,7 +1176,6 @@ static void w_check_non_json_200(const char *call) {
 void test_warmup_a_non_json_200_is_an_error_on_every_json_call(void) {
     static const char *const bodies[] = {
         "not json", "hello", "email,status\na@example.com,valid\n", "{\"a\":1", "[1,2", "{\"a\":1} trailing",
-        "\"just a string\"", "42",
     };
     static const char *const types[] = {"application/json", "text/plain", "text/csv"};
     const char *path = "test/downloads/warmup-non-json.csv";
@@ -1236,6 +1239,128 @@ void test_warmup_every_request_function_is_in_the_sweep(void) {
     TEST_ASSERT_EQUAL_INT(declared, w_swept_count);
 }
 
+/* E7: every Warmup call against every strict-JSON corpus body on an HTTP 200
+   application/json (test/fixtures/strict-json-corpus.tsv, see
+   OfflineApiTest.c). A REJECT body is an error with status 200 and an ACCEPT
+   body the result, on every JSON call; the CSV downloads take any
+   application/json answer as an error. An empty or blank 2xx stays a Warmup
+   JSON call's documented empty success. */
+int offline_corpus_count(void);
+const char *offline_corpus_body(int index, size_t *len, int *accept, const char **line);
+static int w_corpus_accept;
+static size_t w_corpus_len;
+static const char *w_corpus_line;
+static const char *w_corpus_body;
+
+static void w_check_corpus_body(const char *call) {
+    char message[1600];
+    int download = strstr(call, "warmup_download_") != NULL;
+    size_t blank = strspn(w_corpus_body, " \t\r\n");
+    int empty = blank == w_corpus_len;
+    snprintf(message, sizeof message, "%s with %s: %s", call, w_corpus_line, w_error);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, message);
+    if (download || (!w_corpus_accept && !empty)) {
+        TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+    } else {
+        TEST_ASSERT_FALSE_MESSAGE(w_error_called, message);
+        TEST_ASSERT_TRUE_MESSAGE(w_success_called, message);
+    }
+}
+
+void test_warmup_every_json_call_takes_only_strict_json(void) {
+    const char *path = "test/downloads/warmup-corpus.csv";
+    int count = offline_corpus_count();
+    int i;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client("warm-key");
+    w_sweep_check = w_check_corpus_body;
+    w_swept_count = 0;
+    for (i = 0; i < count; i++) {
+        w_corpus_body = offline_corpus_body(i, &w_corpus_len, &w_corpus_accept, &w_corpus_line);
+        w_next_status = 200;
+        w_next_type = "application/json";
+        w_next_body = w_corpus_body;
+        w_next_len = w_corpus_len;
+        w_run_every_call(zbw, path);
+    }
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+    w_reset();
+    zero_bounce_warmup_free(zbw);
+}
+
+/* S4/S7: whatever composition of up to three URL and JSON encodings an error
+   body uses to quote the Warmup key or the SMTP password, no decoded view of
+   the error holds it. Seeded, so a failure repeats. */
+char *offline_random_spelling(const char *secret, unsigned *seed, char *desc, size_t desc_len);
+char *offline_encode(const char *in, int how);
+int offline_secret_readable(const char *text, const char *secret, int layers);
+#define W_FUZZ_SECRET "wz a\"b/c\\d+e%f&g=h<i>j'k"
+static char w_fuzz_desc[200];
+static const char *w_fuzz_secret;
+
+static void w_check_fuzzed_echo(const char *call) {
+    char message[1500];
+    snprintf(message, sizeof message, "%s, encodings [%s], status %ld: %s",
+             call, w_fuzz_desc, w_next_status, w_error);
+    TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(offline_secret_readable(w_error, w_fuzz_secret, 3), message);
+}
+
+static void w_fuzz_body(char *body, size_t size, const char *spelling, int round) {
+    char *quoted = offline_encode(spelling, 2);
+    /* A JSON error and a text one, each with a 4xx: a Warmup 200 is the
+       result, whatever its body says. */
+    w_next_status = 400;
+    if (round % 2) {
+        snprintf(body, size, "{\"error\":\"Invalid API-Key %s\"}", quoted);
+        w_next_type = "application/json";
+    } else {
+        snprintf(body, size, "Bad Request: [%s] end", spelling);
+        w_next_type = "text/plain";
+    }
+    free(quoted);
+}
+
+void test_warmup_redaction_is_closed_under_encoding(void) {
+    const char *path = "test/downloads/warmup-fuzz.csv";
+    unsigned seed = 20261113u;
+    static char body[4096];
+    int round;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client(W_FUZZ_SECRET);
+    w_sweep_check = w_check_fuzzed_echo;
+    w_swept_count = 0;
+    w_fuzz_secret = W_FUZZ_SECRET;
+    for (round = 0; round < 40; round++) {
+        char *spelling = offline_random_spelling(W_FUZZ_SECRET, &seed, w_fuzz_desc, sizeof(w_fuzz_desc));
+        w_fuzz_body(body, sizeof(body), spelling, round);
+        w_next_body = body;
+        w_run_every_call(zbw, path);
+        free(spelling);
+    }
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+    zero_bounce_warmup_free(zbw);
+    /* The SMTP password and username of test_smtp_configuration. */
+    zbw = w_client("warm-key");
+    for (round = 0; round < 200; round++) {
+        char *spelling;
+        w_fuzz_secret = round % 3 ? "pw a\"b/c\\d+e%f&g=h<i>j'k" : "us a\"b/c\\d+e%f&g=h<i>j'k";
+        spelling = offline_random_spelling(w_fuzz_secret, &seed, w_fuzz_desc, sizeof(w_fuzz_desc));
+        w_fuzz_body(body, sizeof(body), spelling, round);
+        w_next_body = body;
+        W_SWEEP(warmup_test_smtp_configuration(zbw, "sender@example.com", "us a\"b/c\\d+e%f&g=h<i>j'k",
+                                               "pw a\"b/c\\d+e%f&g=h<i>j'k", "smtp.example.com", 587,
+                                               w_on_raw, w_on_error));
+        free(spelling);
+    }
+    w_reset();
+    zero_bounce_warmup_free(zbw);
+}
+
 void warmup_run_tests(void) {
     RUN_TEST(test_warmup_api_key_header_and_own_host);
     RUN_TEST(test_warmup_uninitialized_sends_nothing);
@@ -1258,6 +1383,8 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file);
     RUN_TEST(test_warmup_a_failed_write_keeps_the_file_already_at_the_path);
     RUN_TEST(test_warmup_no_error_carries_the_key);
+    RUN_TEST(test_warmup_every_json_call_takes_only_strict_json);
+    RUN_TEST(test_warmup_redaction_is_closed_under_encoding);
     RUN_TEST(test_warmup_no_error_on_a_200_carries_the_key);
     RUN_TEST(test_warmup_a_text_html_200_is_an_error_on_every_call);
     RUN_TEST(test_warmup_add_sending_account_sends_every_documented_field);

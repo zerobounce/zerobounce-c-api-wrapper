@@ -102,7 +102,8 @@ target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
 # The sweep's completeness test reads the public header to list the request
 # functions.
 target_compile_definitions(ZeroBounceTests PRIVATE
-  ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h")
+  ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
+  ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv")
 
 # The real-transport tests (local socket server: redirects, timeouts) are a
 # separate binary: ZeroBounceTests replaces curl_easy_perform and friends with

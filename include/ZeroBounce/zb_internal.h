@@ -20,9 +20,15 @@ char *zb_redact_api_key(const char *text);
  */
 void zb_set_redaction_key(const char *api_key);
 char *zb_url_escape(const char *value);
+/* What an error says in place of a body that still held a secret. */
+#define ZB_SECRET_OMITTED_MESSAGE \
+    "The response body was omitted because it contained a credential."
 /*
  * text with every raw, URL-encoded and JSON-escaped occurrence of secret
- * replaced by mask. Takes ownership of text and returns the string to use.
+ * replaced by mask. When a view of the result decoded up to three times
+ * (URL-decoding, '+' as a space, JSON-unescaping, in any order) still holds
+ * the secret, the whole text is replaced by ZB_SECRET_OMITTED_MESSAGE. Takes
+ * ownership of text and returns the string to use.
  */
 char *zb_mask_secret(char *text, const char *secret, const char *mask);
 /*
@@ -131,7 +137,20 @@ bool zb_body_looks_like_html(const char *body);
 /* Whether a Content-Type names an HTML page (text/html), in any letter case. */
 bool zb_content_type_is_html(const char *content_type);
 void zb_report_body_error(const char *body, long status_code, OnErrorCallback error_callback);
-/** The one JSON value text holds (whitespace around it allowed), or NULL. */
+/**
+ * Whether text[0..length) is exactly one strict RFC 8259 JSON value, with
+ * only space, tab, CR and LF around it.
+ */
+bool zb_json_is_strict(const char *text, size_t length);
+/**
+ * Notes bytes of the response the current call on this thread is reading
+ * (first starts a new one), so a NUL byte in a body, which would end it early
+ * as a C string, makes zb_parse_json_whole refuse it.
+ */
+void zb_note_response_bytes(const char *data, size_t size, bool first);
+/** Whether a response body is one strict JSON value and held no NUL byte. */
+bool zb_body_is_strict_json(const char *text);
+/** The one strict JSON value text holds (zb_body_is_strict_json), or NULL. */
 json_object *zb_parse_json_whole(const char *text);
 /** Parses a 2xx non-HTML JSON body. On failure, reports a short error and returns false. */
 bool zb_read_success_json(const char *body, long status_code, json_object **out, OnErrorCallback error_callback);

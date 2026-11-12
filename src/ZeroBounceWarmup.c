@@ -172,23 +172,18 @@ static json_object *warmup_offset_json(double value) {
     return json_object_new_double_s(value, text);
 }
 
-/* An empty body (204, an empty 200), or a JSON object or array and nothing
+/* An empty body (204, an empty 200), or one strict JSON value and nothing
    after it. */
 static bool warmup_body_is_empty_or_json(const char *text) {
     const char *start = text;
-    json_object *parsed;
     while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') {
         start++;
     }
     if (!start[0]) {
         return true;
     }
-    if (start[0] != '{' && start[0] != '[') {
-        return false;
-    }
-    parsed = zb_parse_json_whole(start);
-    json_object_put(parsed);
-    return parsed != NULL;
+    /* One strict JSON value, whitespace around it allowed. */
+    return zb_body_is_strict_json(text);
 }
 
 static bool warmup_iso_date(const char *value, const char *name, OnErrorCallback error_callback) {

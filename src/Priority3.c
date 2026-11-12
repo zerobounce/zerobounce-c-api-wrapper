@@ -148,16 +148,12 @@ static void p3_send_json_success(
         zb_report_body_error(body, http_code, error_callback);
         return;
     }
-    if (body[0] == '{' || body[0] == '[') {
-        json_object *parsed = zb_parse_json_whole(body);
-        if (!parsed) {
+    {
+        /* One strict JSON value (any kind) and nothing after it. */
+        if (!zb_body_is_strict_json(body)) {
             zb_report_body_error(body, http_code, error_callback);
             return;
         }
-        json_object_put(parsed);
-    } else {
-        zb_report_body_error(body, http_code, error_callback);
-        return;
     }
     if (success_callback) {
         success_callback(body);

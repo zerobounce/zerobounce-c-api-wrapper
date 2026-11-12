@@ -143,6 +143,20 @@ static void set_body(memory *response_data, const char *text) {
     response_data->size = len;
 }
 
+static void set_body_n(memory *response_data, const char *text, size_t len) {
+    response_data->response = malloc(len + 1);
+    memcpy(response_data->response, text, len);
+    response_data->response[len] = '\0';
+    response_data->size = len;
+}
+
+/* g_leak_mode 10: the strict-JSON corpus body under test, with an HTTP 200
+   and application/json. g_leak_mode 11: the fuzzed echo body, with its
+   status. */
+static const char *g_mode_body;
+static size_t g_mode_body_len;
+static long g_mode_status;
+
 static int offline_perform(memory *response_data, long *http_code, char **content_type_out) {
     OfflineRequest request;
     char key[256] = "";
@@ -237,6 +251,14 @@ static int offline_perform(memory *response_data, long *http_code, char **conten
         case 9:
             /* A JSON object with text after it is not JSON. */
             set_body(response_data, "{\"a\":1} <- proxy note");
+            break;
+        case 10:
+            set_body_n(response_data, g_mode_body, g_mode_body_len);
+            break;
+        case 11:
+            *http_code = g_mode_status;
+            set_body_n(response_data, g_mode_body, g_mode_body_len);
+            content = g_mode_status == 200 ? "application/json" : "text/plain";
             break;
         default:
             *http_code = 400;
@@ -427,7 +449,10 @@ static int has_field(const char *name, const char *value) {
 
 static void on_credits(ZBCreditsResponse response) {
     g_success_called = 1;
-    TEST_ASSERT_EQUAL_INT(7, response.credits);
+    if (g_leak_mode != 10) {
+        /* The corpus sweep's bodies hold no credits. */
+        TEST_ASSERT_EQUAL_INT(7, response.credits);
+    }
 }
 
 static void on_validate(ZBValidateResponse response) {
@@ -476,7 +501,9 @@ static void on_delete(ZBDeleteFileResponse response) {
 
 static void on_activity(ZBActivityDataResponse response) {
     g_success_called = 1;
-    TEST_ASSERT_TRUE(response.found);
+    if (g_leak_mode != 10) {
+        TEST_ASSERT_TRUE(response.found);
+    }
 }
 
 static void on_score(ZBScoreEmailResponse response) {
@@ -496,7 +523,9 @@ static void on_domain(ZBDomainSearchResponse response) {
 
 static void on_usage(ZBGetApiUsageResponse response) {
     g_success_called = 1;
-    TEST_ASSERT_EQUAL_INT(1, response.total);
+    if (g_leak_mode != 10) {
+        TEST_ASSERT_EQUAL_INT(1, response.total);
+    }
 }
 
 static char g_raw[1024];
@@ -604,7 +633,6 @@ void test_offline_send_file_bools_and_zero_column(void) {
     options.allow_phase_2_is_set = true;
     options.allow_phase_2 = false;
     options.remove_duplicate = false;
-    options.remove_duplicate_set = true;
     options.has_header_row = true;
     send_file(zb, "email_file.csv", 0, options, on_send, on_error);
     TEST_ASSERT_EQUAL_STRING("file-key", g_echo);
@@ -2094,7 +2122,10 @@ void test_offline_an_html_page_in_place_of_a_file_is_an_error(void) {
 
 /* remove_duplicate goes out only when the caller sets it: the API's own
    default (true) applies otherwise. */
-void test_offline_send_file_sends_remove_duplicate_only_when_set(void) {
+/* remove_duplicate is always sent with the caller's value, true by default,
+   as in 3.0.x: an explicit false is never dropped, whether or not the
+   remove_duplicate_set field (no longer needed) is set. */
+void test_offline_send_file_always_sends_remove_duplicate(void) {
     ZeroBounce *zb = client_with("file-key");
     for (int scoring = 0; scoring < 2; scoring++) {
         SendFileOptions options = new_send_file_options();
@@ -2105,33 +2136,21 @@ void test_offline_send_file_sends_remove_duplicate_only_when_set(void) {
             send_file(zb, "email_file.csv", 1, options, on_send, on_error);
         }
         only_request();
-        TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
+        TEST_ASSERT_TRUE(has_field("remove_duplicate", "true"));
         TEST_ASSERT_TRUE(has_field("has_header_row", "true"));
-        /* A value without remove_duplicate_set is not sent either, so code
-           written for 3.0.1 that assigns it keeps compiling. */
-        for (int value = 0; value < 2; value++) {
-            options.remove_duplicate = value;
-            options.remove_duplicate_set = false;
-            reset_offline();
-            if (scoring) {
-                scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
-            } else {
-                send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+        for (int set = 0; set < 2; set++) {
+            for (int value = 0; value < 2; value++) {
+                options.remove_duplicate = value;
+                options.remove_duplicate_set = set;
+                reset_offline();
+                if (scoring) {
+                    scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+                } else {
+                    send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+                }
+                only_request();
+                TEST_ASSERT_TRUE(has_field("remove_duplicate", value ? "true" : "false"));
             }
-            only_request();
-            TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
-        }
-        for (int value = 0; value < 2; value++) {
-            options.remove_duplicate = value;
-            options.remove_duplicate_set = true;
-            reset_offline();
-            if (scoring) {
-                scoring_send_file(zb, "email_file.csv", 1, options, on_send, on_error);
-            } else {
-                send_file(zb, "email_file.csv", 1, options, on_send, on_error);
-            }
-            only_request();
-            TEST_ASSERT_TRUE(has_field("remove_duplicate", value ? "true" : "false"));
         }
     }
 }
@@ -2282,6 +2301,8 @@ void test_offline_send_file_options_stay_source_compatible(void) {
     TEST_ASSERT_TRUE(new_send_file_options().remove_duplicate);
     _Static_assert(sizeof(((SendFileOptions *)0)->remove_duplicate) == sizeof(bool),
                    "remove_duplicate must stay a bool");
+    /* A 3.0.x positional initialiser and zero initialisation send the
+       remove_duplicate they hold, as 3.0.x did. */
     SendFileOptions positional = {"", 0, 0, 0, 0, true, false, false, false};
     TEST_ASSERT_FALSE(positional.remove_duplicate_set);
     SendFileOptions zeroed = {0};
@@ -2289,12 +2310,17 @@ void test_offline_send_file_options_stay_source_compatible(void) {
     reset_offline();
     send_file(zb, "email_file.csv", 1, positional, on_send, on_error);
     only_request();
-    TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
+    TEST_ASSERT_TRUE(has_field("remove_duplicate", "false"));
+    positional.remove_duplicate = true;
+    reset_offline();
+    send_file(zb, "email_file.csv", 1, positional, on_send, on_error);
+    only_request();
+    TEST_ASSERT_TRUE(has_field("remove_duplicate", "true"));
     reset_offline();
     zeroed.return_url = "";
     send_file(zb, "email_file.csv", 1, zeroed, on_send, on_error);
     only_request();
-    TEST_ASSERT_FALSE(has_field("remove_duplicate", NULL));
+    TEST_ASSERT_TRUE(has_field("remove_duplicate", "false"));
 }
 
 void test_offline_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
@@ -2891,6 +2917,263 @@ void test_offline_an_empty_body_is_a_success_only_for_an_inbox_placement_delete(
     run_every_call(client_with("empty-404-sweep"));
 }
 
+/* ---- E7: every JSON call against the strict-JSON corpus ---------------- */
+
+/*
+ * test/fixtures/strict-json-corpus.tsv is a byte-identical copy of
+ * sdk-docs/skills/zerobounce-sdk/references/strict-json-corpus.tsv in
+ * zerobounce/sdk-docs (standard section 3, check E7); update it from there.
+ * Each line is REJECT or ACCEPT, a tab, and the body as a JSON-encoded string.
+ */
+#define CORPUS_MAX 128
+typedef struct {
+    int accept;
+    char *body;
+    size_t len;
+    char line[256];
+} CorpusEntry;
+
+static CorpusEntry g_corpus[CORPUS_MAX];
+static int g_corpus_count = -1;
+
+int offline_corpus_count(void) {
+    FILE *file;
+    char line[1024];
+    if (g_corpus_count >= 0) {
+        return g_corpus_count;
+    }
+    g_corpus_count = 0;
+    file = fopen(ZB_STRICT_JSON_CORPUS, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(file, ZB_STRICT_JSON_CORPUS);
+    while (fgets(line, sizeof(line), file)) {
+        char *tab;
+        json_object *decoded;
+        CorpusEntry *entry;
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] == '#' || line[0] == '\0') {
+            continue;
+        }
+        tab = strchr(line, '\t');
+        TEST_ASSERT_NOT_NULL_MESSAGE(tab, line);
+        TEST_ASSERT_TRUE_MESSAGE(g_corpus_count < CORPUS_MAX, line);
+        entry = &g_corpus[g_corpus_count];
+        *tab = '\0';
+        TEST_ASSERT_TRUE_MESSAGE(strcmp(line, "ACCEPT") == 0 || strcmp(line, "REJECT") == 0, line);
+        entry->accept = strcmp(line, "ACCEPT") == 0;
+        decoded = json_tokener_parse(tab + 1);
+        TEST_ASSERT_TRUE_MESSAGE(decoded && json_object_is_type(decoded, json_type_string), tab + 1);
+        entry->len = (size_t)json_object_get_string_len(decoded);
+        entry->body = malloc(entry->len + 1);
+        memcpy(entry->body, json_object_get_string(decoded), entry->len + 1);
+        snprintf(entry->line, sizeof(entry->line), "%s %s", line, tab + 1);
+        json_object_put(decoded);
+        g_corpus_count++;
+    }
+    fclose(file);
+    /* 42 REJECT and 9 ACCEPT lines when this was written. */
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(51, g_corpus_count);
+    return g_corpus_count;
+}
+
+const char *offline_corpus_body(int index, size_t *len, int *accept, const char **line) {
+    *len = g_corpus[index].len;
+    *accept = g_corpus[index].accept;
+    *line = g_corpus[index].line;
+    return g_corpus[index].body;
+}
+
+static const CorpusEntry *g_corpus_entry;
+
+static int is_download_call(const char *call) {
+    return strstr(call, "get_file") != NULL;
+}
+
+static void check_corpus_body(const char *call) {
+    char message[1600];
+    snprintf(message, sizeof message, "%s with %s: %s", call, g_corpus_entry->line, g_error_text);
+    TEST_ASSERT_TRUE_MESSAGE(g_count > 0, message);
+    if (!g_corpus_entry->accept &&
+        !(g_corpus_entry->len == 0 && strncmp(call, "delete_inbox_placement_test(", 28) == 0)) {
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+    } else if (is_download_call(call)) {
+        /* A download takes any application/json answer as the API's error. */
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+    } else {
+        /* The one exception among REJECT: delete_inbox_placement_test's empty
+           2xx is its documented empty success (E8). */
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+    }
+}
+
+/* Every call against every corpus body on an HTTP 200 application/json: a
+   REJECT body is an error with status 200, an ACCEPT body is the result. */
+void test_offline_every_json_call_takes_only_strict_json(void) {
+    int count = offline_corpus_count();
+    ZeroBounce *zb = client_with("corpus-sweep");
+    g_sweep_check = check_corpus_body;
+    if (TEST_PROTECT()) {
+        for (int i = 0; i < count; i++) {
+            g_corpus_entry = &g_corpus[i];
+            g_mode_body = g_corpus[i].body;
+            g_mode_body_len = g_corpus[i].len;
+            g_leak_mode = 10;
+            run_every_call(zb);
+        }
+    }
+    g_leak_mode = 0;
+}
+
+/* ---- S4: redaction is closed under encoding ---------------------------- */
+
+/* One encoding a server or proxy may apply: URL-encoding with a space as %20
+   (0) or '+' (1), JSON escaping (2), JSON escaping with '/' as '\/' (3). */
+char *offline_encode(const char *in, int how) {
+    return how < 2 ? t_url_encode(in, how == 1) : t_json_escape(in, how == 3);
+}
+
+static int t_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* One decoding: %XX (0), %XX and '+' (1), JSON unescaping (2). */
+static char *t_decode(const char *in, int how) {
+    char *out = malloc(strlen(in) * 3 + 1);
+    char *dst = out;
+    while (*in) {
+        if (how < 2 && in[0] == '%' && t_hex(in[1]) >= 0 && t_hex(in[2]) >= 0) {
+            *dst++ = (char)(t_hex(in[1]) * 16 + t_hex(in[2]));
+            in += 3;
+        } else if (how == 1 && *in == '+') {
+            *dst++ = ' ';
+            in++;
+        } else if (how == 2 && in[0] == '\\' && in[1] && strchr("\"\\/bfnrt", in[1])) {
+            const char *from = "\"\\/bfnrt";
+            const char *to = "\"\\/\b\f\n\r\t";
+            *dst++ = to[strchr(from, in[1]) - from];
+            in += 2;
+        } else if (how == 2 && in[0] == '\\' && in[1] == 'u' && t_hex(in[2]) >= 0 && t_hex(in[3]) >= 0 &&
+                   t_hex(in[4]) >= 0 && t_hex(in[5]) >= 0) {
+            unsigned cp = (unsigned)((t_hex(in[2]) << 12) | (t_hex(in[3]) << 8) | (t_hex(in[4]) << 4) | t_hex(in[5]));
+            if (cp < 0x80) {
+                *dst++ = (char)cp;
+            } else if (cp < 0x800) {
+                *dst++ = (char)(0xC0 | (cp >> 6));
+                *dst++ = (char)(0x80 | (cp & 0x3F));
+            } else {
+                *dst++ = (char)(0xE0 | (cp >> 12));
+                *dst++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+                *dst++ = (char)(0x80 | (cp & 0x3F));
+            }
+            in += 6;
+        } else {
+            *dst++ = *in++;
+        }
+    }
+    *dst = '\0';
+    return out;
+}
+
+/* Whether secret is in text or in any view of it decoded up to layers times,
+   in any order. Written apart from the SDK's own check. */
+int offline_secret_readable(const char *text, const char *secret, int layers) {
+    int found = strstr(text, secret) != NULL;
+    for (int how = 0; how < 3 && !found && layers > 0; how++) {
+        char *view = t_decode(text, how);
+        found = offline_secret_readable(view, secret, layers - 1);
+        free(view);
+    }
+    return found;
+}
+
+/* A random composition of up to three encodings of secret; the caller frees
+   it. desc gets the sequence, e.g. "2,0". */
+char *offline_random_spelling(const char *secret, unsigned *seed, char *desc, size_t desc_len) {
+    char *text = strdup(secret);
+    int layers = (int)(rand_r(seed) % 4);
+    desc[0] = '\0';
+    for (int i = 0; i < layers; i++) {
+        int how = (int)(rand_r(seed) % 4);
+        char *next = offline_encode(text, how);
+        size_t used = strlen(desc);
+        snprintf(desc + used, desc_len - used, "%s%d", i ? "," : "", how);
+        free(text);
+        text = next;
+    }
+    return text;
+}
+
+/* Has every character JSON or URL encoding changes, and a space. */
+#define FUZZ_SECRET "fz a\"b/c\\d+e%f&g=h<i>j'k"
+
+static char g_fuzz_desc[600];
+
+static void check_fuzzed_echo(const char *call) {
+    char message[1800];
+    snprintf(message, sizeof message, "%s, encodings [%s], status %ld: %s",
+             call, g_fuzz_desc, g_mode_status, g_error_text);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(offline_secret_readable(g_error_text, FUZZ_SECRET, 3), message);
+}
+
+/* Standard section 3: whatever composition of up to three URL and JSON
+   encodings a body uses to quote the key, no decoded view of any error a call
+   gets holds it. Seeded, so a failure repeats. */
+void test_offline_redaction_is_closed_under_encoding(void) {
+    unsigned seed = 20261112u;
+    ZeroBounce *zb = client_with(FUZZ_SECRET);
+    g_sweep_check = check_fuzzed_echo;
+    if (TEST_PROTECT()) {
+        for (int round = 0; round < 60; round++) {
+            char *spelling = offline_random_spelling(FUZZ_SECRET, &seed, g_fuzz_desc, 200);
+            char *quoted = t_json_escape(spelling, 0);
+            char *body = malloc(strlen(quoted) + 64);
+            if (round % 2) {
+                /* A dead-key answer on a 200 quoting it in a JSON string. */
+                sprintf(body, "{\"error\":\"Invalid API key %s\"}", quoted);
+                g_mode_status = 200;
+            } else {
+                sprintf(body, "Bad Request: [%s] end", spelling);
+                g_mode_status = 400;
+            }
+            g_mode_body = body;
+            g_mode_body_len = strlen(body);
+            g_leak_mode = 11;
+            run_every_call(zb);
+            free(body);
+            free(quoted);
+            free(spelling);
+        }
+    }
+    g_leak_mode = 0;
+}
+
+/* Spellings no list of generated forms covers (three URL layers, URL of
+   double JSON) are dropped whole, with a message that says why. */
+void test_offline_a_body_still_holding_the_key_after_masking_is_dropped(void) {
+    char *once = t_url_encode(FUZZ_SECRET, 0);
+    char *twice = t_url_encode(once, 0);
+    char *thrice = t_url_encode(twice, 1);
+    char *text = malloc(strlen(thrice) + 32);
+    sprintf(text, "echo [%s] end", thrice);
+    text = zb_mask_secret(text, FUZZ_SECRET, "***");
+    TEST_ASSERT_EQUAL_STRING(ZB_SECRET_OMITTED_MESSAGE, text);
+    free(text);
+    text = strdup("nothing secret here %41");
+    text = zb_mask_secret(text, FUZZ_SECRET, "***");
+    TEST_ASSERT_EQUAL_STRING("nothing secret here %41", text);
+    free(text);
+    free(once);
+    free(twice);
+    free(thrice);
+}
+
 void offline_run_tests(void) {
     RUN_TEST(test_offline_get_credits);
     RUN_TEST(test_offline_validate_options);
@@ -2898,7 +3181,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_batch_omits_and_keeps_zero_ip);
     RUN_TEST(test_offline_batch_explicit_false);
     RUN_TEST(test_offline_send_file_bools_and_zero_column);
-    RUN_TEST(test_offline_send_file_sends_remove_duplicate_only_when_set);
+    RUN_TEST(test_offline_send_file_always_sends_remove_duplicate);
     RUN_TEST(test_offline_send_file_options_stay_source_compatible);
     RUN_TEST(test_offline_scoring_send_omits_validation_fields);
     RUN_TEST(test_offline_file_status_and_delete);
@@ -2955,4 +3238,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_an_html_page_in_place_of_a_file_is_an_error);
     RUN_TEST(test_offline_a_short_write_is_an_error_and_leaves_no_partial_file);
     RUN_TEST(test_offline_a_failed_write_keeps_the_file_already_at_the_path);
+    RUN_TEST(test_offline_every_json_call_takes_only_strict_json);
+    RUN_TEST(test_offline_redaction_is_closed_under_encoding);
+    RUN_TEST(test_offline_a_body_still_holding_the_key_after_masking_is_dropped);
 }

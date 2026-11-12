@@ -760,9 +760,9 @@ static void t_expect_parts(int scoring, SendFileOptions options, const char *exp
 void test_transport_send_file_sends_exactly_these_parts(void) {
     SendFileOptions options = new_send_file_options();
     t_expect_parts(0, options,
-        "api_key=transport-key&file&email_address_column=3&has_header_row=true");
+        "api_key=transport-key&file&email_address_column=3&has_header_row=true&remove_duplicate=true");
     t_expect_parts(1, options,
-        "api_key=transport-key&file&email_address_column=3&has_header_row=true");
+        "api_key=transport-key&file&email_address_column=3&has_header_row=true&remove_duplicate=true");
 
     options.return_url = "https://example.com/hook";
     options.first_name_column = 4;
@@ -771,7 +771,6 @@ void test_transport_send_file_sends_exactly_these_parts(void) {
     options.ip_address_column = 7;
     options.has_header_row = false;
     options.remove_duplicate = false;
-    options.remove_duplicate_set = true;
     options.allow_phase_2_is_set = true;
     options.allow_phase_2 = true;
     t_expect_parts(0, options,
