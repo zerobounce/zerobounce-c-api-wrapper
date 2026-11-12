@@ -3,11 +3,13 @@
  * followed, and the total and connect timeouts are set on every request path.
  * These fail if CURLOPT_FOLLOWLOCATION, CURLOPT_TIMEOUT_MS or
  * CURLOPT_CONNECTTIMEOUT_MS is dropped from any path. A download answered
- * with a JSON object or cut short is an error and leaves no file, and a
- * column number of any int is sent whole.
+ * with a JSON object, a non-2xx status or cut short is an error and leaves no
+ * file (and a file already at the path as it was), a JSON response cut short
+ * is an error on every path, and a column number of any int is sent whole.
  */
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
@@ -17,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -36,6 +39,11 @@ typedef struct {
     /* 1: answer 302 to /landed. 2: answer 200 with a CSV body. 3: answer 200
        with {"Message": ...} as application/json; 4: the same as text/csv.
        5: a 200 header with Content-Length 1000, 26 bytes, then close.
+       6: answer 200 with T_JSON, a JSON object every JSON call accepts.
+       7: a 200 header with Content-Length 1000, T_JSON, then close.
+       8: answer 500 with a CSV body.
+       9: a 200 CSV header with Content-Length 100000, 14006 bytes (more
+          than the streaming download holds back), then close.
        0: accept and never answer. */
     int redirect;
     volatile int stop;
@@ -53,7 +61,30 @@ static long t_now_ms(void) {
     return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
+#define T_JSON "{\"Credits\":\"5\",\"success\":true,\"message\":\"File Accepted\"," \
+    "\"file_id\":\"fid\",\"email_batch\":[],\"errors\":[]}"
+
+/* Sends all of it; the accepted socket can be non-blocking (BSD, macOS). */
+static void t_send_all(int fd, const char *data, size_t length) {
+    long deadline = t_now_ms() + 5000;
+    while (length > 0 && t_now_ms() < deadline) {
+        struct pollfd pfd = {fd, POLLOUT, 0};
+        ssize_t n;
+        if (poll(&pfd, 1, 50) <= 0) {
+            continue;
+        }
+        n = send(fd, data, length, 0);
+        if (n <= 0) {
+            break;
+        }
+        data += n;
+        length -= (size_t)n;
+    }
+}
+
 static void t_answer_redirect(TServer *server, int fd) {
+    static char long_cut[16384];
+    char whole_json[512];
     char request[16384];
     size_t used = 0;
     long deadline = t_now_ms() + 5000;
@@ -76,6 +107,33 @@ static void t_answer_redirect(TServer *server, int fd) {
     case 5:
         response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 1000\r\n"
                    "Connection: close\r\n\r\nemail\npartial@example.com\n";
+        break;
+    case 6:
+        snprintf(whole_json, sizeof(whole_json),
+                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %zu\r\n"
+                 "Connection: close\r\n\r\n%s", strlen(T_JSON), T_JSON);
+        response = whole_json;
+        break;
+    case 7:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n"
+                   "Connection: close\r\n\r\n" T_JSON;
+        break;
+    case 8:
+        response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/csv\r\nContent-Length: 24\r\n"
+                   "Connection: close\r\n\r\nemail\nfailed@example.com\n";
+        break;
+    case 9:
+        if (!long_cut[0]) {
+            size_t used = (size_t)snprintf(long_cut, sizeof(long_cut),
+                "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 100000\r\n"
+                "Connection: close\r\n\r\nemail\n");
+            for (int i = 0; i < 1000; i++) {
+                memcpy(long_cut + used, "x@example.com\n", 14);
+                used += 14;
+            }
+            long_cut[used] = '\0';
+        }
+        response = long_cut;
         break;
     default:
         response = "HTTP/1.1 302 Found\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -119,7 +177,7 @@ static void t_answer_redirect(TServer *server, int fd) {
         server->landed++;
     }
     pthread_mutex_unlock(&server->mu);
-    send(fd, response, strlen(response), 0);
+    t_send_all(fd, response, strlen(response));
     close(fd);
 }
 
@@ -427,6 +485,196 @@ void test_transport_a_download_cut_short_is_not_saved(void) {
     t_expect_no_download(5, 0);
 }
 
+void test_transport_a_non_2xx_download_is_not_saved(void) {
+    /* A 500 whose body looks like a file: the status alone makes it an error. */
+    t_expect_no_download(8, 500);
+}
+
+/* The request paths of t_call_path that read a JSON body: all but the two
+   downloads (7, 8). */
+static const int t_json_paths[] = {0, 1, 2, 3, 4, 5, 6, 9, 10};
+
+void test_transport_a_json_response_cut_short_is_an_error(void) {
+    /* A 200 header promising 1000 bytes, then a JSON object that parses on
+       its own, then the connection closes. libcurl reports a partial
+       transfer; a path that ignored it would return the object as a result. */
+    char message[48];
+    size_t count = sizeof(t_json_paths) / sizeof(t_json_paths[0]);
+    for (int mode = 6; mode <= 7; mode++) {
+        TServer server;
+        zero_bounce_set_http_perform_for_test(NULL);
+        zero_bounce_set_transport_for_test(5000, 5000, true);
+        t_start(&server, mode);
+        ZeroBounce *zb = t_client("http", server.port);
+        ZeroBounceWarmup *zbw = t_warmup("http", server.port);
+        for (size_t i = 0; i < count; i++) {
+            t_errors = t_successes = 0;
+            t_status = -1;
+            t_call_path(t_json_paths[i], zb, zbw);
+            snprintf(message, sizeof(message), "mode %d, request path %d", mode, t_json_paths[i]);
+            if (mode == 6) {
+                /* The control: the whole body is a result on every path. */
+                TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_errors, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_successes, message);
+            } else {
+                TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)t_status, message);
+            }
+        }
+        t_stop(&server);
+        zero_bounce_warmup_free(zbw);
+        zero_bounce_set_transport_for_test(0, 0, false);
+    }
+}
+
+/* The names in dir, other than . and .., joined by spaces. */
+static void t_list_dir(const char *dir, char *out, size_t size) {
+    DIR *handle = opendir(dir);
+    struct dirent *entry;
+    size_t used = 0;
+    out[0] = '\0';
+    if (!handle) {
+        return;
+    }
+    while ((entry = readdir(handle)) != NULL) {
+        int written;
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+            continue;
+        }
+        written = snprintf(out + used, size - used, "%s%s", used ? " " : "", entry->d_name);
+        if (written < 0 || (size_t)written >= size - used) {
+            break;
+        }
+        used += (size_t)written;
+    }
+    closedir(handle);
+}
+
+/* Empties dir (one level), so a file left by an earlier run cannot count. */
+static void t_clear_dir(const char *dir) {
+    DIR *handle = opendir(dir);
+    struct dirent *entry;
+    char path[512];
+    if (!handle) {
+        return;
+    }
+    while ((entry = readdir(handle)) != NULL) {
+        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+            snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+            remove(path);
+        }
+    }
+    closedir(handle);
+}
+
+void test_transport_a_failed_download_keeps_the_file_already_there(void) {
+    /* A file from an earlier download is at the target path. A download that
+       fails -- refused, a JSON error, a 500, cut short before or after the
+       streaming download starts writing -- leaves it as it was and leaves no
+       other file behind. The streaming download used to delete it. With no
+       earlier file, nothing is left at all. */
+    const char *dir = "test/downloads/transport-keep";
+    const char *path = "test/downloads/transport-keep/result.csv";
+    const char *previous = "email\nprevious@example.com\n";
+    const int modes[] = {-1, 3, 5, 8, 9};
+    char message[384];
+    char listing[256];
+    mkdir("test/downloads", 0777);
+    mkdir(dir, 0777);
+    t_clear_dir(dir);
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        TServer server;
+        ZeroBounce *zb;
+        zero_bounce_set_http_perform_for_test(NULL);
+        zero_bounce_set_transport_for_test(5000, 5000, true);
+        if (modes[m] < 0) {
+            /* Nothing listens on port 1: the connection is refused. */
+            zb = t_client("http", 1);
+        } else {
+            t_start(&server, modes[m]);
+            zb = t_client("http", server.port);
+        }
+        for (int seeded = 0; seeded < 2; seeded++) {
+            for (int kind = 0; kind < 6; kind++) {
+                char content[128] = {0};
+                FILE *handle;
+                remove(path);
+                if (seeded) {
+                    handle = fopen(path, "wb");
+                    TEST_ASSERT_NOT_NULL(handle);
+                    fputs(previous, handle);
+                    fclose(handle);
+                }
+                t_errors = t_successes = 0;
+                t_download(kind, zb, path);
+                handle = fopen(path, "rb");
+                if (handle) {
+                    TEST_ASSERT_TRUE(fread(content, 1, sizeof(content) - 1, handle) <= sizeof(content) - 1);
+                    fclose(handle);
+                }
+                t_list_dir(dir, listing, sizeof(listing));
+                remove(path);
+                snprintf(message, sizeof(message), "mode %d, getfile %d, %s; left: [%s]",
+                         modes[m], kind, seeded ? "earlier file" : "no earlier file", listing);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+                if (seeded) {
+                    TEST_ASSERT_NOT_NULL_MESSAGE(handle, message);
+                    TEST_ASSERT_EQUAL_STRING_MESSAGE(previous, content, message);
+                    TEST_ASSERT_EQUAL_STRING_MESSAGE("result.csv", listing, message);
+                } else {
+                    TEST_ASSERT_NULL_MESSAGE(handle, message);
+                    TEST_ASSERT_EQUAL_STRING_MESSAGE("", listing, message);
+                }
+            }
+        }
+        if (modes[m] >= 0) {
+            t_stop(&server);
+        }
+        zero_bounce_set_transport_for_test(0, 0, false);
+    }
+    rmdir(dir);
+}
+
+void test_transport_a_download_replaces_the_file_already_there(void) {
+    const char *dir = "test/downloads/transport-replace";
+    const char *path = "test/downloads/transport-replace/result.csv";
+    char message[320];
+    char listing[256];
+    TServer server;
+    mkdir("test/downloads", 0777);
+    mkdir(dir, 0777);
+    t_clear_dir(dir);
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(5000, 5000, true);
+    t_start(&server, 2);
+    ZeroBounce *zb = t_client("http", server.port);
+    for (int kind = 0; kind < 6; kind++) {
+        char content[128] = {0};
+        FILE *handle = fopen(path, "wb");
+        TEST_ASSERT_NOT_NULL(handle);
+        fputs("email\nprevious@example.com\nand a longer line than the new file has\n", handle);
+        fclose(handle);
+        t_errors = t_successes = 0;
+        t_download(kind, zb, path);
+        handle = fopen(path, "rb");
+        TEST_ASSERT_NOT_NULL(handle);
+        TEST_ASSERT_TRUE(fread(content, 1, sizeof(content) - 1, handle) > 0);
+        fclose(handle);
+        t_list_dir(dir, listing, sizeof(listing));
+        snprintf(message, sizeof(message), "getfile %d; left: [%s]", kind, listing);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_errors, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_successes, message);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("email\nsaved@example.com\n", content, message);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("result.csv", listing, message);
+    }
+    remove(path);
+    rmdir(dir);
+    t_stop(&server);
+    zero_bounce_set_transport_for_test(0, 0, false);
+}
+
 void test_transport_a_column_number_of_any_int_is_sent_whole(void) {
     /* The multipart fields were formatted into a 10-byte buffer: INT_MAX
        needs 11 bytes and INT_MIN 12. */
@@ -463,6 +711,10 @@ int main(void) {
     RUN_TEST(test_transport_every_path_has_a_connect_timeout);
     RUN_TEST(test_transport_a_json_body_is_not_saved);
     RUN_TEST(test_transport_a_download_cut_short_is_not_saved);
+    RUN_TEST(test_transport_a_non_2xx_download_is_not_saved);
+    RUN_TEST(test_transport_a_json_response_cut_short_is_an_error);
+    RUN_TEST(test_transport_a_failed_download_keeps_the_file_already_there);
+    RUN_TEST(test_transport_a_download_replaces_the_file_already_there);
     RUN_TEST(test_transport_a_column_number_of_any_int_is_sent_whole);
     return UNITY_END();
 }

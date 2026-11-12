@@ -6,9 +6,11 @@
 #include <ctype.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #include <direct.h>
+#include <process.h>
 #define ZB_STRICMP _stricmp
 #define zb_strncasecmp _strnicmp
 #else
@@ -2158,6 +2160,10 @@ void file_status(
 typedef struct {
     FILE *file;
     const char *path;
+    /* The file being written, next to path; renamed to path only once the
+       whole download has arrived, so a failed one never touches a file
+       already at path. NULL until the probe has passed. */
+    char *temp_path;
     char probe[ZB_STREAM_PROBE_BYTES + 1];
     size_t probe_size;
     /* NULL for the offline test hook. */
@@ -2196,6 +2202,7 @@ static bool zb_stream_open(ZbDownloadStream *stream) {
     struct stat sb;
     char *dir_path;
     char *end;
+    size_t length;
 #ifdef _WIN32
     const char path_separator = '\\';
 #else
@@ -2214,8 +2221,27 @@ static bool zb_stream_open(ZbDownloadStream *stream) {
         }
         free(dir_path);
     }
-    stream->file = fopen(stream->path, "wb");
-    return stream->file != NULL;
+    /* The process id and this call's own stream make the name unique among
+       concurrent downloads to the same path. */
+    length = strlen(stream->path) + 64;
+    stream->temp_path = malloc(length);
+    if (!stream->temp_path) {
+        return false;
+    }
+#ifdef _WIN32
+    snprintf(stream->temp_path, length, "%s.%ld-%lx.part", stream->path,
+             (long)_getpid(), (unsigned long)(uintptr_t)stream);
+#else
+    snprintf(stream->temp_path, length, "%s.%ld-%lx.part", stream->path,
+             (long)getpid(), (unsigned long)(uintptr_t)stream);
+#endif
+    stream->file = fopen(stream->temp_path, "wb");
+    if (!stream->file) {
+        free(stream->temp_path);
+        stream->temp_path = NULL;
+        return false;
+    }
+    return true;
 }
 
 static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *userp) {
@@ -2274,6 +2300,15 @@ static void zb_stream_finish(ZbDownloadStream *stream) {
     zb_stream_put(stream, stream->probe, stream->probe_size);
 }
 
+/* Removes the file this call was writing, if any. A file at path is kept. */
+static void zb_stream_discard(ZbDownloadStream *stream) {
+    if (stream->temp_path) {
+        remove(stream->temp_path);
+        free(stream->temp_path);
+        stream->temp_path = NULL;
+    }
+}
+
 /*
  * Closes the file. A write that failed, or a close that could not flush the
  * last of it, removes the partial file and returns false.
@@ -2286,9 +2321,29 @@ static bool zb_stream_close(ZbDownloadStream *stream) {
         stream->file = NULL;
     }
     if (stream->write_failed) {
-        remove(stream->path);
+        zb_stream_discard(stream);
         return false;
     }
+    return true;
+}
+
+/* Moves the finished file to path, replacing whatever was there. */
+static bool zb_stream_commit(ZbDownloadStream *stream) {
+    bool moved;
+    if (!stream->temp_path) {
+        return true;
+    }
+#ifdef _WIN32
+    /* rename() does not replace an existing file on Windows. */
+    remove(stream->path);
+#endif
+    moved = rename(stream->temp_path, stream->path) == 0;
+    if (!moved) {
+        zb_stream_discard(stream);
+        return false;
+    }
+    free(stream->temp_path);
+    stream->temp_path = NULL;
     return true;
 }
 
@@ -2367,13 +2422,19 @@ static void get_file_streaming_internal(
             return;
         }
         if (http_code > 299 || stream.rejected) {
-            remove(local_download_path);
+            zb_stream_discard(&stream);
             zb_report_body_error(stream.probe, http_code, error_callback);
             return;
         }
         if (stream.open_failed) {
             if (error_callback) {
                 error_callback(parse_error("Invalid file path"));
+            }
+            return;
+        }
+        if (!zb_stream_commit(&stream)) {
+            if (error_callback) {
+                error_callback(parse_error("Could not write local_download_path"));
             }
             return;
         }
@@ -2429,17 +2490,23 @@ static void get_file_streaming_internal(
         if (error_callback) {
             error_callback(parse_error(message));
         }
-        remove(local_download_path);
+        zb_stream_discard(&stream);
         return;
     }
     if (http_code > 299 || stream.rejected) {
-        remove(local_download_path);
+        zb_stream_discard(&stream);
         zb_report_body_error(stream.probe, http_code, error_callback);
         return;
     }
     if (stream.open_failed) {
         if (error_callback) {
             error_callback(parse_error("Invalid file path"));
+        }
+        return;
+    }
+    if (!zb_stream_commit(&stream)) {
+        if (error_callback) {
+            error_callback(parse_error("Could not write local_download_path"));
         }
         return;
     }
