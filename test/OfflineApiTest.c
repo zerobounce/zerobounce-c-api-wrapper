@@ -2988,12 +2988,32 @@ static int is_download_call(const char *call) {
     return strstr(call, "get_file") != NULL;
 }
 
+/* Whether body is a JSON object (an ACCEPT body that starts with '{' after
+   whitespace): the only shape a typed call reads. */
+static int corpus_body_is_object(const CorpusEntry *entry) {
+    size_t i = 0;
+    while (i < entry->len && strchr(" \t\r\n", entry->body[i]) && entry->body[i]) {
+        i++;
+    }
+    return i < entry->len && entry->body[i] == '{';
+}
+
+/* A typed call hands the caller a parsed struct; a raw-JSON call (on_raw)
+   hands over the body as it is. */
+static int is_typed_call(const char *call) {
+    return strstr(call, "on_raw") == NULL && !is_download_call(call);
+}
+
 static void check_corpus_body(const char *call) {
     char message[1600];
     snprintf(message, sizeof message, "%s with %s: %s", call, g_corpus_entry->line, g_error_text);
     TEST_ASSERT_TRUE_MESSAGE(g_count > 0, message);
-    if (!g_corpus_entry->accept &&
-        !(g_corpus_entry->len == 0 && strncmp(call, "delete_inbox_placement_test(", 28) == 0)) {
+    if ((!g_corpus_entry->accept &&
+         !(g_corpus_entry->len == 0 && strncmp(call, "delete_inbox_placement_test(", 28) == 0)) ||
+        (g_corpus_entry->accept && is_typed_call(call) && !corpus_body_is_object(g_corpus_entry))) {
+        /* A REJECT body, or (E7) valid JSON of the wrong shape for a typed
+           call (0, "x", []): an API error with status 200, never a result
+           filled with defaults. */
         TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
         TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
         TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
@@ -3174,6 +3194,169 @@ void test_offline_a_body_still_holding_the_key_after_masking_is_dropped(void) {
     free(thrice);
 }
 
+/* Every byte of in as %XX, lower- or upper-case hex: a spelling the SDK never
+   generates, so only the decode check can see the secret in it. */
+static char *t_percent_every_byte(const char *in, int lower) {
+    const char *hex = lower ? "0123456789abcdef" : "0123456789ABCDEF";
+    char *out = malloc(strlen(in) * 3 + 1);
+    char *dst = out;
+    for (; *in; in++) {
+        unsigned char c = (unsigned char)*in;
+        *dst++ = '%';
+        *dst++ = hex[c >> 4];
+        *dst++ = hex[c & 15];
+    }
+    *dst = '\0';
+    return out;
+}
+
+/* Every byte of an ASCII string as a JSON \u00XX escape. */
+static char *t_unicode_every_byte(const char *in) {
+    char *out = malloc(strlen(in) * 6 + 1);
+    char *dst = out;
+    for (; *in; in++) {
+        dst += sprintf(dst, "\\u%04x", (unsigned char)*in);
+    }
+    return out;
+}
+
+/* zb_mask_secret on "<before><spelling>]" must drop the whole text. */
+static void t_expect_omitted(const char *secret, const char *before, const char *spelling, const char *what) {
+    char *text = malloc(strlen(before) + strlen(spelling) + 2);
+    sprintf(text, "%s%s]", before, spelling);
+    text = zb_mask_secret(text, secret, "***");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(ZB_SECRET_OMITTED_MESSAGE, text, what);
+    free(text);
+}
+
+/* Each decode step of the redaction check is needed: every spelling below is
+   one the SDK does not generate, and one decode step (or layer) alone makes
+   the secret readable again. Removing that step lets the text through. */
+void test_offline_each_decode_step_of_the_redaction_check_is_needed(void) {
+    char *upper = t_percent_every_byte(FUZZ_SECRET, 0);
+    char *lower = t_percent_every_byte(FUZZ_SECRET, 1);
+    char *unicode = t_unicode_every_byte(FUZZ_SECRET);
+    char *plus_once = t_url_encode(FUZZ_SECRET, 1);
+    char *plus_twice = t_url_encode(plus_once, 0);
+    char *url1 = t_url_encode(FUZZ_SECRET, 0);
+    char *url2 = t_url_encode(url1, 0);
+    char *url3 = t_url_encode(url2, 0);
+    char *url4 = t_url_encode(url3, 0);
+    char *text;
+    /* %XX, upper- and lower-case hex. */
+    t_expect_omitted(FUZZ_SECRET, "echo [", upper, "percent, upper-case hex");
+    t_expect_omitted(FUZZ_SECRET, "echo [", lower, "percent, lower-case hex");
+    /* An invalid UTF-8 run decoded first does not stop the check. */
+    t_expect_omitted(FUZZ_SECRET, "%ff%fe%c3%28 [", lower, "after invalid UTF-8");
+    /* '+' as a space, under a second URL layer. */
+    t_expect_omitted(FUZZ_SECRET, "echo [", plus_twice, "plus as space");
+    /* JSON \uXXXX, and a surrogate pair for a character outside the BMP. */
+    t_expect_omitted(FUZZ_SECRET, "echo [", unicode, "\\u escapes");
+    t_expect_omitted("k\xF0\x9F\x94\x91y", "echo [", "k\\ud83d\\udd11y", "surrogate pair");
+    /* Four layers: the SDK's own request encoding plus three echo layers. */
+    t_expect_omitted(FUZZ_SECRET, "echo [", url4, "four URL layers");
+    /* A decoded NUL (%00, \u0000) does not end the search. */
+    t_expect_omitted(FUZZ_SECRET, "bad %00 then [", upper, "after %00");
+    t_expect_omitted(FUZZ_SECRET, "bad \\u0000 then [", unicode, "after \\u0000");
+    /* The control: a NUL and escapes with no secret behind them stay. */
+    text = strdup("nothing secret %00 here \\u0000 %41");
+    text = zb_mask_secret(text, FUZZ_SECRET, "***");
+    TEST_ASSERT_EQUAL_STRING("nothing secret %00 here \\u0000 %41", text);
+    free(text);
+    free(upper);
+    free(lower);
+    free(unicode);
+    free(plus_once);
+    free(plus_twice);
+    free(url1);
+    free(url2);
+    free(url3);
+    free(url4);
+}
+
+static void check_nul_echo(const char *call) {
+    char message[1800];
+    snprintf(message, sizeof message, "%s, status %ld: %s", call, g_mode_status, g_error_text);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)g_mode_status, (int)g_error_status, message);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "omitted because it contained a credential"), message);
+}
+
+/* S4: a body that quotes the key fully percent-encoded after a %00 is dropped
+   on every call, at 400 and on a 200 dead-key answer. */
+void test_offline_a_nul_in_the_body_does_not_end_the_redaction_check(void) {
+    ZeroBounce *zb = client_with(FUZZ_SECRET);
+    char *encoded = t_percent_every_byte(FUZZ_SECRET, 0);
+    char *body = malloc(strlen(encoded) + 64);
+    g_sweep_check = check_nul_echo;
+    if (TEST_PROTECT()) {
+        sprintf(body, "bad %%00 then %s", encoded);
+        g_mode_status = 400;
+        g_mode_body = body;
+        g_mode_body_len = strlen(body);
+        g_leak_mode = 11;
+        run_every_call(zb);
+        sprintf(body, "{\"error\":\"bad %%00 then %s\"}", encoded);
+        g_mode_status = 200;
+        g_mode_body_len = strlen(body);
+        run_every_call(zb);
+    }
+    g_leak_mode = 0;
+    free(body);
+    free(encoded);
+}
+
+/* E7: JSON of a shape no typed call reads (true, null, a number, a string, an
+   array) is an API error with status 200 on every typed call; a raw-JSON call
+   hands it over as it is. */
+void test_offline_typed_calls_reject_json_of_the_wrong_shape(void) {
+    static const char *const bodies[] = {"0", "1.5", "true", "false", "null", "\"x\"", "[]", "[{}]", " [ ] "};
+    ZeroBounce *zb = client_with("shape-sweep");
+    CorpusEntry entry;
+    g_sweep_check = check_corpus_body;
+    if (TEST_PROTECT()) {
+        for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+            memset(&entry, 0, sizeof(entry));
+            entry.accept = 1;
+            entry.body = (char *)bodies[i];
+            entry.len = strlen(bodies[i]);
+            snprintf(entry.line, sizeof(entry.line), "ACCEPT %s", bodies[i]);
+            g_corpus_entry = &entry;
+            g_mode_body = entry.body;
+            g_mode_body_len = entry.len;
+            g_leak_mode = 10;
+            run_every_call(zb);
+        }
+    }
+    g_leak_mode = 0;
+}
+
+/* E7: a body nested deeper than the strict-JSON scanner's limit (200000 '[')
+   is an error with status 200 on every call, not a crash. */
+void test_offline_a_deeply_nested_body_is_an_error(void) {
+    ZeroBounce *zb = client_with("depth-sweep");
+    CorpusEntry entry;
+    size_t depth = 200000;
+    char *body = malloc(depth + 1);
+    memset(body, '[', depth);
+    body[depth] = '\0';
+    memset(&entry, 0, sizeof(entry));
+    entry.accept = 0;
+    entry.body = body;
+    entry.len = depth;
+    snprintf(entry.line, sizeof(entry.line), "REJECT 200000 x [");
+    g_sweep_check = check_corpus_body;
+    if (TEST_PROTECT()) {
+        g_corpus_entry = &entry;
+        g_mode_body = body;
+        g_mode_body_len = depth;
+        g_leak_mode = 10;
+        run_every_call(zb);
+    }
+    g_leak_mode = 0;
+    free(body);
+}
+
 void offline_run_tests(void) {
     RUN_TEST(test_offline_get_credits);
     RUN_TEST(test_offline_validate_options);
@@ -3241,4 +3424,8 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_every_json_call_takes_only_strict_json);
     RUN_TEST(test_offline_redaction_is_closed_under_encoding);
     RUN_TEST(test_offline_a_body_still_holding_the_key_after_masking_is_dropped);
+    RUN_TEST(test_offline_each_decode_step_of_the_redaction_check_is_needed);
+    RUN_TEST(test_offline_a_nul_in_the_body_does_not_end_the_redaction_check);
+    RUN_TEST(test_offline_typed_calls_reject_json_of_the_wrong_shape);
+    RUN_TEST(test_offline_a_deeply_nested_body_is_an_error);
 }

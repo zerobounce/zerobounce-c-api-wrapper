@@ -44,6 +44,8 @@ typedef struct {
        8: answer 500 with a CSV body.
        9: a 200 CSV header with Content-Length 100000, 14006 bytes (more
           than the streaming download holds back), then close.
+       10: answer 500 with a 200-byte text body. 11: answer 200 with a
+           200-byte JSON object.
        0: accept and never answer. */
     int redirect;
     volatile int stop;
@@ -135,6 +137,24 @@ static void t_answer_redirect(TServer *server, int fd) {
         }
         response = long_cut;
         break;
+    case 10:
+    case 11: {
+        /* 10: a 500 text body, 11: a 200 JSON object, each 200 bytes: larger
+           than the cap the test sets. */
+        static char over_cap[512];
+        char pad[193];
+        memset(pad, 'x', 192);
+        pad[192] = '\0';
+        snprintf(over_cap, sizeof(over_cap),
+                 server->redirect == 10
+                     ? "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 200\r\n"
+                       "Connection: close\r\n\r\nerror:  %s"
+                     : "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n"
+                       "Connection: close\r\n\r\n{\"p\":\"%s\"}",
+                 pad);
+        response = over_cap;
+        break;
+    }
     default:
         response = "HTTP/1.1 302 Found\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         break;
@@ -528,6 +548,38 @@ void test_transport_a_json_response_cut_short_is_an_error(void) {
     }
 }
 
+/* A body over the size cap keeps its HTTP status in the error, on every
+   buffered request path (the streamed download has no cap): a 500 stays a
+   500, and a 200 is an API error with status 200, not a status-0 transport
+   failure. */
+void test_transport_a_body_over_the_size_cap_keeps_its_status(void) {
+    static const int capped_paths[] = {0, 1, 2, 3, 4, 5, 6, 7, 9, 10};
+    char message[48];
+    for (int mode = 10; mode <= 11; mode++) {
+        TServer server;
+        long expected = mode == 10 ? 500 : 200;
+        zero_bounce_set_http_perform_for_test(NULL);
+        zero_bounce_set_transport_for_test(5000, 5000, true);
+        zero_bounce_set_response_cap_for_test(64);
+        t_start(&server, mode);
+        ZeroBounce *zb = t_client("http", server.port);
+        ZeroBounceWarmup *zbw = t_warmup("http", server.port);
+        for (size_t i = 0; i < sizeof(capped_paths) / sizeof(capped_paths[0]); i++) {
+            t_errors = t_successes = 0;
+            t_status = -1;
+            t_call_path(capped_paths[i], zb, zbw);
+            snprintf(message, sizeof(message), "mode %d, request path %d", mode, capped_paths[i]);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)expected, (int)t_status, message);
+        }
+        t_stop(&server);
+        zero_bounce_warmup_free(zbw);
+        zero_bounce_set_response_cap_for_test(0);
+        zero_bounce_set_transport_for_test(0, 0, false);
+    }
+}
+
 /* The names in dir, other than . and .., joined by spaces. */
 static void t_list_dir(const char *dir, char *out, size_t size) {
     DIR *handle = opendir(dir);
@@ -818,6 +870,7 @@ int main(void) {
     RUN_TEST(test_transport_a_download_cut_short_is_not_saved);
     RUN_TEST(test_transport_a_non_2xx_download_is_not_saved);
     RUN_TEST(test_transport_a_json_response_cut_short_is_an_error);
+    RUN_TEST(test_transport_a_body_over_the_size_cap_keeps_its_status);
     RUN_TEST(test_transport_a_failed_download_keeps_the_file_already_there);
     RUN_TEST(test_transport_a_download_replaces_the_file_already_there);
     RUN_TEST(test_transport_a_column_number_of_any_int_is_sent_whole);

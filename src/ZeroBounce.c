@@ -202,7 +202,20 @@ static bool zb_url_append_suffix(char **url_path, const char *suffix) {
     return true;
 }
 
+static size_t s_response_cap_for_test = 0;
+
+/* Whether the transfer on this thread was stopped because its body went over
+   the size cap. */
+static _Thread_local bool zb_tls_over_cap = false;
+
+void zero_bounce_set_response_cap_for_test(size_t max_bytes) {
+    s_response_cap_for_test = max_bytes;
+}
+
 static size_t zb_response_max_bytes(const memory *mem) {
+    if (s_response_cap_for_test != 0) {
+        return s_response_cap_for_test;
+    }
     if (mem->max_bytes != 0) {
         return mem->max_bytes;
     }
@@ -215,6 +228,7 @@ static size_t write_callback(void *data, size_t size, size_t nmemb, void *client
   size_t cap = zb_response_max_bytes(mem);
 
   if (mem->size + real_size > cap) {
+    zb_tls_over_cap = true;
     return 0;
   }
 
@@ -264,6 +278,27 @@ void set_write_callback(CURL* curl, memory* response_data) {
     zb_set_transport_options(curl);
     zb_note_response_content_type(NULL);
     zb_note_response_bytes(NULL, 0, true);
+    zb_tls_over_cap = false;
+}
+
+void zb_report_perform_error(CURL *curl, CURLcode res, OnErrorCallback error_callback) {
+    char error_message[300];
+    if (!error_callback) {
+        return;
+    }
+    if (res == CURLE_WRITE_ERROR && zb_tls_over_cap) {
+        long status_code = get_http_code(curl);
+        snprintf(error_message, sizeof(error_message),
+                 "The response body was larger than this client accepts (HTTP %ld).", status_code);
+        error_callback(parse_error_with_status(error_message, status_code));
+        return;
+    }
+    snprintf(
+        error_message, sizeof(error_message),
+        "Failed to perform request. CURLcode: %d. Error: %s",
+        res, curl_easy_strerror(res)
+    );
+    error_callback(parse_error(error_message));
 }
 
 /* Every request reads its status here, so this is also where the response's
@@ -949,13 +984,7 @@ int zb_make_request_with_extra_header_ct(
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        char error_message[300];
-        snprintf(
-            error_message, sizeof(error_message),
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res, curl_easy_strerror(res)
-        );
-        error_callback(parse_error(error_message));
+        zb_report_perform_error(curl, res, error_callback);
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
         return 0;
@@ -1008,14 +1037,7 @@ int zb_make_request_with_post_body(
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        char error_message[300];
-        sprintf(
-            error_message,
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res,
-            curl_easy_strerror(res)
-        );
-        error_callback(parse_error(error_message));
+        zb_report_perform_error(curl, res, error_callback);
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
@@ -1065,14 +1087,7 @@ int zb_make_request(
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        char error_message[300];
-        sprintf(
-            error_message,
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res,
-            curl_easy_strerror(res)
-        );
-        error_callback(parse_error(error_message));
+        zb_report_perform_error(curl, res, error_callback);
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
@@ -1273,14 +1288,7 @@ static void send_file_internal(
     CURLcode res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
-        char error_message[300];
-        sprintf(
-            error_message,
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res,
-            curl_easy_strerror(res)
-        );
-        error_callback(parse_error(error_message));
+        zb_report_perform_error(curl, res, error_callback);
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
@@ -1435,14 +1443,7 @@ static void get_file_internal(
         CURLcode res = curl_easy_perform(curl);
 
         if (res != CURLE_OK) {
-            char error_message[300];
-            sprintf(
-                error_message,
-                "Failed to perform request. CURLcode: %d. Error: %s",
-                res,
-                curl_easy_strerror(res)
-            );
-            error_callback(parse_error(error_message));
+            zb_report_perform_error(curl, res, error_callback);
 
             curl_easy_cleanup(curl);
             curl_slist_free_all(headers);
@@ -2195,14 +2196,7 @@ void validate_email_batch_with_options(
         CURLcode res = curl_easy_perform(curl);
 
         if (res != CURLE_OK) {
-            char error_message[300];
-            sprintf(
-                error_message,
-                "Failed to perform request. CURLcode: %d. Error: %s",
-                res,
-                curl_easy_strerror(res)
-            );
-            error_callback(parse_error(error_message));
+            zb_report_perform_error(curl, res, error_callback);
 
             curl_easy_cleanup(curl);
             curl_slist_free_all(headers);

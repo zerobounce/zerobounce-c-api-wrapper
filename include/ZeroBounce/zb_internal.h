@@ -25,11 +25,15 @@ char *zb_url_escape(const char *value);
     "The response body was omitted because it contained a credential."
 /*
  * text with every raw, URL-encoded and JSON-escaped occurrence of secret
- * replaced by mask. When a view of the result decoded up to three times
- * (URL-decoding, '+' as a space, JSON-unescaping, in any order) still holds
- * the secret, the whole text is replaced by ZB_SECRET_OMITTED_MESSAGE. Takes
- * ownership of text and returns the string to use.
+ * replaced by mask. When a view of the result decoded up to
+ * ZB_SECRET_DECODE_LAYERS times (URL-decoding, '+' as a space, JSON-unescaping,
+ * in any order; a decoded NUL does not end the search) still holds the secret,
+ * the whole text is replaced by ZB_SECRET_OMITTED_MESSAGE. Takes ownership of
+ * text and returns the string to use.
  */
+/* The SDK's own request encoding plus three layers a server or proxy may add
+   when it echoes the request back. */
+#define ZB_SECRET_DECODE_LAYERS 4
 char *zb_mask_secret(char *text, const char *secret, const char *mask);
 /*
  * Notes the content type of the response the current call on this thread just
@@ -63,6 +67,18 @@ void zb_transport_timeouts(long *timeout_ms, long *connect_timeout_ms);
  * a local test server can stand in for the API.
  */
 void zero_bounce_set_transport_for_test(long timeout_ms, long connect_timeout_ms, bool allow_loopback_http);
+/*
+ * Test hook: the response size cap in bytes for every buffered request (0
+ * restores ZB_MAX_JSON_RESPONSE_BYTES and ZB_MAX_GETFILE_BYTES).
+ */
+void zero_bounce_set_response_cap_for_test(size_t max_bytes);
+/*
+ * Reports a failed curl_easy_perform to error_callback (which may be NULL). A
+ * body larger than the size cap stops the transfer with CURLE_WRITE_ERROR
+ * after the status line arrived, so that error keeps the HTTP status: a 500
+ * stays a 500, and a 200 is an API error with status 200.
+ */
+void zb_report_perform_error(CURL *curl, CURLcode res, OnErrorCallback error_callback);
 int zb_make_request(
     char *url_path,
     char *request_type,

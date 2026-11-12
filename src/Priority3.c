@@ -343,17 +343,7 @@ static void p3_bulk_root_multipart(
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        char error_message[300];
-        snprintf(
-            error_message,
-            sizeof(error_message),
-            "Failed to perform request. CURLcode: %d. Error: %s",
-            res,
-            curl_easy_strerror(res)
-        );
-        if (error_callback) {
-            error_callback(parse_error(error_message));
-        }
+        zb_report_perform_error(curl, res, error_callback);
         curl_mime_free(multipart);
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
@@ -424,9 +414,7 @@ static void p3_bulk_root_get_file(
         set_write_callback(curl, &response_data);
         CURLcode res = curl_easy_perform(curl);
         if (res != CURLE_OK) {
-            if (error_callback) {
-                error_callback(parse_error(curl_easy_strerror(res)));
-            }
+            zb_report_perform_error(curl, res, error_callback);
             curl_easy_cleanup(curl);
             curl_slist_free_all(headers);
             goto cleanup;

@@ -172,14 +172,11 @@ static json_object *warmup_offset_json(double value) {
     return json_object_new_double_s(value, text);
 }
 
-/* An empty body (204, an empty 200), or one strict JSON value and nothing
-   after it. */
-static bool warmup_body_is_empty_or_json(const char *text) {
-    const char *start = text;
-    while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') {
-        start++;
-    }
-    if (!start[0]) {
+/* An empty body (204, an empty 200: zero bytes), or one strict JSON value
+   and nothing after it. A body of only whitespace is not empty: it is not
+   JSON either, so it is an error. */
+static bool warmup_body_is_empty_or_json(const char *text, size_t size) {
+    if (size == 0) {
         return true;
     }
     /* One strict JSON value, whitespace around it allowed. */
@@ -370,7 +367,7 @@ static void warmup_send(
                 success_callback(text);
             }
         }
-    } else if (!warmup_body_is_empty_or_json(text)) {
+    } else if (!warmup_body_is_empty_or_json(text, response_data.size)) {
         /* A 2xx JSON call whose body is not JSON (a proxy's text, a CSV under
            application/json) did not get the API's answer. */
         zb_report_body_error(text, http_code, warmup_on_error);

@@ -167,18 +167,22 @@ static int zb_hex_value(char c) {
     return -1;
 }
 
-/* text URL-decoded: each %XX as its byte, and '+' as a space when
-   plus_as_space is set (a form body). The caller owns it. */
-static char *zb_url_decode_view(const char *text, bool plus_as_space) {
-    char *out = malloc(strlen(text) + 1);
+/* text (length bytes) URL-decoded: each %XX as its byte, and '+' as a space
+   when plus_as_space is set (a form body). A %00 decodes to a NUL byte, so
+   the view is a byte string with its length in *out_length, not a C string:
+   a NUL must not hide what follows it from the check. The caller owns it. */
+static char *zb_url_decode_view(const char *text, size_t length, bool plus_as_space, size_t *out_length) {
+    char *out = malloc(length + 1);
     char *dst = out;
+    const char *end = text + length;
     if (!out) {
         return NULL;
     }
-    while (*text) {
+    while (text < end) {
         int hi;
         int lo;
-        if (text[0] == '%' && (hi = zb_hex_value(text[1])) >= 0 && (lo = zb_hex_value(text[2])) >= 0) {
+        if (text[0] == '%' && end - text >= 3 && (hi = zb_hex_value(text[1])) >= 0 &&
+            (lo = zb_hex_value(text[2])) >= 0) {
             *dst++ = (char)(hi * 16 + lo);
             text += 3;
         } else if (plus_as_space && *text == '+') {
@@ -189,6 +193,7 @@ static char *zb_url_decode_view(const char *text, bool plus_as_space) {
         }
     }
     *dst = '\0';
+    *out_length = (size_t)(dst - out);
     return out;
 }
 
@@ -211,9 +216,14 @@ static char *zb_put_utf8(char *dst, unsigned long cp) {
     return dst;
 }
 
-static long zb_hex4(const char *text) {
+/* The value of the four hex digits at text, or -1; text has at least
+   available bytes. */
+static long zb_hex4(const char *text, size_t available) {
     long value = 0;
     int i;
+    if (available < 4) {
+        return -1;
+    }
     for (i = 0; i < 4; i++) {
         int digit = zb_hex_value(text[i]);
         if (digit < 0) {
@@ -224,18 +234,21 @@ static long zb_hex4(const char *text) {
     return value;
 }
 
-/* text with JSON string escapes undone (\" \\ \/ \b \f \n \r \t \uXXXX,
-   surrogate pairs included); anything else is kept. The caller owns it. */
-static char *zb_json_unescape_view(const char *text) {
+/* text (length bytes) with JSON string escapes undone (\" \\ \/ \b \f \n \r
+   \t \uXXXX, surrogate pairs included); anything else is kept. A \u0000
+   decodes to a NUL byte, so the view's length is in *out_length. The caller
+   owns it. */
+static char *zb_json_unescape_view(const char *text, size_t length, size_t *out_length) {
     /* \uXXXX (6 bytes) becomes at most 4, so the text never grows. */
-    char *out = malloc(strlen(text) + 1);
+    char *out = malloc(length + 1);
     char *dst = out;
+    const char *end = text + length;
     if (!out) {
         return NULL;
     }
-    while (*text) {
+    while (text < end) {
         long cp;
-        if (text[0] != '\\' || !text[1]) {
+        if (text[0] != '\\' || end - text < 2) {
             *dst++ = *text++;
             continue;
         }
@@ -250,13 +263,13 @@ static char *zb_json_unescape_view(const char *text) {
         case 'r': *dst++ = '\r'; text += 2; continue;
         case 't': *dst++ = '\t'; text += 2; continue;
         case 'u':
-            cp = zb_hex4(text + 2);
+            cp = zb_hex4(text + 2, (size_t)(end - text) - 2);
             if (cp < 0) {
                 break;
             }
             text += 6;
-            if (cp >= 0xD800 && cp <= 0xDBFF && text[0] == '\\' && text[1] == 'u') {
-                long low = zb_hex4(text + 2);
+            if (cp >= 0xD800 && cp <= 0xDBFF && end - text >= 2 && text[0] == '\\' && text[1] == 'u') {
+                long low = zb_hex4(text + 2, (size_t)(end - text) - 2);
                 if (low >= 0xDC00 && low <= 0xDFFF) {
                     cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
                     text += 6;
@@ -270,33 +283,53 @@ static char *zb_json_unescape_view(const char *text) {
         *dst++ = *text++;
     }
     *dst = '\0';
+    *out_length = (size_t)(dst - out);
     return out;
 }
 
+/* Whether needle (a C string) occurs in the length bytes at text, NUL bytes
+   in text included. */
+static bool zb_bytes_contain(const char *text, size_t length, const char *needle) {
+    size_t needle_length = strlen(needle);
+    size_t i;
+    if (needle_length == 0) {
+        return true;
+    }
+    for (i = 0; i + needle_length <= length; i++) {
+        if (text[i] == needle[0] && memcmp(text + i, needle, needle_length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
- * Whether secret can be read in text or in any view of it decoded up to
- * layers more times: URL-decoded (%XX), form-decoded ('+' as a space too) and
- * JSON-unescaped, in any order. A view that decodes to itself is not followed.
+ * Whether secret can be read in text (length bytes) or in any view of it
+ * decoded up to layers more times: URL-decoded (%XX), form-decoded ('+' as a
+ * space too) and JSON-unescaped, in any order. A view that decodes to itself
+ * is not followed. Views are byte strings, so a decoded NUL does not end the
+ * search.
  */
-static bool zb_secret_in_decoded_views(const char *text, const char *secret, int layers) {
+static bool zb_secret_in_decoded_views(const char *text, size_t length, const char *secret, int layers) {
     char *views[3];
+    size_t lengths[3] = {0, 0, 0};
     bool found = false;
     int i;
-    if (strstr(text, secret)) {
+    if (zb_bytes_contain(text, length, secret)) {
         return true;
     }
     if (layers == 0) {
         return false;
     }
-    views[0] = zb_url_decode_view(text, false);
-    views[1] = zb_url_decode_view(text, true);
-    views[2] = zb_json_unescape_view(text);
+    views[0] = zb_url_decode_view(text, length, false, &lengths[0]);
+    views[1] = zb_url_decode_view(text, length, true, &lengths[1]);
+    views[2] = zb_json_unescape_view(text, length, &lengths[2]);
     for (i = 0; i < 3; i++) {
         if (!views[i]) {
             /* Out of memory: assume the worst. */
             found = true;
-        } else if (!found && strcmp(views[i], text) != 0) {
-            found = zb_secret_in_decoded_views(views[i], secret, layers - 1);
+        } else if (!found && (lengths[i] != length || memcmp(views[i], text, length) != 0)) {
+            found = zb_secret_in_decoded_views(views[i], lengths[i], secret, layers - 1);
         }
         free(views[i]);
     }
@@ -306,8 +339,9 @@ static bool zb_secret_in_decoded_views(const char *text, const char *secret, int
 /*
  * text with every spelling of secret zb_mask_secret generates replaced by
  * mask, then checked by decoding (standard: redaction is closed under
- * encoding). When any view of what is left, decoded up to three layers, still
- * holds the secret, the text is dropped for ZB_SECRET_OMITTED_MESSAGE.
+ * encoding). When any view of what is left, decoded up to ZB_SECRET_DECODE_LAYERS
+ * layers, still holds the secret, the text is dropped for
+ * ZB_SECRET_OMITTED_MESSAGE.
  */
 static char *zb_mask_known_spellings(char *text, const char *secret, const char *mask);
 
@@ -316,7 +350,7 @@ char *zb_mask_secret(char *text, const char *secret, const char *mask) {
         return text;
     }
     text = zb_mask_known_spellings(text, secret, mask);
-    if (zb_secret_in_decoded_views(text, secret, 3)) {
+    if (zb_secret_in_decoded_views(text, strlen(text), secret, ZB_SECRET_DECODE_LAYERS)) {
         char *omitted = strdup(ZB_SECRET_OMITTED_MESSAGE);
         if (omitted) {
             free(text);
@@ -1064,7 +1098,13 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
         return false;
     }
     parsed = zb_parse_json_whole(text);
-    if (!parsed) {
+    /* Every typed call reads a JSON object. Valid JSON of another shape (0,
+       "x", [], true) is not the API's answer either, so it is an error with
+       its status rather than a result filled with defaults. */
+    if (!parsed || !json_object_is_type(parsed, json_type_object)) {
+        if (parsed) {
+            json_object_put(parsed);
+        }
         zb_report_body_error(text, status_code, error_callback);
         return false;
     }

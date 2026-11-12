@@ -1085,6 +1085,58 @@ void test_warmup_no_error_carries_the_key(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* Every byte of in as %XX with lower-case hex: a spelling the SDK never
+   generates, so only the decode check sees the secret in it. */
+static void w_percent_every_byte(const char *in, char *out, size_t size) {
+    size_t used = 0;
+    for (; *in && used + 4 < size; in++) {
+        used += (size_t)snprintf(out + used, size - used, "%%%02x", (unsigned char)*in);
+    }
+    out[used] = '\0';
+}
+
+static void w_check_secret_omitted(const char *call) {
+    char message[1300];
+    snprintf(message, sizeof message, "%s: %s", call, w_error);
+    TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(400, (int)w_status, message);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "omitted because it contained a credential"), message);
+}
+
+/* S4/S7: a %00 before the Warmup key or the SMTP password, fully
+   percent-encoded, does not end the decode check. */
+void test_warmup_a_nul_in_the_body_does_not_end_the_redaction_check(void) {
+    const char *password = "a b\"c/d+e%f&g=h<i>j'k\\l";
+    const char *path = "test/downloads/warmup-nul.csv";
+    char encoded[512];
+    char body[700];
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client(W_LEAK_KEY);
+    w_percent_every_byte(W_LEAK_KEY, encoded, sizeof(encoded));
+    snprintf(body, sizeof(body), "bad %%00 then %s", encoded);
+    w_sweep_check = w_check_secret_omitted;
+    w_next_status = 400;
+    w_next_type = "text/plain";
+    w_next_body = body;
+    w_run_every_call(zbw, path);
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+
+    w_reset();
+    w_percent_every_byte(password, encoded, sizeof(encoded));
+    snprintf(body, sizeof(body), "SMTP login failed: bad %%00 then %s", encoded);
+    w_next_status = 500;
+    w_next_type = "text/plain";
+    w_next_body = body;
+    warmup_test_smtp_configuration(zbw, "sender@example.com", "smtp-user", password,
+                                   "smtp.example.com", 587, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_EQUAL_INT(500, (int)w_status);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "omitted because it contained a credential"), w_error);
+    w_next_type = "application/json";
+    zero_bounce_warmup_free(zbw);
+}
+
 /* An error a 200 can raise carries no key either: the CSV downloads reject a
    JSON answer after the request itself succeeded. The JSON calls hand a 200
    JSON body over as their result, so for them only an error is checked. */
@@ -1196,17 +1248,38 @@ void test_warmup_a_non_json_200_is_an_error_on_every_json_call(void) {
             remove(path);
         }
     }
-    /* A JSON body after whitespace and an empty body stay results. */
+    /* A JSON body after whitespace and an empty (zero-byte) body stay
+       results; a body of only whitespace is not empty, and is an error. */
     w_reset();
     w_next_body = " \n {\"ok\":true} \n";
     warmup_get_seed_count(zbw, w_on_raw, w_on_error);
     TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
     TEST_ASSERT_TRUE(w_success_called);
     w_reset();
-    w_next_body = "  ";
+    w_next_body = "";
     warmup_get_seed_count(zbw, w_on_raw, w_on_error);
     TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
     TEST_ASSERT_TRUE(w_success_called);
+    w_reset();
+    w_next_body = "  ";
+    warmup_get_seed_count(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_FALSE(w_success_called);
+    TEST_ASSERT_EQUAL_INT(200, (int)w_status);
+    {
+        /* Nested deeper than the strict-JSON scanner's limit: an error with
+           status 200, not a crash. */
+        char *deep = malloc(200001);
+        memset(deep, '[', 200000);
+        deep[200000] = '\0';
+        w_reset();
+        w_next_body = deep;
+        warmup_get_seed_count(zbw, w_on_raw, w_on_error);
+        TEST_ASSERT_TRUE(w_error_called);
+        TEST_ASSERT_FALSE(w_success_called);
+        TEST_ASSERT_EQUAL_INT(200, (int)w_status);
+        free(deep);
+    }
     zero_bounce_warmup_free(zbw);
 }
 
@@ -1255,8 +1328,9 @@ static const char *w_corpus_body;
 static void w_check_corpus_body(const char *call) {
     char message[1600];
     int download = strstr(call, "warmup_download_") != NULL;
-    size_t blank = strspn(w_corpus_body, " \t\r\n");
-    int empty = blank == w_corpus_len;
+    /* Only a zero-byte body is the documented empty success; whitespace is
+       not empty. */
+    int empty = w_corpus_len == 0;
     snprintf(message, sizeof message, "%s with %s: %s", call, w_corpus_line, w_error);
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, message);
     if (download || (!w_corpus_accept && !empty)) {
@@ -1393,5 +1467,6 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_a_non_json_200_is_an_error_on_every_json_call);
     RUN_TEST(test_warmup_csv_downloads_reject_every_non_file_answer);
     RUN_TEST(test_warmup_every_request_function_is_in_the_sweep);
+    RUN_TEST(test_warmup_a_nul_in_the_body_does_not_end_the_redaction_check);
     zero_bounce_set_http_perform_for_test(NULL);
 }
