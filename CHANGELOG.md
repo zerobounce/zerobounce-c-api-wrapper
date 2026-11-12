@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `get_file_streaming` and `scoring_get_file_streaming` deleted a file that was already at `local_download_path` when the download failed: a refused connection, a JSON error body, a non-2xx status or a body cut short removed the earlier file, although nothing had been written to it. `get_file` leaves it alone. The streaming download now writes to a temporary file next to `local_download_path` (`<path>.<pid>-<id>.part`) and moves it into place only when the whole file has arrived; a failed download removes only that temporary file, so a file already at the path is kept as it was, also when the connection closes part-way through the body.
+- A Warmup CSV download (`warmup_download_seeds`, `warmup_download_statistics`) that could be written only in part (a full disk, a file size limit) reported `Could not write download_path` but left the truncated file behind. It is now removed, as the bulk downloads already did.
+
 ## [3.0.1] - 2026-11-11
 
 ### Fixed

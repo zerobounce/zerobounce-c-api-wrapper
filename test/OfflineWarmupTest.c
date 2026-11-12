@@ -7,9 +7,12 @@
  * actually went out.
  */
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 
 #include "unity.h"
 #include "ZeroBounce/ZeroBounce.h"
@@ -574,6 +577,46 @@ void test_warmup_a_download_that_cannot_be_saved_is_not_a_success(void) {
     remove(blocker);
 }
 
+void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
+    /* A file size limit stops the write part-way, as a full disk would. The
+       error was reported, but the first 8 bytes were left on disk looking
+       like a result. */
+    const char *path = "test/downloads/warmup-short-write.csv";
+    struct rlimit saved;
+    struct rlimit tight;
+    void (*previous)(int);
+    FILE *handle;
+    int left;
+
+    w_reset();
+    w_next_body = "seed,provider\nseed@example.com,gmail\n";
+    ZeroBounceWarmup *zbw = w_client("warm-key");
+    mkdir("test/downloads", 0777);
+    remove(path);
+    TEST_ASSERT_EQUAL_INT(0, getrlimit(RLIMIT_FSIZE, &saved));
+    tight = saved;
+    tight.rlim_cur = 8;
+    previous = signal(SIGXFSZ, SIG_IGN);
+    TEST_ASSERT_EQUAL_INT(0, setrlimit(RLIMIT_FSIZE, &tight));
+    /* No assertion until the limit is lifted: a failed one would leave it in
+       place, and a test log that is a file is under the same limit. */
+    warmup_download_seeds(zbw, (char *)path, w_on_raw, w_on_error);
+    handle = fopen(path, "rb");
+    left = handle != NULL;
+    if (handle) {
+        fclose(handle);
+        remove(path);
+    }
+    setrlimit(RLIMIT_FSIZE, &saved);
+    signal(SIGXFSZ, previous);
+
+    TEST_ASSERT_TRUE(w_error_called);
+    TEST_ASSERT_FALSE(w_success_called);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "Could not write"), w_error);
+    TEST_ASSERT_FALSE_MESSAGE(left, "a partial file was left at the download path");
+    zero_bounce_warmup_free(zbw);
+}
+
 void warmup_run_tests(void) {
     RUN_TEST(test_warmup_api_key_header_and_own_host);
     RUN_TEST(test_warmup_uninitialized_sends_nothing);
@@ -591,5 +634,6 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_a_rejected_key_replaces_the_previous_one);
     RUN_TEST(test_warmup_base_url_trailing_slashes_are_dropped);
     RUN_TEST(test_warmup_a_download_that_cannot_be_saved_is_not_a_success);
+    RUN_TEST(test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file);
     zero_bounce_set_http_perform_for_test(NULL);
 }

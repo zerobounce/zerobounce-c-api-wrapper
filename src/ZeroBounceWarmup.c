@@ -310,6 +310,9 @@ static void warmup_send(
                     size_t written = fwrite(text, 1, length, handle);
                     if (fclose(handle) != 0 || written != length) {
                         saved = false;
+                        /* Part of the file may be on disk: it is not left
+                           looking like a result. */
+                        remove(download_path);
                         if (error_callback) {
                             error_callback(parse_error("Could not write download_path"));
                         }

@@ -218,7 +218,10 @@ counterpart `scoring_get_file_streaming`) writes the body straight to disk as
 it arrives. It is opt-in because a streamed body cannot be inspected as a
 whole, and getfile answers an unknown or deleted file id with a JSON error
 rather than a file: the first 4 KB are held back and checked, so an error still
-reaches the error callback and no partial file is left behind.
+reaches the error callback and no partial file is left behind. The file is
+written next to `local_download_path` under a temporary name and moved into
+place only once the whole body has arrived, so a failed download leaves a file
+already at that path as it was.
 
 ```c
 get_file_streaming(zb, file_id, local_download_path, NULL, on_success_get_file, on_error);
