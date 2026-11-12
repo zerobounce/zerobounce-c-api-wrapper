@@ -69,6 +69,23 @@ int zb_make_request_with_extra_header(
     OnErrorCallback error_callback
 );
 
+/*
+ * As zb_make_request_with_extra_header, and hands back the response's
+ * Content-Type (malloc'd, or NULL when it had none) through content_type_out.
+ * The Warmup CSV downloads need it to tell a file from an error.
+ */
+int zb_make_request_with_extra_header_ct(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    const char* extra_header,
+    memory* response_data,
+    long* http_code,
+    char** content_type_out,
+    OnErrorCallback error_callback
+);
+
 int zb_make_request_with_post_body(
     char *url_path,
     char *body,

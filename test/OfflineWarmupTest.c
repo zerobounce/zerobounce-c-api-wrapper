@@ -33,6 +33,7 @@ static int w_success_called;
 static long w_status;
 static long w_next_status = 200;
 static const char *w_next_body = "{\"ok\":true}";
+static const char *w_next_type = "application/json";
 
 static void w_on_raw(const char *json_response) {
     w_success_called = 1;
@@ -73,7 +74,7 @@ static int warmup_perform(memory *response_data, long *http_code, char **content
     response_data->size = len;
     *http_code = w_next_status;
     if (content_type_out) {
-        *content_type_out = strdup("application/json");
+        *content_type_out = w_next_type ? strdup(w_next_type) : NULL;
     }
     return 1;
 }
@@ -87,6 +88,7 @@ static void w_reset(void) {
     w_status = 0;
     w_next_status = 200;
     w_next_body = "{\"ok\":true}";
+    w_next_type = "application/json";
 }
 
 static ZeroBounceWarmup *w_client(const char *key) {
@@ -479,6 +481,7 @@ void test_warmup_csv_downloads(void) {
     w_reset();
     ZeroBounceWarmup *zbw = w_client("warm-key");
 
+    w_next_type = "text/csv";
     w_next_body = "seed,provider\na@example.com,gmail\n";
     warmup_download_seeds(zbw, NULL, w_on_raw, w_on_error);
     TEST_ASSERT_EQUAL_STRING(WARMUP_ROOT "/seeds/download", w_url);
@@ -568,6 +571,7 @@ void test_warmup_a_download_that_cannot_be_saved_is_not_a_success(void) {
     fclose(handle);
 
     w_reset();
+    w_next_type = "text/csv";
     w_next_body = "seed,provider\nseed@example.com,gmail\n";
     ZeroBounceWarmup *zbw = w_client("warm-key");
     warmup_download_seeds(zbw, "test/downloads/warmup-not-a-directory/seeds.csv", w_on_raw, w_on_error);
@@ -589,6 +593,7 @@ void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
     int left;
 
     w_reset();
+    w_next_type = "text/csv";
     w_next_body = "seed,provider\nseed@example.com,gmail\n";
     ZeroBounceWarmup *zbw = w_client("warm-key");
     mkdir("test/downloads", 0777);
@@ -614,6 +619,118 @@ void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
     TEST_ASSERT_FALSE(w_success_called);
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "Could not write"), w_error);
     TEST_ASSERT_FALSE_MESSAGE(left, "a partial file was left at the download path");
+    zero_bounce_warmup_free(zbw);
+}
+
+/* Every field https://www.zerobounce.net/docs/warmup-api/adding-a-sending-account
+   documents, with the exact body. */
+void test_warmup_add_sending_account_sends_every_documented_field(void) {
+    ZeroBounceWarmup *zbw;
+    ZBWarmupAddSendingAccountOptions options = new_warmup_add_sending_account_options();
+    ZBWarmupEmailContent content = new_warmup_email_content();
+    ZBWarmupManagedSending sending = new_warmup_managed_sending();
+    w_reset();
+    zbw = w_client("warm-key");
+    content.company_name = "Example";
+    content.company_website = "https://example.com";
+    content.company_description = "We sell \"things\"";
+    content.types_of_emails = "transactional,newsletter,marketing";
+    content.example_email = "Hello,\nWelcome.";
+    sending.weekdays_only = 0;
+    sending.timezone = "Asia/Kolkata";
+    sending.timezone_offset = 5.5;
+    sending.warmup_start_date = "2026-11-02";
+    options.ignore_conflict = 1;
+    options.email_content = &content;
+    options.managed_sending = &sending;
+    warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                               w_on_raw, w_on_error);
+    TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+    TEST_ASSERT_EQUAL_STRING(
+        "{ \"from_address\": \"sender@example.com\", \"onboarding_model\": \"zb_managed\", "
+        "\"ignore_conflict\": true, \"email_content\": { \"company_name\": \"Example\", "
+        "\"company_website\": \"https:\\/\\/example.com\", "
+        "\"company_description\": \"We sell \\\"things\\\"\", "
+        "\"types_of_emails\": [ \"transactional\", \"newsletter\", \"marketing\" ], "
+        "\"example_email\": \"Hello,\\nWelcome.\" }, "
+        "\"managed_sending\": { \"weekdays_only\": false, \"timezone\": \"Asia\\/Kolkata\", "
+        "\"timezone_offset\": 5.5, \"warmup_start_date\": \"2026-11-02\" } }",
+        w_body);
+    zero_bounce_warmup_free(zbw);
+}
+
+/* timezone_offset is hours from UTC, -11.0 to 14.0, fractional zones
+   included. */
+void test_warmup_timezone_offset_may_be_fractional(void) {
+    static const double accepted[] = {5.5, 3.0, -11.0, 14.0, -9.5, 5.75};
+    static const char *const sent[] = {"5.5", "3", "-11", "14", "-9.5", "5.75"};
+    static const double rejected[] = {-11.5, 14.5, 15, -12};
+    ZeroBounceWarmup *zbw;
+    ZBWarmupAddSendingAccountOptions options = new_warmup_add_sending_account_options();
+    ZBWarmupManagedSending sending = new_warmup_managed_sending();
+    char expected[160];
+    size_t i;
+    w_reset();
+    zbw = w_client("warm-key");
+    options.managed_sending = &sending;
+    for (i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+        w_reset();
+        sending.timezone_offset = accepted[i];
+        warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                                   w_on_raw, w_on_error);
+        TEST_ASSERT_FALSE_MESSAGE(w_error_called, w_error);
+        snprintf(expected, sizeof expected, "\"managed_sending\": { \"timezone_offset\": %s }", sent[i]);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_body, expected), w_body);
+    }
+    for (i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        w_reset();
+        sending.timezone_offset = rejected[i];
+        warmup_add_sending_account(zbw, "sender@example.com", ZB_WARMUP_ZB_MANAGED, &options,
+                                   w_on_raw, w_on_error);
+        TEST_ASSERT_TRUE(w_error_called);
+        TEST_ASSERT_NOT_NULL(strstr(w_error, "timezone_offset"));
+        TEST_ASSERT_EQUAL_INT(0, w_requests);
+    }
+    zero_bounce_warmup_free(zbw);
+}
+
+/* D1-D3: a JSON body (or content type), an HTML page (by body or content
+   type) and an empty body are not a CSV download: an error with the status,
+   no success and no file. */
+void test_warmup_csv_downloads_reject_every_non_file_answer(void) {
+    static const char *const bodies[] = {
+        "{\"message\":\"No seeds\"}", "  {\"detail\":\"nope\"}", " \n [{\"error\":\"nope\"}]", "",
+        "<!DOCTYPE html><html><title>Blocked</title></html>", "Blocked", "seed,provider\n",
+    };
+    static const char *const types[] = {
+        "text/csv", "text/csv", "text/csv", "text/csv", "text/csv", "text/html; charset=utf-8",
+        "application/json",
+    };
+    const char *path = "test/downloads/warmup-nonfile.csv";
+    ZeroBounceWarmup *zbw;
+    size_t i;
+    int call;
+    char message[200];
+    mkdir("test/downloads", 0777);
+    zbw = w_client("warm-key");
+    for (i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+        for (call = 0; call < 2; call++) {
+            w_reset();
+            remove(path);
+            w_next_body = bodies[i];
+            w_next_type = types[i];
+            if (call == 0) {
+                warmup_download_seeds(zbw, path, w_on_raw, w_on_error);
+            } else {
+                warmup_download_statistics(zbw, "sender@example.com", path, w_on_raw, w_on_error);
+            }
+            snprintf(message, sizeof message, "%d: %s (%s)", call, bodies[i], types[i]);
+            TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+            TEST_ASSERT_NULL_MESSAGE(fopen(path, "rb"), message);
+        }
+    }
     zero_bounce_warmup_free(zbw);
 }
 
@@ -737,6 +854,50 @@ void test_warmup_no_error_carries_the_key(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* An error a 200 can raise carries no key either: the CSV downloads reject a
+   JSON answer after the request itself succeeded. The JSON calls hand a 200
+   JSON body over as their result, so for them only an error is checked. */
+static void w_check_no_key_if_error(const char *call) {
+    char message[1300];
+    snprintf(message, sizeof message, "%s: %s", call, w_error);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, message);
+    if (strstr(call, "warmup_download_")) {
+        TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+    }
+    if (w_error_called) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY), message);
+        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, W_LEAK_KEY_ESCAPED), message);
+        if (strstr(call, "smtp")) {
+            TEST_ASSERT_NULL_MESSAGE(strstr(w_error, "sekrit"), message);
+        }
+    }
+}
+
+void test_warmup_no_error_on_a_200_carries_the_key(void) {
+    static const char *const bodies[] = {
+        "{\"error\":\"Invalid API key " W_LEAK_KEY " sekrit\"}",
+        "{\"success\":false,\"message\":\"Bad key " W_LEAK_KEY " " W_LEAK_KEY_ESCAPED " sekrit\"}",
+        "{\"message\":\"Invalid API-Key " W_LEAK_KEY " " W_LEAK_KEY_ESCAPED " sekrit\"}",
+        "{\"detail\":\"Invalid API-Key " W_LEAK_KEY " " W_LEAK_KEY_ESCAPED " sekrit\"}",
+    };
+    const char *path = "test/downloads/warmup-leak200.csv";
+    size_t i;
+    ZeroBounceWarmup *zbw;
+    w_reset();
+    zbw = w_client(W_LEAK_KEY);
+    w_sweep_check = w_check_no_key_if_error;
+    w_swept_count = 0;
+    for (i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+        w_next_status = 200;
+        w_next_body = bodies[i];
+        w_run_every_call(zbw, path);
+    }
+    TEST_ASSERT_NULL(fopen(path, "rb"));
+    zero_bounce_warmup_free(zbw);
+}
+
 /* Each call sent one request. */
 static void w_check_sent(const char *call) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, w_requests, call);
@@ -785,6 +946,10 @@ void warmup_run_tests(void) {
     RUN_TEST(test_warmup_a_download_that_cannot_be_saved_is_not_a_success);
     RUN_TEST(test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file);
     RUN_TEST(test_warmup_no_error_carries_the_key);
+    RUN_TEST(test_warmup_no_error_on_a_200_carries_the_key);
+    RUN_TEST(test_warmup_add_sending_account_sends_every_documented_field);
+    RUN_TEST(test_warmup_timezone_offset_may_be_fractional);
+    RUN_TEST(test_warmup_csv_downloads_reject_every_non_file_answer);
     RUN_TEST(test_warmup_every_request_function_is_in_the_sweep);
     zero_bounce_set_http_perform_for_test(NULL);
 }

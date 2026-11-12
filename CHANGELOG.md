@@ -13,10 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Warmup CSV download (`warmup_download_seeds`, `warmup_download_statistics`) that could be written only in part (a full disk, a file size limit) reported `Could not write download_path` but left the truncated file behind. It is now removed, as the bulk downloads already did.
 - `"success": false` on an HTTP 200 reached the success callback on every raw-JSON call: `add_filter`, `list_filters`, `delete_filter`, `get_list_evaluator_result`, `list_s3_files` and the Inbox Placement Tester calls. It now goes to the error callback with status 200, as on every other call.
 - **Behaviour change:** the Inbox Placement Tester calls treated an empty 2xx body as a success and passed `"{}"` to the success callback, whatever the call. Only `delete_inbox_placement_test` answers with an empty body, so it alone still does; an empty 2xx from any other Inbox Placement call (providers, test types, create, get, list, the webhook calls) is now an error with its status (`Empty response from ZeroBounce (HTTP 200)`).
+- `warmup_download_seeds` and `warmup_download_statistics` handed a non-file answer to the success callback (and wrote it to `download_path`) when it did not start with `{` or `[`: a JSON body after leading whitespace, any body labelled `application/json`, or a `text/html` page that does not look like HTML. They now report an error with the status, and write nothing, for an empty body, a JSON or HTML content type, or a JSON object or array.
 
 ### Security
 
 - An error built from a response body could carry the API key. Only an `api_key=` parameter's value was masked, so a body quoting the key itself reached the error callback whole: `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting it, or the key in its URL-encoded form. The Warmup client masked only the SMTP credentials of `warmup_test_smtp_configuration`, so a Warmup error quoting the key came through too. `parse_error_with_status`, which builds every error a callback gets, now replaces the calling client's key, raw and URL-encoded, with `REDACTED` on every call of both clients, besides any `api_key=` value. `zb_set_redaction_key` (internal) records the key per thread at the check every call runs first.
+
+### Changed
+
+- `ZBWarmupManagedSending.timezone_offset` is now a `double` (it was an `int`), so fractional zones such as 5.5 (India) or 5.75 (Nepal) can be sent; -99 still omits it, and a value outside -11 to 14, or NaN, is rejected before anything is sent. A whole number is sent as before (`"timezone_offset": 3`). Assigning an integer, positional initialisers and `-99` keep compiling unchanged; code that prints the field with `%d` or takes an `int *` to it must change. The struct's size and field offsets are unchanged on 64-bit targets, but a binary built against the old header must be rebuilt (FetchContent always rebuilds).
+
+### Added
+
+- Offline tests: every Warmup call answered with a 200 JSON error body quoting the key (`error`, `success: false`, `message`, `detail`), which the CSV downloads must turn into an error without the key; every documented `add_sending_account` field in one exact request body; fractional `timezone_offset` values (5.5, 3.0 and 5.75 accepted, -11.5 and 14.5 rejected); the CSV downloads rejecting a JSON body or content type, an HTML page by body or content type, and an empty body.
 
 ## [3.0.1] - 2026-11-11
 

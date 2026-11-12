@@ -52,8 +52,11 @@ typedef struct {
     /** -1 to omit, 0 false, 1 true. */
     int weekdays_only;
     const char *timezone;
-    /** -99 to omit, otherwise -11 to 14. */
-    int timezone_offset;
+    /**
+     * Hours from UTC: -99 to omit, otherwise -11.0 to 14.0, fractional zones
+     * such as 5.5 included. An int up to 3.0.1; an int still assigns.
+     */
+    double timezone_offset;
     /** YYYY-MM-DD, or NULL to omit. */
     const char *warmup_start_date;
 } ZBWarmupManagedSending;

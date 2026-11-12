@@ -19,7 +19,7 @@ ZBWarmupEmailContent new_warmup_email_content(void) {
 }
 
 ZBWarmupManagedSending new_warmup_managed_sending(void) {
-    ZBWarmupManagedSending sending = {-1, NULL, -99, NULL};
+    ZBWarmupManagedSending sending = {-1, NULL, -99.0, NULL};
     return sending;
 }
 
@@ -137,6 +137,41 @@ static bool warmup_in_range(int value, int low, int high, const char *name, OnEr
     return false;
 }
 
+/* -11.0 to 14.0; NaN is out of range too. */
+static bool warmup_offset_in_range(double value, OnErrorCallback error_callback) {
+    if (value >= -11.0 && value <= 14.0) {
+        return true;
+    }
+    if (error_callback) {
+        error_callback(parse_error("Invalid parameter: timezone_offset (must be -11 to 14)"));
+    }
+    return false;
+}
+
+/*
+ * A JSON number for an offset: a whole number as an int (3, as before), a
+ * fractional one with '.' whatever the locale (5.5).
+ */
+static json_object *warmup_offset_json(double value) {
+    char text[32];
+    char *p;
+    size_t len;
+    if (value == (double)(int)value) {
+        return json_object_new_int((int)value);
+    }
+    snprintf(text, sizeof(text), "%.6f", value);
+    for (p = text; *p; p++) {
+        if (*p == ',') {
+            *p = '.';
+        }
+    }
+    len = strlen(text);
+    while (len > 0 && text[len - 1] == '0') {
+        text[--len] = '\0';
+    }
+    return json_object_new_double_s(value, text);
+}
+
 static bool warmup_iso_date(const char *value, const char *name, OnErrorCallback error_callback) {
     char message[160];
     int i;
@@ -227,6 +262,21 @@ static void warmup_on_error(ZBErrorResponse error) {
                   warmup_error_ctx.error_callback);
 }
 
+/* Whether a Content-Type names an HTML page, in any letter case. */
+static bool warmup_content_type_is_html(const char *content_type) {
+    static const char html[] = "text/html";
+    const char *p;
+    size_t i;
+    for (p = content_type; *p; p++) {
+        for (i = 0; html[i] && p[i] && tolower((unsigned char)p[i]) == html[i]; i++) {
+        }
+        if (!html[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
  * One Warmup request. The body is handed to success_callback raw; HTTP 204
  * and an empty 200 are the documented empty successes and come back as "".
@@ -252,6 +302,7 @@ static void warmup_send(
     memory response_data = {0};
     long http_code = 0;
     const char *text;
+    char *content_type = NULL;
 
     if (!warmup_ready(zbw, error_callback)) {
         return;
@@ -281,12 +332,13 @@ static void warmup_send(
     warmup_error_ctx.secrets = secrets;
     warmup_error_ctx.secret_count = secret_count;
 
-    if (!zb_make_request_with_extra_header(
+    if (!zb_make_request_with_extra_header_ct(
             url_path, method, body, "Content-Type: application/json", auth_header,
-            &response_data, &http_code, warmup_on_error)) {
+            &response_data, &http_code, &content_type, warmup_on_error)) {
         free(auth_header);
         free(url_path);
         free(response_data.response);
+        free(content_type);
         return;
     }
 
@@ -294,8 +346,15 @@ static void warmup_send(
     if (http_code > 299 || zb_body_looks_like_html(text)) {
         zb_report_body_error(text, http_code, warmup_on_error);
     } else if (expect_csv) {
-        /* An error comes back labelled as JSON, so it is not a file. */
-        if (!text[0] || text[0] == '{' || text[0] == '[') {
+        /* An error comes back labelled as JSON or HTML, so it is not a file:
+           an empty body, a JSON or HTML content type, or a JSON object or
+           array, leading whitespace or not. */
+        const char *start = text;
+        while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') {
+            start++;
+        }
+        if (!start[0] || start[0] == '[' || zb_download_body_is_json(start, content_type) ||
+            (content_type && warmup_content_type_is_html(content_type))) {
             zb_report_body_error(text, http_code, warmup_on_error);
         } else {
             bool saved = true;
@@ -333,6 +392,7 @@ static void warmup_send(
     free(auth_header);
     free(url_path);
     free(response_data.response);
+    free(content_type);
 }
 
 static void warmup_json(
@@ -481,14 +541,14 @@ void warmup_add_sending_account(
         if (sending->timezone) {
             json_object_object_add(node, "timezone", json_object_new_string(sending->timezone));
         }
-        if (sending->timezone_offset != -99) {
-            if (!warmup_in_range(sending->timezone_offset, -11, 14, "timezone_offset", error_callback)) {
+        if (sending->timezone_offset != -99.0) {
+            if (!warmup_offset_in_range(sending->timezone_offset, error_callback)) {
                 json_object_put(node);
                 json_object_put(payload);
                 return;
             }
             json_object_object_add(
-                node, "timezone_offset", json_object_new_int(sending->timezone_offset));
+                node, "timezone_offset", warmup_offset_json(sending->timezone_offset));
         }
         if (sending->warmup_start_date) {
             if (!warmup_iso_date(sending->warmup_start_date, "warmup_start_date", error_callback)) {

@@ -804,6 +804,25 @@ int zb_make_request_with_extra_header(
     long* http_code,
     OnErrorCallback error_callback
 ) {
+    return zb_make_request_with_extra_header_ct(
+        url_path, method, body, content_type_header, extra_header, response_data, http_code, NULL,
+        error_callback);
+}
+
+int zb_make_request_with_extra_header_ct(
+    char* url_path,
+    const char* method,
+    const char* body,
+    const char* content_type_header,
+    const char* extra_header,
+    memory* response_data,
+    long* http_code,
+    char** content_type_out,
+    OnErrorCallback error_callback
+) {
+    if (content_type_out) {
+        *content_type_out = NULL;
+    }
     zb_note_http_request(method, url_path, body);
     zb_note_http_header(extra_header);
 
@@ -812,7 +831,7 @@ int zb_make_request_with_extra_header(
     }
 
     if (s_http_perform) {
-        return s_http_perform(response_data, http_code, NULL);
+        return s_http_perform(response_data, http_code, content_type_out);
     }
 
     CURL* curl = curl_easy_init();
@@ -854,6 +873,10 @@ int zb_make_request_with_extra_header(
     }
 
     *http_code = get_http_code(curl);
+    if (content_type_out) {
+        const char *content_type = get_content_type_value(curl);
+        *content_type_out = content_type ? strdup(content_type) : NULL;
+    }
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
     return 1;
