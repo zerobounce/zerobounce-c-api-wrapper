@@ -3395,6 +3395,59 @@ static void serve(const char *body) {
     g_leak_mode = 10;
 }
 
+/* return_url is sent only when the caller sets one: the default (empty) and an
+   unset one are left out of both sendfile calls. */
+void test_offline_return_url_is_sent_only_when_set(void) {
+    reset_offline();
+    ZeroBounce *zb = client_with("return-key");
+    send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error);
+    TEST_ASSERT_FALSE(has_field("return_url", NULL));
+    reset_offline();
+    scoring_send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error);
+    TEST_ASSERT_FALSE(has_field("return_url", NULL));
+    reset_offline();
+    SendFileOptions options = new_send_file_options();
+    options.return_url = "https://example.com/hook";
+    send_file(zb, "email_file.csv", 1, options, on_send, on_error);
+    TEST_ASSERT_TRUE(has_field("return_url", "https://example.com/hook"));
+}
+
+/* standard section 3: "success" as the string "false", in any letter case, is a
+   failure with status 200 on every JSON path. No message is sent, so nothing
+   else in the body reports the failure. */
+void test_offline_success_string_false_is_an_error(void) {
+    static const char *const bodies[] = {
+        "{\"success\":\"false\"}", "{\"success\":\"False\"}", "{\"success\":\"FALSE\"}",
+    };
+    ZeroBounce *zb = client_with("success-string");
+    if (TEST_PROTECT()) {
+        for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+            serve(bodies[i]);
+            file_status(zb, "file-1", on_status, on_error);
+            expect_shape_error("file_status", bodies[i]);
+            serve(bodies[i]);
+            scoring_file_status(zb, "file-2", on_status, on_error);
+            expect_shape_error("scoring_file_status", bodies[i]);
+            serve(bodies[i]);
+            delete_file(zb, "file-3", on_delete, on_error);
+            expect_shape_error("delete_file", bodies[i]);
+            serve(bodies[i]);
+            send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error);
+            expect_shape_error("send_file", bodies[i]);
+            /* The raw-JSON calls hand the body over unparsed: nothing else checks it. */
+            serve(bodies[i]);
+            add_filter(zb, "exclude", "domain", "example.com", on_raw, on_error);
+            expect_shape_error("add_filter", bodies[i]);
+            serve(bodies[i]);
+            list_filters(zb, false, on_raw, on_error);
+            expect_shape_error("list_filters", bodies[i]);
+            serve(bodies[i]);
+            delete_filter(zb, "exclude", "domain", "example.com", on_raw, on_error);
+            expect_shape_error("delete_filter", bodies[i]);
+        }
+    }
+}
+
 /* checks.md E7: getcredits and validate with a missing, null or wrong-typed
    field fail with status 200; nothing is coerced or defaulted. */
 void test_offline_typed_calls_reject_fields_of_the_wrong_type(void) {
@@ -3402,6 +3455,8 @@ void test_offline_typed_calls_reject_fields_of_the_wrong_type(void) {
         "{}", "{\"Credits\":null}", "{\"Credits\":true}", "{\"Credits\":5.5}",
         "{\"Credits\":\"abc\"}", "{\"Credits\":\"5.0\"}", "{\"Credits\":\"\"}", "{\"Credits\":\" 5\"}",
         "{\"Credits\":\"99999999999999999999\"}", "{\"Credits\":[1]}", "{\"Credits\":{}}",
+        /* A string Credits is an int too: one past either end of int is an error. */
+        "{\"Credits\":\"2147483648\"}", "{\"Credits\":\"-2147483649\"}",
         /* A JSON integer is an answer only when it is a whole number in the
            range of int: no fraction or exponent, nothing past INT_MAX. */
         "{\"Credits\":5.0}", "{\"Credits\":1e3}", "{\"Credits\":2147483648}", "{\"Credits\":-2147483649}",
@@ -3826,6 +3881,84 @@ static const TypedExample g_typed_examples[] = {
                "\"region\":\"Florida\",\"city\":\"West Palm Beach\",\"zipcode\":\"33401\","
                "\"processed_at\":\"2023-03-23 13:30:28.105\"}],"
                "\"errors\":[{\"error\":\"Mock error message\",\"email_address\":\"invalid@example.com\"}]}"},
+    /* zerobounce.net: batch validate, three rows and no errors. */
+    {EX_BATCH, "{\n"
+                  "      \"email_batch\": [\n"
+                  "          {\n"
+                  "              \"address\": \"john.doe@zerobounce.net\",\n"
+                  "              \"status\": \"valid\",\n"
+                  "              \"sub_status\": \"\",\n"
+                  "              \"free_email\": false,\n"
+                  "              \"catchall_domain\": true,\n"
+                  "              \"did_you_mean\": null,\n"
+                  "              \"account\": \"johndoe\",\n"
+                  "              \"domain\": \"zerobounce.net\",\n"
+                  "              \"domain_age_days\": \"3431\",\n"
+                  "              \"active_in_days\": \"30\",\n"
+                  "              \"active_first_seen\": \"2026-02-25\",\n"
+                  "              \"smtp_provider\": \"g-suite\",\n"
+                  "              \"mx_found\": \"true\",\n"
+                  "              \"mx_record\": \"aspmx.l.google.com\",\n"
+                  "              \"firstname\": \"dan\",\n"
+                  "              \"lastname\": \"cotet\",\n"
+                  "              \"gender\": \"male\",\n"
+                  "              \"country\": null,\n"
+                  "              \"region\": null,\n"
+                  "              \"city\": null,\n"
+                  "              \"zipcode\": null,\n"
+                  "              \"processed_at\": \"2026-06-18 07:05:00.033\"\n"
+                  "          },\n"
+                  "          {\n"
+                  "              \"address\": \"invalid@example.com\",\n"
+                  "              \"status\": \"invalid\",\n"
+                  "              \"sub_status\": \"mailbox_not_found\",\n"
+                  "              \"free_email\": false,\n"
+                  "              \"did_you_mean\": null,\n"
+                  "              \"account\": null,\n"
+                  "              \"domain\": null,\n"
+                  "              \"domain_age_days\": \"9692\",\n"
+                  "              \"active_in_days\": \"365\",\n"
+                  "              \"active_first_seen\": \"2026-02-25\",\n"
+                  "              \"smtp_provider\": \"example\",\n"
+                  "              \"mx_found\": \"true\",\n"
+                  "              \"mx_record\": \"mx.example.com\",\n"
+                  "              \"catchall_domain\": false,\n"
+                  "              \"firstname\": \"zero\",\n"
+                  "              \"lastname\": \"bounce\",\n"
+                  "              \"gender\": \"male\",\n"
+                  "              \"country\": null,\n"
+                  "              \"region\": null,\n"
+                  "              \"city\": null,\n"
+                  "              \"zipcode\": null,\n"
+                  "              \"processed_at\": \"2020-09-17 17:43:11.830\"\n"
+                  "          },\n"
+                  "          {\n"
+                  "              \"address\": \"disposable@example.com\",\n"
+                  "              \"status\": \"do_not_mail\",\n"
+                  "              \"sub_status\": \"disposable\",\n"
+                  "              \"free_email\": false,\n"
+                  "              \"did_you_mean\": null,\n"
+                  "              \"account\": null,\n"
+                  "              \"domain\": null,\n"
+                  "              \"domain_age_days\": \"9692\",\n"
+                  "              \"active_in_days\": \"365\",\n"
+                  "              \"active_first_seen\": \"2026-02-25\",\n"
+                  "              \"smtp_provider\": \"example\",\n"
+                  "              \"mx_found\": \"true\",\n"
+                  "              \"mx_record\": \"mx.example.com\",\n"
+                  "              \"catchall_domain\": false,\n"
+                  "              \"firstname\": \"zero\",\n"
+                  "              \"lastname\": \"bounce\",\n"
+                  "              \"gender\": \"male\",\n"
+                  "              \"country\": null,\n"
+                  "              \"region\": null,\n"
+                  "              \"city\": null,\n"
+                  "              \"zipcode\": null,\n"
+                  "              \"processed_at\": \"2020-09-17 17:43:11.830\"\n"
+                  "          }\n"
+                  "      ],\n"
+                  "      \"errors\": []\n"
+                  "  }\n"},
     /* zerobounce.net: v2 send file, file status (both), delete file. */
     {EX_SEND, "{\n      \"success\": true,\n      \"message\": \"File Accepted\",\n      \"file_name\": \"Your file name.csv\",\n"
               "      \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\"\n    }"},
@@ -3838,6 +3971,17 @@ static const TypedExample g_typed_examples[] = {
                 "    \"return_url\": \"Your return URL if provided when calling sendfile API\"\n  }"},
     {EX_DELETE, "{\n    \"success\": true,\n    \"message\": \"File Deleted\",\n    \"file_name\": \"test2\",\n"
                 "    \"file_id\": \"b222a0fd-90d5-416c-8f1a-9cc3851fc823\"\n  }"},
+    /* zerobounce.net: file status with file_phase_2_status "N/A". */
+    {EX_STATUS, "{\n"
+                  "    \"success\": true,\n"
+                  "    \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\",\n"
+                  "    \"file_name\": \"Your file name.csv\",\n"
+                  "    \"upload_date\": \"2023-04-28T15:25:41Z\",\n"
+                  "    \"file_status\": \"Complete\",\n"
+                  "    \"file_phase_2_status\": \"N/A\",\n"
+                  "    \"complete_percentage\": \"100%\",\n"
+                  "    \"return_url\": \"Your return URL if provided when calling sendfile API\"\n"
+                  "  }\n"},
     /* zerobounce.net: AI scoring send file, file status, delete file. */
     {EX_SCORING_SEND, "{\n          \"success\": true,\n          \"message\": \"File Accepted\",\n"
                       "          \"file_name\": \"Your file name.csv\",\n"
@@ -3848,6 +3992,45 @@ static const TypedExample g_typed_examples[] = {
                         "          \"return_url\": \"Your return URL if provided when calling sendfile API\"\n      }"},
     {EX_SCORING_DELETE, "{\n        \"success\": true,\n        \"message\": \"File Deleted\",\n        \"file_name\": \"test2\",\n"
                         "        \"file_id\": \"b222a0fd-90d5-416c-8f1a-9cc3851fc823\"\n    }"},
+    /* zerobounce.net: get-api-usage, with the leading-period and alias sub-statuses. */
+    {EX_USAGE, "{\n"
+                  "      \"total\": 120,\n"
+                  "      \"status_valid\": 17,\n"
+                  "      \"status_invalid\": 69,\n"
+                  "      \"status_catch_all\": 9,\n"
+                  "      \"status_do_not_mail\": 16,\n"
+                  "      \"status_spamtrap\": 0,\n"
+                  "      \"status_unknown\": 6,\n"
+                  "      \"sub_status_toxic\": 0,\n"
+                  "      \"sub_status_disposable\": 1,\n"
+                  "      \"sub_status_role_based\": 1,\n"
+                  "      \"sub_status_possible_trap\": 0,\n"
+                  "      \"sub_status_global_suppression\": 14,\n"
+                  "      \"sub_status_timeout_exceeded\": 0,\n"
+                  "      \"sub_status_mail_server_temporary_error\": 0,\n"
+                  "      \"sub_status_mail_server_did_not_respond\": 0,\n"
+                  "      \"sub_status_greylisted\": 6,\n"
+                  "      \"sub_status_antispam_system\": 0,\n"
+                  "      \"sub_status_does_not_accept_mail\": 27,\n"
+                  "      \"sub_status_exception_occurred\": 0,\n"
+                  "      \"sub_status_failed_syntax_check\": 20,\n"
+                  "      \"sub_status_mailbox_not_found\": 12,\n"
+                  "      \"sub_status_unroutable_ip_address\": 0,\n"
+                  "      \"sub_status_possible_typo\": 0,\n"
+                  "      \"sub_status_no_dns_entries\": 10,\n"
+                  "      \"sub_status_role_based_catch_all\": 0,\n"
+                  "      \"sub_status_mailbox_quota_exceeded\": 0,\n"
+                  "      \"sub_status_forcible_disconnect\": 0,\n"
+                  "      \"sub_status_failed_smtp_connection\": 0,\n"
+                  "      \"sub_status_leading_period_removed\": 0,\n"
+                  "      \"sub_status_alias_address\": 2,\n"
+                  "      \"sub_status_mx_forward\": 0,\n"
+                  "      \"sub_status_alternate\": 0,\n"
+                  "      \"sub_status_blocked\": 0,\n"
+                  "      \"sub_status_allowed\": 0,\n"
+                  "      \"start_date\": \"1/1/2023\",\n"
+                  "      \"end_date\": \"1/30/2024\"\n"
+                  "    }\n"},
     /* The repo's fixtures for the other typed calls. */
     {EX_USAGE, "{\"total\":10,\"status_valid\":10,\"status_invalid\":0,\"sub_status_toxic\":0,"
                "\"start_date\":\"1/12/2010\",\"end_date\":\"12/1/2030\"}"},
@@ -4103,6 +4286,8 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_typed_calls_reject_json_of_the_wrong_shape);
     RUN_TEST(test_offline_a_deeply_nested_body_is_an_error);
     RUN_TEST(test_offline_typed_calls_reject_fields_of_the_wrong_type);
+    RUN_TEST(test_offline_success_string_false_is_an_error);
+    RUN_TEST(test_offline_return_url_is_sent_only_when_set);
     RUN_TEST(test_offline_every_field_a_model_reads_is_type_checked);
     RUN_TEST(test_offline_documented_examples_still_parse);
     RUN_TEST(test_offline_every_nested_value_of_an_example_is_type_checked);
