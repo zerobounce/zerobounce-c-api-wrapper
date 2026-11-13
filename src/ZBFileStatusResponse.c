@@ -78,7 +78,7 @@ ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j) {
     ZBFileStatusResponse r = new_zb_file_status_response();
 
     r.success = *(bool*)get_json_value(j, json_type_boolean, "success", &(bool){false});
-    r.message = *(char**)get_json_value(j, json_type_string, "message", &(char*){""});
+    r.message = zb_file_job_message(j);
     r.error_reason = *(char**)get_json_value(j, json_type_string, "error_reason", &(char*){""});
     r.file_id = *(char**)get_json_value(j, json_type_string, "file_id", &(char*){""});
     r.file_name = *(char**)get_json_value(j, json_type_string, "file_name", &(char*){""});

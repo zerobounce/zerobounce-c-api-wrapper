@@ -50,7 +50,7 @@ ZBGetFileResponse zb_get_file_response_from_json(const json_object* j) {
     ZBGetFileResponse r = new_zb_get_file_response();
 
     r.success = *(bool*)get_json_value(j, json_type_boolean, "success", &(bool){false});
-    r.message = *(char**)get_json_value(j, json_type_string, "message", &(char*){""});
+    r.message = zb_file_job_message(j);
 
     return r;
 }

@@ -604,16 +604,23 @@ char *zb_format_get_file_error_message(const char *body) {
                 return r ? r : strdup("");
             }
         }
-        if (json_object_is_type(v, json_type_array) && json_object_array_length(v) > 0) {
-            json_object *item = json_object_array_get_idx(v, 0);
-            if (json_object_is_type(item, json_type_string)) {
-                const char *t = json_object_get_string(item);
-                if (t && t[0]) {
-                    char *r = strdup(t);
-                    json_object_put(o);
-                    return r ? r : strdup("");
+        if (json_object_is_type(v, json_type_array)) {
+            /* Every non-empty line of a list, joined with "\n" as the file-job
+               message is. */
+            StringVector lines = string_vector_init();
+            for (size_t n = 0; n < json_object_array_length(v); n++) {
+                json_object *item = json_object_array_get_idx(v, n);
+                if (json_object_is_type(item, json_type_string) && json_object_get_string(item)[0]) {
+                    string_vector_append(&lines, json_object_get_string(item));
                 }
             }
+            if (lines.size > 0) {
+                char *r = concatenate_strings(&lines, "\n");
+                string_vector_free(&lines);
+                json_object_put(o);
+                return r ? r : strdup("");
+            }
+            string_vector_free(&lines);
         }
     }
 

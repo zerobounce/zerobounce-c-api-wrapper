@@ -68,4 +68,11 @@ void* get_json_value(const json_object* obj, json_type type, const char* key, vo
  */
 char* get_json_string_copy(const json_object* obj, const char* key, const char* default_value);
 
+/**
+ * @brief The message of a file-job answer (send, delete, file status, getfile
+ * JSON): a JSON string, or a list of strings joined with "\n". Absent or null
+ * is "". Any other type is a shape error. Caller must free().
+ */
+char* zb_file_job_message(const json_object* obj);
+
 #endif

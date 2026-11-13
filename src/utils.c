@@ -193,6 +193,36 @@ void* get_json_value(const json_object* obj, json_type type, const char* key, vo
     return default_value;
 }
 
+char* zb_file_job_message(const json_object* obj) {
+    json_object* value_obj = NULL;
+    StringVector parts;
+    char* joined;
+
+    if (!obj || !json_object_object_get_ex(obj, "message", &value_obj) || value_obj == NULL) {
+        return strdup("");
+    }
+    if (json_object_is_type(value_obj, json_type_string)) {
+        return strdup(json_object_get_string(value_obj));
+    }
+    if (!json_object_is_type(value_obj, json_type_array)) {
+        zb_shape_mismatch("message");
+        return strdup("");
+    }
+    parts = string_vector_init();
+    for (size_t i = 0; i < json_object_array_length(value_obj); i++) {
+        json_object* item = json_object_array_get_idx(value_obj, i);
+        if (!json_object_is_type(item, json_type_string)) {
+            zb_shape_mismatch("message");
+            string_vector_free(&parts);
+            return strdup("");
+        }
+        string_vector_append(&parts, json_object_get_string(item));
+    }
+    joined = concatenate_strings(&parts, "\n");
+    string_vector_free(&parts);
+    return joined;
+}
+
 char* get_json_string_copy(const json_object* obj, const char* key, const char* default_value) {
     const char* def = default_value ? default_value : "";
     json_object* value_obj = NULL;

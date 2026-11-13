@@ -685,6 +685,59 @@ void test_offline_file_status_and_delete(void) {
     TEST_ASSERT_EQUAL_STRING("/v2/scoring/deletefile", only_request().path);
 }
 
+static char g_job_message[256];
+static void on_delete_message(ZBDeleteFileResponse response) {
+    g_success_called = 1;
+    snprintf(g_job_message, sizeof(g_job_message), "%s", response.message ? response.message : "<null>");
+}
+
+static void on_status_message(ZBFileStatusResponse response) {
+    g_success_called = 1;
+    snprintf(g_job_message, sizeof(g_job_message), "%s", response.message ? response.message : "<null>");
+}
+
+/* A file job's message is one string or a list of strings, and the public type
+   is one string: a list is joined with "\n" on delete, scoring delete and file
+   status, as on send. A list used to be an error with the status 200. */
+void test_offline_file_job_message_list_is_joined_with_newlines(void) {
+    const char *body =
+        "{\"success\":true,\"message\":[\"First line.\",\"Second line.\"],\"file_id\":\"fid\","
+        "\"file_name\":\"f.csv\",\"file_status\":\"Complete\"}";
+    ZeroBounce *zb = client_with("file-job-list-key");
+    for (int call = 0; call < 8; call++) {
+        reset_offline();
+        g_job_message[0] = '\0';
+        g_mode_body = body;
+        g_mode_body_len = strlen(body);
+        g_leak_mode = 10;
+        switch (call) {
+        case 0: delete_file(zb, "fid", on_delete_message, on_error); break;
+        case 1: scoring_delete_file(zb, "fid", on_delete_message, on_error); break;
+        case 2: file_status(zb, "fid", on_status_message, on_error); break;
+        case 3: scoring_file_status(zb, "fid", on_status_message, on_error); break;
+        case 4: email_finder_file_status(zb, "fid", on_status_message, on_error); break;
+        case 5: domain_search_file_status(zb, "fid", on_status_message, on_error); break;
+        case 6: email_finder_delete_file(zb, "fid", on_delete_message, on_error); break;
+        default: domain_search_delete_file(zb, "fid", on_delete_message, on_error); break;
+        }
+        g_leak_mode = 0;
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, g_error_text);
+        TEST_ASSERT_TRUE(g_success_called);
+        TEST_ASSERT_EQUAL_STRING("First line.\nSecond line.", g_job_message);
+    }
+    reset_offline();
+    ZeroBounce *plain = client_with("file-job-string-key");
+    const char *one = "{\"success\":true,\"message\":\"Deleted.\",\"file_id\":\"fid\"}";
+    g_job_message[0] = '\0';
+    g_mode_body = one;
+    g_mode_body_len = strlen(one);
+    g_leak_mode = 10;
+    delete_file(plain, "fid", on_delete_message, on_error);
+    g_leak_mode = 0;
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_EQUAL_STRING("Deleted.", g_job_message);
+}
+
 void test_offline_get_file_options(void) {
     reset_offline();
     ZeroBounce *zb = client_with("getfile-key");
@@ -1854,6 +1907,51 @@ void test_offline_bare_message_is_a_result_where_the_api_means_one(void) {
     TEST_ASSERT_TRUE(g_success_called);
 }
 
+/* A body made only of message keys is an error on the email finder and domain
+   search, whatever the value: a string, a blank, null or a list. Only the keys
+   decide it, so a body with any other key is still a result. */
+void test_offline_message_only_finder_answers_are_errors_whatever_the_value(void) {
+    const char *bodies[] = {
+        "{\"message\":\"Not found\"}",
+        "{\"message\":\"\"}",
+        "{\"message\":\"   \"}",
+        "{\"message\":null}",
+        "{\"message\":[\"a\",\"b\"]}",
+        "{\"message\":[]}",
+        "{\"Message\":null,\"error\":\"\"}",
+        "{\"detail\":[\"x\"]}",
+    };
+    for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+        for (int call = 0; call < 3; call++) {
+            ZeroBounce *zb = client_with("finder-message-only-key");
+            reset_offline();
+            g_mode_body = bodies[b];
+            g_mode_body_len = strlen(bodies[b]);
+            g_leak_mode = 10;
+            if (call == 0) {
+                find_email_by_domain_first_name(zb, "example.com", "Ada", on_find, on_error);
+            } else if (call == 1) {
+                find_email_by_company_name_first_name(zb, "ZeroBounce", "Ada", on_find, on_error);
+            } else {
+                search_domain_by_domain(zb, "example.com", on_domain, on_error);
+            }
+            g_leak_mode = 0;
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, bodies[b]);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, bodies[b]);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, bodies[b]);
+        }
+    }
+    /* Control: a finder answer with an email is still a result. */
+    reset_offline();
+    g_mode_body = "{\"email\":\"ada@example.com\",\"message\":null}";
+    g_mode_body_len = strlen(g_mode_body);
+    g_leak_mode = 10;
+    find_email_by_domain_first_name(client_with("finder-control-key"), "example.com", "Ada", on_find, on_error);
+    g_leak_mode = 0;
+    TEST_ASSERT_FALSE(g_error_called);
+    TEST_ASSERT_TRUE(g_success_called);
+}
+
 typedef struct {
     int index;
     char echo[64];
@@ -1974,6 +2072,53 @@ void test_offline_get_file_json_error_keeps_the_http_status(void) {
     TEST_ASSERT_NOT_NULL(strstr(g_error_text, "File cannot be found"));
     TEST_ASSERT_EQUAL_INT(200, (int)g_error_status);
     TEST_ASSERT_NULL(fopen("test/downloads/json-error.csv", "rb"));
+}
+
+/* A getfile JSON error whose message is a list carries every line of it, joined
+   with "\n" like the other file-job messages (it used to keep only the first). */
+static const char *download_path_name(int kind) {
+    static const char *names[] = {"scoring_get_file", "get_file_streaming", "scoring_get_file_streaming",
+                                  "email_finder_get_file", "domain_search_get_file", "get_file_with_options"};
+    return names[kind];
+}
+
+void test_offline_get_file_json_error_joins_a_message_list(void) {
+    const char *body = "{\"success\":false,\"message\":[\"File cannot be found.\",\"Check the file id.\"]}";
+    ZeroBounce *zb = client_with("getfile-list-error");
+    reset_offline();
+    g_mode_body = body;
+    g_mode_body_len = strlen(body);
+    g_leak_mode = 10;
+    get_file(zb, "fid", "test/downloads/json-list-error.csv", on_get, on_error);
+    g_leak_mode = 0;
+    TEST_ASSERT_FALSE(g_success_called);
+    TEST_ASSERT_TRUE(g_error_called);
+    TEST_ASSERT_EQUAL_INT(200, (int)g_error_status);
+    TEST_ASSERT_EQUAL_STRING("File cannot be found.\nCheck the file id.", g_error_text);
+    TEST_ASSERT_NULL(fopen("test/downloads/json-list-error.csv", "rb"));
+    for (int kind = 0; kind < 6; kind++) {
+        char *path = "test/downloads/json-list-error-kind.csv";
+        reset_offline();
+        g_mode_body = body;
+        g_mode_body_len = strlen(body);
+        g_leak_mode = 10;
+        remove(path);
+        switch (kind) {
+        case 0: scoring_get_file(zb, "fid", path, on_get, on_error); break;
+        case 1: get_file_streaming(zb, "fid", path, NULL, on_get, on_error); break;
+        case 2: scoring_get_file_streaming(zb, "fid", path, NULL, on_get, on_error); break;
+        case 3: email_finder_get_file(zb, "fid", path, on_get, on_error); break;
+        case 4: domain_search_get_file(zb, "fid", path, on_get, on_error); break;
+        default: get_file_with_options(zb, "fid", path, NULL, on_get, on_error); break;
+        }
+        g_leak_mode = 0;
+        /* Every download path keeps every line of the list. */
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, download_path_name(kind));
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "File cannot be found."), download_path_name(kind));
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "Check the file id."), download_path_name(kind));
+        TEST_ASSERT_FALSE(g_success_called);
+        TEST_ASSERT_NULL(fopen(path, "rb"));
+    }
 }
 
 /* One scripted HTTP 200 answer for every request, for the download tests. */
@@ -2116,6 +2261,46 @@ void test_offline_an_html_page_in_place_of_a_file_is_an_error(void) {
                     TEST_ASSERT_NULL_MESSAGE(handle, message);
                 }
             }
+        }
+    }
+    zero_bounce_set_http_perform_for_test(offline_perform);
+}
+
+/* The HTML sniff has four markers, and each one alone must reject a download
+   served as text/csv: <!doctype html, <html, <head and <body (case does not
+   matter). Each body below carries exactly one marker, so dropping any one
+   check lets its body through as a file. */
+void test_offline_each_html_sniff_marker_rejects_a_download(void) {
+    const char *bodies[] = {
+        "<!DOCTYPE html>\nemail\nx@example.com\n",
+        "<html>x@example.com</html>",
+        "<HEAD>x@example.com</HEAD>",
+        "<Body>x@example.com</Body>",
+    };
+    const char *path = "test/downloads/offline-marker.csv";
+    char message[200];
+    ZeroBounce *zb = client_with("html-marker-key");
+
+    zero_bounce_set_http_perform_for_test(scripted_perform);
+    for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+        for (int kind = 0; kind < DOWNLOAD_KINDS; kind++) {
+            FILE *handle;
+            g_scripted_body = bodies[b];
+            g_scripted_type = "text/csv";
+            g_scripted_errors = g_scripted_successes = 0;
+            g_scripted_status = -1;
+            remove(path);
+            download(kind, zb, path);
+            handle = fopen(path, "rb");
+            if (handle) {
+                fclose(handle);
+                remove(path);
+            }
+            snprintf(message, sizeof(message), "%s %s", download_name(kind), bodies[b]);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_scripted_errors, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_scripted_successes, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_scripted_status, message);
+            TEST_ASSERT_NULL_MESSAGE(handle, message);
         }
     }
     zero_bounce_set_http_perform_for_test(offline_perform);
@@ -3681,6 +3866,59 @@ void test_offline_every_field_a_model_reads_is_type_checked(void) {
     free(one);
 }
 
+/* Standard section 3: null is never an error on a non-required field. Only
+   Credits, validate's address and status and every batch row's address and
+   status must be present and non-null. This body sets every field any model
+   reads to null, except those four (in the top level and in each row). */
+static int is_required_field_name(const char *name) {
+    static const char *const required[] = {"Credits", "address", "status", "email_batch", "errors", "other_domain_formats"};
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+        if (strcmp(name, required[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static void check_null_is_accepted(const char *call) {
+    char message[2400];
+    if (!is_typed_call(call)) return;
+    snprintf(message, sizeof message, "%s with %s: %s", call, g_mode_body, g_error_text);
+    TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+}
+
+void test_offline_null_is_accepted_for_every_non_required_field(void) {
+    ZeroBounce *zb = client_with("null-sweep");
+    int fields = scan_shape_fields();
+    char *body = malloc(32768);
+    size_t used;
+    /* 75 fields when this was written. */
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(70, fields);
+    used = (size_t)snprintf(body, 32768, "{\"Credits\":\"7\",\"address\":\"a@b.c\",\"status\":\"valid\",\"errors\":[],"
+                                         "\"other_domain_formats\":[],\"email_batch\":[{\"address\":\"a@b.c\",\"status\":\"valid\"");
+    for (int i = 0; i < fields; i++) {
+        if (!is_required_field_name(g_shape_fields[i])) {
+            used += (size_t)snprintf(body + used, 32768 - used, ",\"%s\":null", g_shape_fields[i]);
+        }
+    }
+    used += (size_t)snprintf(body + used, 32768 - used, "}]");
+    for (int i = 0; i < fields; i++) {
+        if (!is_required_field_name(g_shape_fields[i])) {
+            used += (size_t)snprintf(body + used, 32768 - used, ",\"%s\":null", g_shape_fields[i]);
+        }
+    }
+    snprintf(body + used, 32768 - used, "}");
+    if (TEST_PROTECT()) {
+        g_mode_body = body;
+        g_mode_body_len = strlen(body);
+        g_leak_mode = 10;
+        g_sweep_check = check_null_is_accepted;
+        run_every_call(zb);
+    }
+    g_leak_mode = 0;
+    g_sweep_check = NULL;
+    free(body);
+}
+
 static int g_ok_credits;
 static void on_credits_value(ZBCreditsResponse response) {
     g_success_called = 1;
@@ -4127,14 +4365,17 @@ static int nested_slot_is_required(const NestedSlot *slot, int greylist) {
 }
 
 /* The values a field takes besides its type in the example: Credits and a
-   score are integers sent as a JSON integer or as a string; a sendfile
-   message is a string or a list of strings. */
+   score are integers sent as a JSON integer or as a string; a file job's
+   message (send, delete and file status, scoring too) is a string or a list
+   of strings. */
 static int nested_slot_also_takes(const NestedSlot *slot, json_object *value, int call) {
     if (!slot->key) return 0;
     if (strcmp(slot->key, "Credits") == 0 || strcmp(slot->key, "score") == 0) {
         return json_object_is_type(value, json_type_int);
     }
-    if (strcmp(slot->key, "message") == 0 && (call == EX_SEND || call == EX_SCORING_SEND)) {
+    if (strcmp(slot->key, "message") == 0 &&
+        (call == EX_SEND || call == EX_SCORING_SEND || call == EX_DELETE || call == EX_SCORING_DELETE ||
+         call == EX_STATUS || call == EX_SCORING_STATUS)) {
         return json_object_is_type(value, json_type_array) || json_object_is_type(value, json_type_string);
     }
     return 0;
@@ -4225,6 +4466,10 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_send_file_options_stay_source_compatible);
     RUN_TEST(test_offline_scoring_send_omits_validation_fields);
     RUN_TEST(test_offline_file_status_and_delete);
+    RUN_TEST(test_offline_file_job_message_list_is_joined_with_newlines);
+    RUN_TEST(test_offline_message_only_finder_answers_are_errors_whatever_the_value);
+    RUN_TEST(test_offline_get_file_json_error_joins_a_message_list);
+    RUN_TEST(test_offline_each_html_sniff_marker_rejects_a_download);
     RUN_TEST(test_offline_get_file_options);
     RUN_TEST(test_offline_activity_usage_score);
     RUN_TEST(test_offline_finder_and_domain);
@@ -4289,6 +4534,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_success_string_false_is_an_error);
     RUN_TEST(test_offline_return_url_is_sent_only_when_set);
     RUN_TEST(test_offline_every_field_a_model_reads_is_type_checked);
+    RUN_TEST(test_offline_null_is_accepted_for_every_non_required_field);
     RUN_TEST(test_offline_documented_examples_still_parse);
     RUN_TEST(test_offline_every_nested_value_of_an_example_is_type_checked);
     RUN_TEST(test_offline_a_dead_key_on_200_is_an_error_on_every_call);

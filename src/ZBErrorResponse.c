@@ -787,14 +787,17 @@ bool zb_error_only_body(const char *body) {
     return found;
 }
 
-/* An object with no "success" field whose keys are all message keys, at least
-   one of them a non-empty string. */
+/* An object with no "success" field, at least one key, and only message keys.
+   The values do not matter: a string, a blank, null or a list is a message. */
 static bool zb_message_only_body(const char *body) {
     static const char *const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
     json_object *parsed = zb_parse_object_without_success(body);
-    bool has_text = false;
     bool only_messages = true;
     if (!parsed) {
+        return false;
+    }
+    if (json_object_object_length(parsed) == 0) {
+        json_object_put(parsed);
         return false;
     }
     json_object_object_foreach(parsed, key, value) {
@@ -811,12 +814,9 @@ static bool zb_message_only_body(const char *body) {
             only_messages = false;
             break;
         }
-        if (zb_nonempty_string_field(parsed, key)) {
-            has_text = true;
-        }
     }
     json_object_put(parsed);
-    return only_messages && has_text;
+    return only_messages;
 }
 
 /*
