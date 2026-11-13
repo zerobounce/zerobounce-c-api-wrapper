@@ -12,6 +12,7 @@
 #include "unity.h"
 #include "ZeroBounce/ZeroBounce.h"
 #include "ZeroBounce/zb_internal.h"
+#include <json.h>
 
 #define OFFLINE_MAX 64
 
@@ -3325,7 +3326,11 @@ void test_offline_a_nul_in_the_body_does_not_end_the_redaction_check(void) {
    array) is an API error with status 200 on every typed call; a raw-JSON call
    hands it over as it is. */
 void test_offline_typed_calls_reject_json_of_the_wrong_shape(void) {
-    static const char *const bodies[] = {"0", "1.5", "true", "false", "null", "\"x\"", "[]", "[{}]", " [ ] "};
+    /* An array where an object is expected, positional ones included (a
+       decoder may read an array into a struct by position). */
+    static const char *const bodies[] = {"0", "1.5", "true", "false", "null", "\"x\"", "[]", "[{}]", " [ ] ",
+                                         "[\"x\"]", "[\"a@example.com\",10]", "[true,\"3\"]",
+                                         "[\"7\"]", "[\"a@b.c\",\"valid\"]"};
     ZeroBounce *zb = client_with("shape-sweep");
     CorpusEntry entry;
     g_sweep_check = check_corpus_body;
@@ -3394,9 +3399,13 @@ static void serve(const char *body) {
    field fail with status 200; nothing is coerced or defaulted. */
 void test_offline_typed_calls_reject_fields_of_the_wrong_type(void) {
     static const char *const credits[] = {
-        "{}", "{\"Credits\":null}", "{\"Credits\":true}", "{\"Credits\":5}", "{\"Credits\":5.5}",
+        "{}", "{\"Credits\":null}", "{\"Credits\":true}", "{\"Credits\":5.5}",
         "{\"Credits\":\"abc\"}", "{\"Credits\":\"5.0\"}", "{\"Credits\":\"\"}", "{\"Credits\":\" 5\"}",
         "{\"Credits\":\"99999999999999999999\"}", "{\"Credits\":[1]}", "{\"Credits\":{}}",
+        /* A JSON integer is an answer only when it is a whole number in the
+           range of int: no fraction or exponent, nothing past INT_MAX. */
+        "{\"Credits\":5.0}", "{\"Credits\":1e3}", "{\"Credits\":2147483648}", "{\"Credits\":-2147483649}",
+        "{\"Credits\":9223372036854775808}", "{\"Credits\":99999999999999999999}",
     };
     static const char *const validate[] = {
         "{}", "{\"address\":true,\"status\":\"valid\"}", "{\"address\":\"a@b.c\",\"status\":5}",
@@ -3425,6 +3434,23 @@ void test_offline_typed_calls_reject_fields_of_the_wrong_type(void) {
             serve(validate[i]);
             validate_email_with_options(zb, "a@b.c", "", &post, on_validate, on_error);
             expect_shape_error("validate_email_with_options", validate[i]);
+        }
+        {
+            /* A score sent as a string must hold an integer: atoi read "abc"
+               as a score of 0. */
+            static const char *const scores[] = {
+                "{\"email\":\"a@b.c\",\"score\":\"abc\"}", "{\"email\":\"a@b.c\",\"score\":\"5.5\"}",
+                "{\"email\":\"a@b.c\",\"score\":\"\"}", "{\"email\":\"a@b.c\",\"score\":\"9 \"}",
+                "{\"email\":\"a@b.c\",\"score\":5.5}",
+            };
+            for (size_t i = 0; i < sizeof(scores) / sizeof(scores[0]); i++) {
+                serve(scores[i]);
+                score_email(zb, "a@b.c", on_score, on_error);
+                expect_shape_error("score_email", scores[i]);
+            }
+            serve("{\"email\":\"a@b.c\",\"score\":\"10\"}");
+            score_email(zb, "a@b.c", on_score, on_error);
+            TEST_ASSERT_TRUE_MESSAGE(g_success_called, g_error_text);
         }
         serve("{\"email_batch\":[{\"address\":\"a@b.c\",\"status\":5}],\"errors\":[]}");
         validate_email_batch(zb, emails, on_batch, on_error);
@@ -3684,6 +3710,16 @@ void test_offline_documented_examples_still_parse(void) {
         TEST_ASSERT_EQUAL_INT(123456, g_ok_credits);
         ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":\"-1\"}");
         TEST_ASSERT_EQUAL_INT(-1, g_ok_credits);
+        /* Credits as a JSON integer: zerobounce.net's own getcredits example,
+           verbatim, and the ends of the int range. */
+        ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":2375323}");
+        TEST_ASSERT_EQUAL_INT(2375323, g_ok_credits);
+        ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":-1}");
+        TEST_ASSERT_EQUAL_INT(-1, g_ok_credits);
+        ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":2147483647}");
+        TEST_ASSERT_EQUAL_INT(2147483647, g_ok_credits);
+        ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":-2147483648}");
+        TEST_ASSERT_EQUAL_INT(-2147483647 - 1, g_ok_credits);
         ZB_EXPECT_OK(get_api_usage(zb, day, day, on_usage, on_error), usage);
         ZB_EXPECT_OK(get_activity_data(zb, "a@example.com", on_activity, on_error),
                      "{\"found\":true,\"active_in_days\":\"180\"}");
@@ -3745,6 +3781,252 @@ void test_offline_a_dead_key_on_200_is_an_error_on_every_call(void) {
             g_leak_mode = 10;
             run_every_call(zb);
         }
+    }
+    g_leak_mode = 0;
+}
+
+/* ---- E7 / X1: every nested value of every example is type-checked ------ */
+
+/* The typed calls the examples below are answers to. */
+enum {
+    EX_CREDITS, EX_USAGE, EX_ACTIVITY, EX_VALIDATE, EX_VALIDATE_POST, EX_BATCH, EX_SEND, EX_STATUS,
+    EX_DELETE, EX_SCORING_SEND, EX_SCORING_STATUS, EX_SCORING_DELETE, EX_SCORE, EX_FIND, EX_DOMAIN,
+};
+
+typedef struct {
+    int call;
+    const char *body;
+} TypedExample;
+
+/* Every documented example answer a typed call parses: copied verbatim from
+   zerobounce.net/docs (the credit balance, validate, file status, send file
+   and delete file pages), and the repo's own fixtures for the answers the
+   site gives no success example of. */
+static const TypedExample g_typed_examples[] = {
+    /* zerobounce.net: v2 credit balance. */
+    {EX_CREDITS, "{\"Credits\":2375323}"},
+    {EX_CREDITS, "{\"Credits\":\"-1\"}"},
+    /* zerobounce.net: v2 validate emails. */
+    {EX_VALIDATE, "{\n      \"address\": \"john.doe@zerobounce.net\",\n      \"status\": \"valid\",\n      \"sub_status\": \"\",\n"
+                  "      \"free_email\": false,\n      \"catchall_domain\": true,\n      \"did_you_mean\": null,\n"
+                  "      \"account\": \"johndoe\",\n      \"domain\": \"zerobounce.net\",\n      \"domain_age_days\": \"3431\",\n"
+                  "      \"active_in_days\": \"30\",\n      \"active_first_seen\": \"2026-02-25\",\n"
+                  "      \"smtp_provider\": \"g-suite\",\n      \"mx_found\": \"true\",\n      \"mx_record\": \"aspmx.l.google.com\",\n"
+                  "      \"firstname\": \"dan\",\n      \"lastname\": \"cotet\",\n      \"gender\": \"male\",\n      \"country\": null,\n"
+                  "      \"region\": null,\n      \"city\": null,\n      \"zipcode\": null,\n"
+                  "      \"processed_at\": \"2026-06-18 07:05:00.033\"\n  }"},
+    {EX_VALIDATE, "{\"address\":\"a@example.com\",\"Message\":\"Greylisted email, we will retry\"}"},
+    {EX_VALIDATE_POST, "{\"address\":\"a@example.com\",\"status\":\"valid\",\"sub_status\":\"\",\"free_email\":false,"
+                       "\"catchall_domain\":false,\"domain_age_days\":\"9692\",\"mx_found\":\"true\",\"firstname\":\"zero\"}"},
+    /* The repo's batch fixtures: a row next to a per-address error. */
+    {EX_BATCH, "{\"email_batch\":[{\"address\":\"valid@example.com\",\"status\":\"valid\",\"sub_status\":\"\","
+               "\"free_email\":false,\"did_you_mean\":null,\"account\":null,\"domain\":null,\"domain_age_days\":\"9692\","
+               "\"smtp_provider\":\"example\",\"catchall_domain\":false,\"mx_found\":\"true\",\"mx_record\":\"mx.example.com\","
+               "\"firstname\":\"zero\",\"lastname\":\"bounce\",\"gender\":\"male\",\"country\":\"United States\","
+               "\"region\":\"Florida\",\"city\":\"West Palm Beach\",\"zipcode\":\"33401\","
+               "\"processed_at\":\"2023-03-23 13:30:28.105\"}],"
+               "\"errors\":[{\"error\":\"Mock error message\",\"email_address\":\"invalid@example.com\"}]}"},
+    /* zerobounce.net: v2 send file, file status (both), delete file. */
+    {EX_SEND, "{\n      \"success\": true,\n      \"message\": \"File Accepted\",\n      \"file_name\": \"Your file name.csv\",\n"
+              "      \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\"\n    }"},
+    /* sendfile's message may be a list of strings. */
+    {EX_SEND, "{\"success\":true,\"message\":[\"File Accepted\"],\"file_name\":\"f.csv\",\"file_id\":\"fid\"}"},
+    {EX_STATUS, "{\n    \"success\": true,\n    \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\",\n"
+                "    \"file_name\": \"Your file name.csv\",\n    \"upload_date\": \"2023-04-28T15:25:41Z\",\n"
+                "    \"file_status\": \"Complete\",\n    \"file_phase_2_status\": \"Complete\",\n"
+                "    \"complete_percentage\": \"100%\",\n"
+                "    \"return_url\": \"Your return URL if provided when calling sendfile API\"\n  }"},
+    {EX_DELETE, "{\n    \"success\": true,\n    \"message\": \"File Deleted\",\n    \"file_name\": \"test2\",\n"
+                "    \"file_id\": \"b222a0fd-90d5-416c-8f1a-9cc3851fc823\"\n  }"},
+    /* zerobounce.net: AI scoring send file, file status, delete file. */
+    {EX_SCORING_SEND, "{\n          \"success\": true,\n          \"message\": \"File Accepted\",\n"
+                      "          \"file_name\": \"Your file name.csv\",\n"
+                      "          \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\"\n      }"},
+    {EX_SCORING_STATUS, "{\n          \"success\": true,\n          \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\",\n"
+                        "          \"file_name\": \"Your file name.csv\",\n          \"upload_date\": \"2023-04-28T15:25:41Z\",\n"
+                        "          \"file_status\": \"Complete\",\n          \"complete_percentage\": \"100%\",\n"
+                        "          \"return_url\": \"Your return URL if provided when calling sendfile API\"\n      }"},
+    {EX_SCORING_DELETE, "{\n        \"success\": true,\n        \"message\": \"File Deleted\",\n        \"file_name\": \"test2\",\n"
+                        "        \"file_id\": \"b222a0fd-90d5-416c-8f1a-9cc3851fc823\"\n    }"},
+    /* The repo's fixtures for the other typed calls. */
+    {EX_USAGE, "{\"total\":10,\"status_valid\":10,\"status_invalid\":0,\"sub_status_toxic\":0,"
+               "\"start_date\":\"1/12/2010\",\"end_date\":\"12/1/2030\"}"},
+    {EX_ACTIVITY, "{\"found\":true,\"active_in_days\":\"180\"}"},
+    {EX_SCORE, "{\"email\":\"a@example.com\",\"score\":10}"},
+    {EX_FIND, "{\"email\":\"john.doe@example.com\",\"email_confidence\":\"high\",\"domain\":\"\","
+              "\"company_name\":\"Internet Assigned Numbers Authority\",\"did_you_mean\":\"\",\"failure_reason\":\"\"}"},
+    {EX_DOMAIN, "{\"domain\":\"example.com\",\"company_name\":\"\",\"format\":\"first.last\",\"confidence\":\"high\","
+                "\"did_you_mean\":\"\",\"failure_reason\":\"\",\"other_domain_formats\":[{\"format\":\"first_last\","
+                "\"confidence\":\"high\"},{\"format\":\"first\",\"confidence\":\"medium\"}]}"},
+};
+
+static void run_typed_example(ZeroBounce *zb, int call) {
+    struct tm day = {0};
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"valid@example.com", ""};
+    ZBValidateOptions post = new_validate_options();
+    day.tm_year = 126;
+    day.tm_mday = 1;
+    post.use_post = 1;
+    email_to_validate_vector_append(&emails, email);
+    switch (call) {
+        case EX_CREDITS: get_credits(zb, on_credits, on_error); break;
+        case EX_USAGE: get_api_usage(zb, day, day, on_usage, on_error); break;
+        case EX_ACTIVITY: get_activity_data(zb, "a@example.com", on_activity, on_error); break;
+        case EX_VALIDATE: validate_email(zb, "a@example.com", "", on_validate, on_error); break;
+        case EX_VALIDATE_POST: validate_email_with_options(zb, "a@example.com", "", &post, on_validate, on_error); break;
+        case EX_BATCH: validate_email_batch(zb, emails, on_batch, on_error); break;
+        case EX_SEND: send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error); break;
+        case EX_STATUS: file_status(zb, "fid", on_status, on_error); break;
+        case EX_DELETE: delete_file(zb, "fid", on_delete, on_error); break;
+        case EX_SCORING_SEND: scoring_send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error); break;
+        case EX_SCORING_STATUS: scoring_file_status(zb, "fid", on_status, on_error); break;
+        case EX_SCORING_DELETE: scoring_delete_file(zb, "fid", on_delete, on_error); break;
+        case EX_SCORE: score_email(zb, "a@example.com", on_score, on_error); break;
+        case EX_FIND: find_email_by_domain_first_name(zb, "example.com", "A", on_find, on_error); break;
+        case EX_DOMAIN: search_domain_by_domain(zb, "example.com", on_domain, on_error); break;
+        default: TEST_FAIL_MESSAGE("unknown example call");
+    }
+    email_to_validate_vector_free(&emails);
+}
+
+/* One value at one path of an example: found by its position in a pre-order
+   walk (the root not counted). */
+typedef struct {
+    json_object *parent;
+    const char *key;
+    size_t index;
+    json_object *node;
+    char path[256];
+} NestedSlot;
+
+static int find_nested_slot(json_object *node, const char *path, int *counter, int want, NestedSlot *slot) {
+    char child_path[256];
+    if (json_object_is_type(node, json_type_object)) {
+        json_object_object_foreach(node, key, value) {
+            snprintf(child_path, sizeof child_path, "%s.%s", path, key);
+            if ((*counter)++ == want) {
+                slot->parent = node;
+                slot->key = key;
+                slot->node = value;
+                snprintf(slot->path, sizeof slot->path, "%s", child_path);
+                return 1;
+            }
+            if (value && find_nested_slot(value, child_path, counter, want, slot)) return 1;
+        }
+    } else if (json_object_is_type(node, json_type_array)) {
+        for (size_t i = 0; i < json_object_array_length(node); i++) {
+            json_object *value = json_object_array_get_idx(node, i);
+            snprintf(child_path, sizeof child_path, "%s[%zu]", path, i);
+            if ((*counter)++ == want) {
+                slot->parent = node;
+                slot->key = NULL;
+                slot->index = i;
+                slot->node = value;
+                snprintf(slot->path, sizeof slot->path, "%s", child_path);
+                return 1;
+            }
+            if (value && find_nested_slot(value, child_path, counter, want, slot)) return 1;
+        }
+    }
+    return 0;
+}
+
+/* The fields a call cannot answer without (standard.md: Credits, and the
+   address and status of a validate answer and of every batch row). */
+static int nested_slot_is_required(const NestedSlot *slot, int greylist) {
+    if (greylist) {
+        /* A greylist answer is a result by its Message alone. */
+        return slot->key && strcmp(slot->key, "Message") == 0;
+    }
+    return slot->key && (strcmp(slot->key, "Credits") == 0 || strcmp(slot->key, "address") == 0 ||
+                         strcmp(slot->key, "status") == 0);
+}
+
+/* The values a field takes besides its type in the example: Credits and a
+   score are integers sent as a JSON integer or as a string; a sendfile
+   message is a string or a list of strings. */
+static int nested_slot_also_takes(const NestedSlot *slot, json_object *value, int call) {
+    if (!slot->key) return 0;
+    if (strcmp(slot->key, "Credits") == 0 || strcmp(slot->key, "score") == 0) {
+        return json_object_is_type(value, json_type_int);
+    }
+    if (strcmp(slot->key, "message") == 0 && (call == EX_SEND || call == EX_SCORING_SEND)) {
+        return json_object_is_type(value, json_type_array) || json_object_is_type(value, json_type_string);
+    }
+    return 0;
+}
+
+/* Standard section 3: a value of another JSON type than the documented one,
+   at any path of an example (a nested object, an array item, a batch row,
+   a row's field), is an API error with status 200. null is taken only for an
+   optional object field; an array item that is null is a wrong type too.
+   Credits alone also takes a JSON integer. */
+void test_offline_every_nested_value_of_an_example_is_type_checked(void) {
+    static const char *const replacements[] = {"null", "true", "5", "5.5", "\"x\"", "[]", "{}"};
+    ZeroBounce *zb = client_with("nested-sweep");
+    char failures[4096] = "";
+    int failed = 0;
+    int checked = 0;
+    if (TEST_PROTECT()) {
+        for (size_t e = 0; e < sizeof(g_typed_examples) / sizeof(g_typed_examples[0]); e++) {
+            const TypedExample *example = &g_typed_examples[e];
+            json_object *root = json_tokener_parse(example->body);
+            int slots = 0;
+            NestedSlot slot;
+            TEST_ASSERT_NOT_NULL_MESSAGE(root, example->body);
+            /* The example itself parses (ACCEPT). */
+            serve(example->body);
+            run_typed_example(zb, example->call);
+            TEST_ASSERT_FALSE_MESSAGE(g_error_called, g_error_text);
+            TEST_ASSERT_TRUE_MESSAGE(g_success_called, example->body);
+            find_nested_slot(root, "$", &slots, -1, &slot);
+            for (int k = 0; k < slots; k++) {
+                for (size_t r = 0; r < sizeof(replacements) / sizeof(replacements[0]); r++) {
+                    json_object *copy = NULL;
+                    json_object *value = json_tokener_parse(replacements[r]);
+                    int counter = 0;
+                    int expect_ok;
+                    const char *text;
+                    TEST_ASSERT_EQUAL_INT(0, json_object_deep_copy(root, &copy, NULL));
+                    TEST_ASSERT_TRUE(find_nested_slot(copy, "$", &counter, k, &slot));
+                    /* Same type, or a null in the example (its type is not
+                       shown there): nothing to check. */
+                    if (slot.node == NULL || json_object_get_type(slot.node) == json_object_get_type(value)) {
+                        json_object_put(value);
+                        json_object_put(copy);
+                        continue;
+                    }
+                    expect_ok = (value == NULL && slot.key &&
+                                 !nested_slot_is_required(&slot, strstr(example->body, "\"Message\"") != NULL)) ||
+                                nested_slot_also_takes(&slot, value, example->call);
+                    if (slot.key) {
+                        json_object_object_add(slot.parent, slot.key, value);
+                    } else {
+                        json_object_array_put_idx(slot.parent, slot.index, value);
+                    }
+                    text = json_object_to_json_string_ext(copy, JSON_C_TO_STRING_PLAIN);
+                    serve(text);
+                    run_typed_example(zb, example->call);
+                    checked++;
+                    if (expect_ok ? (g_error_called || !g_success_called)
+                                  : (!g_error_called || g_success_called || g_error_status != 200)) {
+                        size_t used = strlen(failures);
+                        failed++;
+                        if (used + 200 < sizeof failures) {
+                            snprintf(failures + used, sizeof failures - used, "\n  example %zu %s = %s: %s",
+                                     e, slot.path, replacements[r], expect_ok ? "rejected" : "accepted");
+                        }
+                    }
+                    json_object_put(copy);
+                }
+            }
+            json_object_put(root);
+        }
+        /* 17 examples, about 560 substitutions when this was written. */
+        TEST_ASSERT_GREATER_OR_EQUAL_INT(500, checked);
+        if (failed) fprintf(stderr, "nested sweep:%s\n", failures);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, failed, "see the list on stderr");
     }
     g_leak_mode = 0;
 }
@@ -3823,5 +4105,6 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_typed_calls_reject_fields_of_the_wrong_type);
     RUN_TEST(test_offline_every_field_a_model_reads_is_type_checked);
     RUN_TEST(test_offline_documented_examples_still_parse);
+    RUN_TEST(test_offline_every_nested_value_of_an_example_is_type_checked);
     RUN_TEST(test_offline_a_dead_key_on_200_is_an_error_on_every_call);
 }

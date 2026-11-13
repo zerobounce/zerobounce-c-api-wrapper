@@ -1,4 +1,7 @@
 #include <stdio.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ZeroBounce/ZBScoreEmailResponse.h"
@@ -55,8 +58,17 @@ static bool parse_score_field(const json_object* j, int* score_out) {
         return true;
     }
     if (json_object_is_type(score_obj, json_type_string)) {
-        *score_out = atoi(json_object_get_string(score_obj));
-        return true;
+        /* The API's string form of an integer: atoi would read "abc" as 0. */
+        const char* text = json_object_get_string(score_obj);
+        char* end = NULL;
+        long long value;
+        errno = 0;
+        value = strtoll(text, &end, 10);
+        if (text[0] != '\0' && (text[0] == '-' || (text[0] >= '0' && text[0] <= '9')) &&
+            *end == '\0' && errno != ERANGE && value >= INT_MIN && value <= INT_MAX) {
+            *score_out = (int)value;
+            return true;
+        }
     }
     /* E7: a score is a number (or the API's string form of one). */
     zb_shape_mismatch("score");
