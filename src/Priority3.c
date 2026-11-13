@@ -216,7 +216,10 @@ static void p3_send_file_json_success(
             }
             return;
         }
-        success_callback(zb_send_file_response_from_json(j_obj));
+        ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
+        if (!zb_shape_error_reported(http_code, error_callback)) {
+            success_callback(typed_response);
+        }
         json_object_put(j_obj);
     }
 }
@@ -493,7 +496,10 @@ static void p3_bulk_root_file_status(
     {
         json_object *j_obj = NULL;
         if (zb_read_success_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
-            success_callback(zb_file_status_response_from_json(j_obj));
+            ZBFileStatusResponse typed_response = zb_file_status_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -530,7 +536,10 @@ static void p3_bulk_root_delete_file(
     {
         json_object *j_obj = NULL;
         if (zb_read_success_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
-            success_callback(zb_delete_file_response_from_json(j_obj));
+            ZBDeleteFileResponse typed_response = zb_delete_file_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }

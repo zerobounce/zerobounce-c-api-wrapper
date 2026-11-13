@@ -3,6 +3,7 @@
 
 #include "ZeroBounce/ZBValidateBatchResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 ZBEmailToValidate new_zb_email_to_validate() {
     ZBEmailToValidate response;
@@ -287,15 +288,26 @@ ZBValidateBatchResponse zb_validate_batch_response_from_json(const json_object* 
     json_object* j_email_batch = NULL;
     json_object* j_errors = NULL;
 
-    if (json_object_object_get_ex(j, "email_batch", &j_email_batch) == false ||
-        json_object_object_get_ex(j, "errors", &j_errors) == false) {
+    /* E7: both lists are arrays (or absent / null), of objects. */
+    if (!zb_json_array_or_null(j, "email_batch", &j_email_batch) ||
+        !zb_json_array_or_null(j, "errors", &j_errors)) {
         return r;
     }
 
-    size_t email_batch_size = json_object_is_type(j_email_batch, json_type_array)
-        ? json_object_array_length(j_email_batch) : 0;
-    size_t errors_size = json_object_is_type(j_errors, json_type_array)
-        ? json_object_array_length(j_errors) : 0;
+    size_t email_batch_size = j_email_batch ? json_object_array_length(j_email_batch) : 0;
+    size_t errors_size = j_errors ? json_object_array_length(j_errors) : 0;
+    for (size_t i = 0; i < email_batch_size; i++) {
+        if (!json_object_is_type(json_object_array_get_idx(j_email_batch, i), json_type_object)) {
+            zb_shape_mismatch("email_batch");
+            return r;
+        }
+    }
+    for (size_t i = 0; i < errors_size; i++) {
+        if (!json_object_is_type(json_object_array_get_idx(j_errors, i), json_type_object)) {
+            zb_shape_mismatch("errors");
+            return r;
+        }
+    }
 
     for (size_t i = 0; i < email_batch_size; i++) {
         json_object* j_response = json_object_array_get_idx(j_email_batch, i);

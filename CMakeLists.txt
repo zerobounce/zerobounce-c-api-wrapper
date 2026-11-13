@@ -103,7 +103,8 @@ target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
 # functions.
 target_compile_definitions(ZeroBounceTests PRIVATE
   ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
-  ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv")
+  ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
+  ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 # The real-transport tests (local socket server: redirects, timeouts) are a
 # separate binary: ZeroBounceTests replaces curl_easy_perform and friends with

@@ -3,6 +3,7 @@
 
 #include "ZeroBounce/ZBScoreEmailResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 ZBScoreEmailResponse new_zb_score_email_response() {
     ZBScoreEmailResponse response;
@@ -57,6 +58,8 @@ static bool parse_score_field(const json_object* j, int* score_out) {
         *score_out = atoi(json_object_get_string(score_obj));
         return true;
     }
+    /* E7: a score is a number (or the API's string form of one). */
+    zb_shape_mismatch("score");
     return false;
 }
 

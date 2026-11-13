@@ -3004,15 +3004,24 @@ static int is_typed_call(const char *call) {
     return strstr(call, "on_raw") == NULL && !is_download_call(call);
 }
 
+/* E7: the typed calls that cannot answer without named fields: getcredits
+   (Credits) and validate (address and status). */
+static int needs_named_fields(const char *call) {
+    return strncmp(call, "get_credits(", 12) == 0 || strncmp(call, "validate_email(", 15) == 0 ||
+        strncmp(call, "validate_email_with_options(", 28) == 0;
+}
+
 static void check_corpus_body(const char *call) {
     char message[1600];
     snprintf(message, sizeof message, "%s with %s: %s", call, g_corpus_entry->line, g_error_text);
     TEST_ASSERT_TRUE_MESSAGE(g_count > 0, message);
     if ((!g_corpus_entry->accept &&
          !(g_corpus_entry->len == 0 && strncmp(call, "delete_inbox_placement_test(", 28) == 0)) ||
-        (g_corpus_entry->accept && is_typed_call(call) && !corpus_body_is_object(g_corpus_entry))) {
+        (g_corpus_entry->accept && is_typed_call(call) && !corpus_body_is_object(g_corpus_entry)) ||
+        (g_corpus_entry->accept && needs_named_fields(call))) {
         /* A REJECT body, or (E7) valid JSON of the wrong shape for a typed
-           call (0, "x", []): an API error with status 200, never a result
+           call (0, "x", [], or an object without the fields getcredits and
+           validate need): an API error with status 200, never a result
            filled with defaults. */
         TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
         TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
@@ -3253,6 +3262,12 @@ void test_offline_each_decode_step_of_the_redaction_check_is_needed(void) {
     /* JSON \uXXXX, and a surrogate pair for a character outside the BMP. */
     t_expect_omitted(FUZZ_SECRET, "echo [", unicode, "\\u escapes");
     t_expect_omitted("k\xF0\x9F\x94\x91y", "echo [", "k\\ud83d\\udd11y", "surrogate pair");
+    /* A \uXXXX escape for each UTF-8 sequence length the decoder writes:
+       1 byte (above), 2 bytes (U+00E9), 3 bytes (U+20AC) and 4 bytes (the
+       surrogate pair above, and an upper-case one here). */
+    t_expect_omitted("k\xC3\xA9y", "echo [", "k\\u00e9y", "\\u escape, 2-byte UTF-8");
+    t_expect_omitted("k\xE2\x82\xACy", "echo [", "k\\u20ACy", "\\u escape, 3-byte UTF-8");
+    t_expect_omitted("k\xF0\x9F\x94\x91y", "echo [", "k\\uD83D\\uDD11y", "\\u escape, 4-byte UTF-8");
     /* Four layers: the SDK's own request encoding plus three echo layers. */
     t_expect_omitted(FUZZ_SECRET, "echo [", url4, "four URL layers");
     /* A decoded NUL (%00, \u0000) does not end the search. */
@@ -3357,6 +3372,383 @@ void test_offline_a_deeply_nested_body_is_an_error(void) {
     free(body);
 }
 
+
+/* ---- E7: field types are part of the shape --------------------------- */
+
+static void expect_shape_error(const char *what, const char *body) {
+    char message[512];
+    snprintf(message, sizeof message, "%s with %s: %s", what, body, g_error_text);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+}
+
+static void serve(const char *body) {
+    reset_offline();
+    g_mode_body = body;
+    g_mode_body_len = strlen(body);
+    g_leak_mode = 10;
+}
+
+/* checks.md E7: getcredits and validate with a missing, null or wrong-typed
+   field fail with status 200; nothing is coerced or defaulted. */
+void test_offline_typed_calls_reject_fields_of_the_wrong_type(void) {
+    static const char *const credits[] = {
+        "{}", "{\"Credits\":null}", "{\"Credits\":true}", "{\"Credits\":5}", "{\"Credits\":5.5}",
+        "{\"Credits\":\"abc\"}", "{\"Credits\":\"5.0\"}", "{\"Credits\":\"\"}", "{\"Credits\":\" 5\"}",
+        "{\"Credits\":\"99999999999999999999\"}", "{\"Credits\":[1]}", "{\"Credits\":{}}",
+    };
+    static const char *const validate[] = {
+        "{}", "{\"address\":true,\"status\":\"valid\"}", "{\"address\":\"a@b.c\",\"status\":5}",
+        "{\"status\":\"valid\"}", "{\"address\":\"a@b.c\"}", "{\"address\":null,\"status\":\"valid\"}",
+        "{\"address\":\"a@b.c\",\"status\":null}",
+        "{\"address\":\"a@b.c\",\"status\":\"valid\",\"free_email\":\"maybe\"}",
+        "{\"address\":\"a@b.c\",\"status\":\"valid\",\"domain_age_days\":9692}",
+        "{\"address\":\"a@b.c\",\"status\":\"valid\",\"Message\":7}",
+    };
+    ZeroBounce *zb = client_with("field-types");
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"a@b.c", ""};
+    ZBValidateOptions post = new_validate_options();
+    email_to_validate_vector_append(&emails, email);
+    post.use_post = 1;
+    if (TEST_PROTECT()) {
+        for (size_t i = 0; i < sizeof(credits) / sizeof(credits[0]); i++) {
+            serve(credits[i]);
+            get_credits(zb, on_credits, on_error);
+            expect_shape_error("get_credits", credits[i]);
+        }
+        for (size_t i = 0; i < sizeof(validate) / sizeof(validate[0]); i++) {
+            serve(validate[i]);
+            validate_email(zb, "a@b.c", "", on_validate, on_error);
+            expect_shape_error("validate_email", validate[i]);
+            serve(validate[i]);
+            validate_email_with_options(zb, "a@b.c", "", &post, on_validate, on_error);
+            expect_shape_error("validate_email_with_options", validate[i]);
+        }
+        serve("{\"email_batch\":[{\"address\":\"a@b.c\",\"status\":5}],\"errors\":[]}");
+        validate_email_batch(zb, emails, on_batch, on_error);
+        expect_shape_error("validate_email_batch", "a row with status 5");
+        {
+            /* Each batch row needs its address and status too. */
+            static const char *const rows[] = {
+                "{\"email_batch\":[{}],\"errors\":[]}",
+                "{\"email_batch\":[{\"status\":\"valid\"}],\"errors\":[]}",
+                "{\"email_batch\":[{\"address\":\"a@b.c\"}],\"errors\":[]}",
+                "{\"email_batch\":[{\"address\":null,\"status\":\"valid\"}],\"errors\":[]}",
+                "{\"email_batch\":[{\"address\":\"a@b.c\",\"status\":null}],\"errors\":[]}",
+            };
+            for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+                serve(rows[i]);
+                validate_email_batch(zb, emails, on_batch, on_error);
+                expect_shape_error("validate_email_batch", rows[i]);
+            }
+        }
+    }
+    g_leak_mode = 0;
+    email_to_validate_vector_free(&emails);
+}
+
+/* Every field name a response model reads, scanned from the model sources
+   (src/ZB*.c), so a field added later is in the sweeps below. */
+#define SHAPE_FIELDS_MAX 160
+static char g_shape_fields[SHAPE_FIELDS_MAX][64];
+static int g_shape_field_count;
+
+static void add_shape_field(const char *name, size_t len) {
+    if (len == 0 || len >= sizeof(g_shape_fields[0])) return;
+    for (int i = 0; i < g_shape_field_count; i++) {
+        if (strlen(g_shape_fields[i]) == len && strncmp(g_shape_fields[i], name, len) == 0) return;
+    }
+    TEST_ASSERT_TRUE(g_shape_field_count < SHAPE_FIELDS_MAX);
+    memcpy(g_shape_fields[g_shape_field_count], name, len);
+    g_shape_fields[g_shape_field_count][len] = '\0';
+    g_shape_field_count++;
+}
+
+static int scan_shape_fields(void) {
+    static const char *const readers[] = {
+        "get_json_value(", "get_json_string_copy(", "zb_json_require_string(",
+        "zb_json_array_or_null(", "json_object_object_get_ex(",
+    };
+    DIR *dir = opendir(ZB_SOURCE_DIR);
+    struct dirent *entry;
+    g_shape_field_count = 0;
+    TEST_ASSERT_NOT_NULL(dir);
+    while ((entry = readdir(dir)) != NULL) {
+        char path[1024];
+        FILE *f;
+        long size;
+        char *text;
+        /* The response models; the error-body checks read error fields
+           whatever the call. */
+        if (strncmp(entry->d_name, "ZB", 2) != 0 || strstr(entry->d_name, "Error") ||
+            strcmp(entry->d_name + strlen(entry->d_name) - 2, ".c") != 0) {
+            continue;
+        }
+        snprintf(path, sizeof path, "%s/%s", ZB_SOURCE_DIR, entry->d_name);
+        f = fopen(path, "rb");
+        TEST_ASSERT_NOT_NULL(f);
+        fseek(f, 0, SEEK_END);
+        size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        text = calloc((size_t)size + 1, 1);
+        TEST_ASSERT_EQUAL_size_t((size_t)size, fread(text, 1, (size_t)size, f));
+        fclose(f);
+        for (size_t r = 0; r < sizeof(readers) / sizeof(readers[0]); r++) {
+            for (char *p = strstr(text, readers[r]); p; p = strstr(p + 1, readers[r])) {
+                char *close = strchr(p, ')');
+                char *quote = strchr(p, '"');
+                if (quote && close && quote < close) {
+                    char *end = strchr(quote + 1, '"');
+                    if (end) add_shape_field(quote + 1, (size_t)(end - quote - 1));
+                }
+            }
+        }
+        /* The score and Credits checks read their field by name too. */
+        if (strstr(text, "\"score\"")) add_shape_field("score", 5);
+        free(text);
+    }
+    closedir(dir);
+    return g_shape_field_count;
+}
+
+static void check_every_typed_call_rejects(const char *call) {
+    char message[2400];
+    if (!is_typed_call(call)) return;
+    snprintf(message, sizeof message, "%s with %s: %s", call, g_mode_body, g_error_text);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+}
+
+/* Which field the sweep below gives the wrong type, and which typed calls
+   reported exactly that field. */
+static const char *g_shape_field;
+static int g_shape_field_rejected;
+
+static void check_field_rejected_somewhere(const char *call) {
+    char expected[160];
+    if (!is_typed_call(call)) return;
+    snprintf(expected, sizeof expected, "field \"%s\"", g_shape_field);
+    if (g_error_called && g_error_status == 200 && strstr(g_error_text, expected)) {
+        g_shape_field_rejected++;
+    } else {
+        /* Every other call either takes the body or rejects another field. */
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called || g_error_status == 200, call);
+    }
+}
+
+/* E7 by construction: a body in which every field any model reads is an
+   object ({}, a type no scalar or list field takes) fails every typed call
+   with 200; and each field alone with the wrong type is reported, by name,
+   by at least one typed call. */
+void test_offline_every_field_a_model_reads_is_type_checked(void) {
+    ZeroBounce *zb = client_with("field-sweep");
+    char *all = malloc(16384);
+    char *one = malloc(1024);
+    int fields = scan_shape_fields();
+    size_t used;
+    /* 75 fields when this was written. */
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(70, fields);
+    used = (size_t)snprintf(all, 16384, "{");
+    for (int i = 0; i < fields; i++) {
+        used += (size_t)snprintf(all + used, 16384 - used, "%s\"%s\":{}", i ? "," : "", g_shape_fields[i]);
+    }
+    snprintf(all + used, 16384 - used, "}");
+    if (TEST_PROTECT()) {
+        g_mode_body = all;
+        g_mode_body_len = strlen(all);
+        g_leak_mode = 10;
+        g_sweep_check = check_every_typed_call_rejects;
+        run_every_call(zb);
+        g_sweep_check = check_field_rejected_somewhere;
+        for (int i = 0; i < fields; i++) {
+            const char *base[] = {"Credits", "\"7\"", "address", "\"a@b.c\"", "status", "\"valid\""};
+            used = (size_t)snprintf(one, 1024, "{\"%s\":{}", g_shape_fields[i]);
+            for (int b = 0; b < 6; b += 2) {
+                if (strcmp(base[b], g_shape_fields[i]) != 0) {
+                    used += (size_t)snprintf(one + used, 1024 - used, ",\"%s\":%s", base[b], base[b + 1]);
+                }
+            }
+            /* The lists' rows carry the field too, for the fields only a row
+               reads (email_address, a format's confidence). */
+            if (strcmp(g_shape_fields[i], "email_batch") != 0) {
+                used += (size_t)snprintf(one + used, 1024 - used,
+                    ",\"email_batch\":[{\"%s\":{}%s}]", g_shape_fields[i],
+                    strcmp(g_shape_fields[i], "address") && strcmp(g_shape_fields[i], "status")
+                        ? ",\"address\":\"a@b.c\",\"status\":\"valid\"" : "");
+            }
+            if (strcmp(g_shape_fields[i], "errors") != 0) {
+                used += (size_t)snprintf(one + used, 1024 - used, ",\"errors\":[{\"%s\":{}}]", g_shape_fields[i]);
+            }
+            if (strcmp(g_shape_fields[i], "other_domain_formats") != 0) {
+                used += (size_t)snprintf(one + used, 1024 - used,
+                    ",\"other_domain_formats\":[{\"%s\":{}}]", g_shape_fields[i]);
+            }
+            snprintf(one + used, 1024 - used, "}");
+            g_shape_field = g_shape_fields[i];
+            g_shape_field_rejected = 0;
+            g_mode_body = one;
+            g_mode_body_len = strlen(one);
+            run_every_call(zb);
+            TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, g_shape_field_rejected, one);
+        }
+    }
+    g_leak_mode = 0;
+    free(all);
+    free(one);
+}
+
+static int g_ok_credits;
+static void on_credits_value(ZBCreditsResponse response) {
+    g_success_called = 1;
+    g_ok_credits = response.credits;
+}
+
+/* E7 ACCEPT: the documented example responses (zerobounce.net/docs, as the
+   SDKs' fixtures carry them) still parse, nulls included. */
+void test_offline_documented_examples_still_parse(void) {
+    static const char *const usage =
+        "{\"total\":10,\"status_valid\":10,\"status_invalid\":0,\"status_catch_all\":0,\"status_do_not_mail\":0,"
+        "\"status_spamtrap\":0,\"status_unknown\":0,\"sub_status_toxic\":0,\"sub_status_disposable\":0,"
+        "\"sub_status_role_based\":0,\"sub_status_possible_trap\":0,\"sub_status_global_suppression\":0,"
+        "\"sub_status_timeout_exceeded\":0,\"sub_status_mail_server_temporary_error\":0,"
+        "\"sub_status_mail_server_did_not_respond\":0,\"sub_status_greylisted\":0,\"sub_status_antispam_system\":0,"
+        "\"sub_status_does_not_accept_mail\":0,\"sub_status_exception_occurred\":0,\"sub_status_failed_syntax_check\":0,"
+        "\"sub_status_mailbox_not_found\":0,\"sub_status_unroutable_ip_address\":0,\"sub_status_possible_typo\":0,"
+        "\"sub_status_no_dns_entries\":0,\"sub_status_role_based_catch_all\":0,\"sub_status_accept_all\":0,"
+        "\"sub_status_mailbox_quota_exceeded\":0,\"sub_status_forcible_disconnect\":0,"
+        "\"sub_status_failed_smtp_connection\":0,\"sub_status_mx_forward\":0,\"sub_status_alternate\":0,"
+        "\"sub_status_allowed\":0,\"sub_status_blocked\":0,\"sub_status_gold\":0,\"sub_status_role_based_accept_all\":0,"
+        "\"start_date\":\"1/12/2010\",\"end_date\":\"12/1/2030\"}";
+#define ZB_DOC_ROW(addr, st, sub) \
+    "{\"address\":\"" addr "\",\"status\":\"" st "\",\"sub_status\":\"" sub "\",\"free_email\":false," \
+    "\"did_you_mean\":null,\"account\":null,\"domain\":null,\"domain_age_days\":\"9692\",\"smtp_provider\":\"example\"," \
+    "\"catchall_domain\":false,\"mx_found\":\"true\",\"mx_record\":\"mx.example.com\",\"firstname\":\"zero\"," \
+    "\"lastname\":\"bounce\",\"gender\":\"male\",\"country\":\"United States\",\"region\":\"Florida\"," \
+    "\"city\":\"West Palm Beach\",\"zipcode\":\"33401\",\"processed_at\":\"2023-03-23 13:30:28.105\"}"
+    static const char *const validate[] = {
+        ZB_DOC_ROW("valid@example.com", "valid", ""),
+        ZB_DOC_ROW("invalid@example.com", "invalid", "mailbox_not_found"),
+        "{\"address\":\"invalid@example.com\",\"status\":\"invalid\",\"sub_status\":\"failed_syntax_check\","
+        "\"free_email\":false,\"did_you_mean\":null,\"account\":\"\",\"domain\":null,\"domain_age_days\":\"\","
+        "\"smtp_provider\":\"\",\"mx_found\":\"false\",\"mx_record\":null,\"firstname\":\"\",\"lastname\":\"\","
+        "\"gender\":\"\",\"country\":null,\"region\":null,\"city\":null,\"zipcode\":null,"
+        "\"processed_at\":\"2023-04-05 08:55:40.661\"}",
+        "{\"Message\":\"Greylist validation still in progress. Please try again later.\"}",
+        "{\"address\":\"a@example.com\",\"Message\":\"Greylisted email, we will retry\"}",
+    };
+    static const char *const batch[] = {
+        "{\"email_batch\":[" ZB_DOC_ROW("valid@example.com", "valid", "") "],"
+        "\"errors\":[{\"error\":\"Mock error message\",\"email_address\":\"invalid@example.com\"}]}",
+        "{\"email_batch\":[],\"errors\":[{\"error\":\"Mock error message\",\"email_address\":\"invalid@example.com\"}]}",
+        "{\"email_batch\":[" ZB_DOC_ROW("valid@example.com", "valid", "") "],\"errors\":[]}",
+    };
+#undef ZB_DOC_ROW
+    static const char *const status[] = {
+        "{\"success\":true,\"file_id\":\"e90e9b1d-8dc7-40eb-a7d9-999d52086a56\",\"file_name\":\"emails2.txt\","
+        "\"upload_date\":\"2023-04-26T17:52:23Z\",\"file_status\":\"Processing\",\"complete_percentage\":\"100%\","
+        "\"error_reason\":null,\"return_url\":\"https://mock.value.com/\"}",
+        "{\"success\":true,\"file_id\":\"e90e9b1d-8dc7-40eb-a7d9-999d52086a56\",\"file_name\":\"emails2.txt\","
+        "\"upload_date\":\"2023-04-26T17:52:23Z\",\"file_status\":\"Deleted\",\"complete_percentage\":\"0%\","
+        "\"error_reason\":\"mock value\",\"return_url\":null}",
+    };
+    static const char *const finder[] = {
+        "{\"email\":\"john.doe@example.com\",\"email_confidence\":\"high\",\"domain\":\"\","
+        "\"company_name\":\"Internet Assigned Numbers Authority\",\"did_you_mean\":\"\",\"failure_reason\":\"\"}",
+        "{\"email\":\"\",\"email_confidence\":\"undetermined\",\"domain\":\"betheexample.org\","
+        "\"company_name\":\"Example Inc\",\"did_you_mean\":\"\",\"failure_reason\":\"\"}",
+    };
+    static const char *const domain[] = {
+        "{\"domain\":\"example.com\",\"company_name\":\"\",\"format\":\"unknown\",\"confidence\":\"undetermined\","
+        "\"did_you_mean\":\"\",\"failure_reason\":\"\",\"other_domain_formats\":[]}",
+        "{\"domain\":\"example.com\",\"company_name\":\"\",\"format\":\"first.last\",\"confidence\":\"high\","
+        "\"did_you_mean\":\"\",\"failure_reason\":\"\",\"other_domain_formats\":[{\"format\":\"first_last\","
+        "\"confidence\":\"high\"},{\"format\":\"first\",\"confidence\":\"medium\"}]}",
+    };
+    struct tm day = {0};
+    ZeroBounce *zb = client_with("documented");
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate email = {"valid@example.com", ""};
+    email_to_validate_vector_append(&emails, email);
+    day.tm_year = 126;
+    day.tm_mday = 1;
+#define ZB_EXPECT_OK(call, body) do { \
+        serve(body); call; \
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, g_error_text); \
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, body); \
+    } while (0)
+    if (TEST_PROTECT()) {
+        ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":\"123456\"}");
+        TEST_ASSERT_EQUAL_INT(123456, g_ok_credits);
+        ZB_EXPECT_OK(get_credits(zb, on_credits_value, on_error), "{\"Credits\":\"-1\"}");
+        TEST_ASSERT_EQUAL_INT(-1, g_ok_credits);
+        ZB_EXPECT_OK(get_api_usage(zb, day, day, on_usage, on_error), usage);
+        ZB_EXPECT_OK(get_activity_data(zb, "a@example.com", on_activity, on_error),
+                     "{\"found\":true,\"active_in_days\":\"180\"}");
+        ZB_EXPECT_OK(get_activity_data(zb, "a@example.com", on_activity, on_error),
+                     "{\"found\":false,\"active_in_days\":null}");
+        for (size_t i = 0; i < sizeof(validate) / sizeof(validate[0]); i++) {
+            ZB_EXPECT_OK(validate_email(zb, "a@example.com", "", on_validate, on_error), validate[i]);
+        }
+        for (size_t i = 0; i < sizeof(batch) / sizeof(batch[0]); i++) {
+            ZB_EXPECT_OK(validate_email_batch(zb, emails, on_batch, on_error), batch[i]);
+        }
+        ZB_EXPECT_OK(send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error),
+                     "{\"success\":true,\"message\":\"File Accepted\",\"file_name\":\"emails2.txt\","
+                     "\"file_id\":\"e90e9b1d-8dc7-40eb-a7d9-999d52086a56\"}");
+        for (size_t i = 0; i < sizeof(status) / sizeof(status[0]); i++) {
+            ZB_EXPECT_OK(file_status(zb, "fid", on_status, on_error), status[i]);
+        }
+        ZB_EXPECT_OK(delete_file(zb, "fid", on_delete, on_error),
+                     "{\"success\":true,\"message\":\"File Deleted\",\"file_name\":\"emails2.txt\","
+                     "\"file_id\":\"e90e9b1d-8dc7-40eb-a7d9-999d52086a56\"}");
+        for (size_t i = 0; i < sizeof(finder) / sizeof(finder[0]); i++) {
+            ZB_EXPECT_OK(find_email_by_domain_first_name(zb, "example.com", "A", on_find, on_error), finder[i]);
+        }
+        for (size_t i = 0; i < sizeof(domain) / sizeof(domain[0]); i++) {
+            ZB_EXPECT_OK(search_domain_by_domain(zb, "example.com", on_domain, on_error), domain[i]);
+        }
+    }
+#undef ZB_EXPECT_OK
+    g_leak_mode = 0;
+    email_to_validate_vector_free(&emails);
+}
+
+/* ---- E2: a dead key on an HTTP 200 is an error on every call ---------- */
+
+static void check_dead_key_body(const char *call) {
+    char message[1200];
+    snprintf(message, sizeof message, "%s with %s: %s", call, g_mode_body, g_error_text);
+    TEST_ASSERT_TRUE_MESSAGE(g_count > 0, message);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+}
+
+/* The three dead-key spellings the API answers with on an HTTP 200, over
+   every request function: the uploads (send_file and its siblings), the
+   S3/SFTP jobs, Inbox Placement and the raw-JSON calls included. */
+void test_offline_a_dead_key_on_200_is_an_error_on_every_call(void) {
+    static const char *const bodies[] = {
+        "{\"error\":\"Invalid API key or your account ran out of credits\"}",
+        "{\"error_message\":\"Invalid API key or your account ran out of credits\"}",
+        "{\"Error\":\"Invalid API key or your account ran out of credits\"}",
+    };
+    ZeroBounce *zb = client_with("dead-key-sweep");
+    g_sweep_check = check_dead_key_body;
+    if (TEST_PROTECT()) {
+        for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+            g_mode_body = bodies[i];
+            g_mode_body_len = strlen(bodies[i]);
+            g_leak_mode = 10;
+            run_every_call(zb);
+        }
+    }
+    g_leak_mode = 0;
+}
+
 void offline_run_tests(void) {
     RUN_TEST(test_offline_get_credits);
     RUN_TEST(test_offline_validate_options);
@@ -3428,4 +3820,8 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_a_nul_in_the_body_does_not_end_the_redaction_check);
     RUN_TEST(test_offline_typed_calls_reject_json_of_the_wrong_shape);
     RUN_TEST(test_offline_a_deeply_nested_body_is_an_error);
+    RUN_TEST(test_offline_typed_calls_reject_fields_of_the_wrong_type);
+    RUN_TEST(test_offline_every_field_a_model_reads_is_type_checked);
+    RUN_TEST(test_offline_documented_examples_still_parse);
+    RUN_TEST(test_offline_a_dead_key_on_200_is_an_error_on_every_call);
 }

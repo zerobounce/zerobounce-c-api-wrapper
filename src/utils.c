@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 StringVector string_vector_init() {
     StringVector vector;
@@ -81,6 +82,54 @@ char* concatenate_strings(const StringVector* vec, char* separator) {
     return result;
 }
 
+/*
+ * E7: field types are part of the response shape. The first field of the
+ * response the current call on this thread is reading that arrived with a JSON
+ * type its model does not take ("" while none has). A null is an absent value,
+ * not a wrong type.
+ */
+static _Thread_local char zb_tls_shape_field[64];
+static _Thread_local bool zb_tls_shape_error = false;
+
+void zb_shape_reset(void) {
+    zb_tls_shape_error = false;
+    zb_tls_shape_field[0] = '\0';
+}
+
+void zb_shape_mismatch(const char *field) {
+    if (!zb_tls_shape_error) {
+        zb_tls_shape_error = true;
+        snprintf(zb_tls_shape_field, sizeof(zb_tls_shape_field), "%s", field ? field : "");
+    }
+}
+
+const char *zb_shape_error_field(void) {
+    return zb_tls_shape_error ? zb_tls_shape_field : NULL;
+}
+
+bool zb_json_require_string(const json_object *obj, const char *key) {
+    json_object *value = NULL;
+    if (!json_object_object_get_ex(obj, key, &value) || !json_object_is_type(value, json_type_string)) {
+        zb_shape_mismatch(key);
+        return false;
+    }
+    return true;
+}
+
+bool zb_json_array_or_null(const json_object *obj, const char *key, json_object **out) {
+    json_object *value = NULL;
+    *out = NULL;
+    if (!json_object_object_get_ex(obj, key, &value) || value == NULL) {
+        return true;
+    }
+    if (!json_object_is_type(value, json_type_array)) {
+        zb_shape_mismatch(key);
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
 void* get_json_value(const json_object* obj, json_type type, const char* key, void* default_value) {
     json_object* value_obj = NULL;
     int* int_value;
@@ -88,8 +137,10 @@ void* get_json_value(const json_object* obj, json_type type, const char* key, vo
     char** string_value;
     StringVector* string_vector_value;
 
-    if (json_object_object_get_ex(obj, key, &value_obj)) {
-        if (json_object_is_type(value_obj, type)) {
+    if (json_object_object_get_ex(obj, key, &value_obj) && value_obj != NULL) {
+        if (!json_object_is_type(value_obj, type)) {
+            zb_shape_mismatch(key);
+        } else {
             switch (type) {
                 case json_type_boolean:
                     bool_value = (bool*) malloc(sizeof(bool));
@@ -129,6 +180,8 @@ void* get_json_value(const json_object* obj, json_type type, const char* key, vo
                         json_object* item = json_object_array_get_idx(value_obj, i);
                         if (json_object_is_type(item, json_type_string)) {
                             string_vector_append(string_vector_value, json_object_get_string(item));
+                        } else {
+                            zb_shape_mismatch(key);
                         }
                     }
                     return (void*) string_vector_value;
@@ -144,10 +197,11 @@ char* get_json_string_copy(const json_object* obj, const char* key, const char* 
     const char* def = default_value ? default_value : "";
     json_object* value_obj = NULL;
 
-    if (obj && json_object_object_get_ex(obj, key, &value_obj)) {
+    if (obj && json_object_object_get_ex(obj, key, &value_obj) && value_obj != NULL) {
         if (json_object_is_type(value_obj, json_type_string)) {
             return strdup(json_object_get_string(value_obj));
         }
+        zb_shape_mismatch(key);
     }
     return strdup(def);
 }

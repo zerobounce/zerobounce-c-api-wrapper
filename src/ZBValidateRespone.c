@@ -3,6 +3,7 @@
 
 #include "ZeroBounce/ZBValidateResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 ZBValidateStatus status_from_string(const char* string) {
     if (strcmp(string, "valid") == 0) {
@@ -219,6 +220,18 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
 ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
     ZBValidateResponse r = new_zb_validate_response();
 
+    /* E7: a result names its address and status, as JSON strings. The one
+       answer without them is a greylist_processing validate still in
+       progress, which carries its text in Message. */
+    json_object* message_obj = NULL;
+    bool greylist_answer = json_object_object_get_ex(j, "Message", &message_obj) &&
+        json_object_is_type(message_obj, json_type_string) &&
+        json_object_get_string_len(message_obj) > 0;
+    if (!greylist_answer) {
+        zb_json_require_string(j, "address");
+        zb_json_require_string(j, "status");
+    }
+
     r.address = *(char**)get_json_value(j, json_type_string, "address", &(char*){""});
     r.status = status_from_string(*(char**)get_json_value(j, json_type_string, "status", &(char*){""}));
     r.sub_status = sub_status_from_string(*(char**)get_json_value(j, json_type_string, "sub_status", &(char*){""}));
@@ -242,6 +255,8 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
         && json_object_is_type(catchall_domain_obj, json_type_boolean)) {
         r.catchall_domain_set = true;
         r.catchall_domain = json_object_get_boolean(catchall_domain_obj);
+    } else if (catchall_domain_obj != NULL) {
+        zb_shape_mismatch("catchall_domain");
     }
 
     r.first_name = *(char**)get_json_value(j, json_type_string, "firstname", &(char*){""});

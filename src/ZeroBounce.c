@@ -1190,7 +1190,10 @@ static void send_file_internal(
             if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             } else {
-                success_callback(zb_send_file_response_from_json(j_obj));
+                ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
+                if (!zb_shape_error_reported(http_code, error_callback)) {
+                    success_callback(typed_response);
+                }
                 json_object_put(j_obj);
             }
         }
@@ -1311,7 +1314,10 @@ static void send_file_internal(
                 goto cleanup;
             }
 
-            success_callback(zb_send_file_response_from_json(j_obj));
+            ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -1370,7 +1376,10 @@ static void file_status_internal(
                 goto cleanup;
             }
 
-            success_callback(zb_file_status_response_from_json(j_obj));
+            ZBFileStatusResponse typed_response = zb_file_status_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -1586,7 +1595,10 @@ static void delete_file_internal(
                 goto cleanup;
             }
 
-            success_callback(zb_delete_file_response_from_json(j_obj));
+            ZBDeleteFileResponse typed_response = zb_delete_file_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -1641,7 +1653,9 @@ static void find_email_internal(
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
-            success_callback(response_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(response_obj);
+            }
             zb_find_email_response_free(&response_obj);
             json_object_put(j_obj);
         }
@@ -1692,7 +1706,9 @@ static void search_domain_internal(
                 goto cleanup;
             }
             ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(j_obj);
-            success_callback(response_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(response_obj);
+            }
             zb_domain_search_response_free(&response_obj);
             json_object_put(j_obj);
         }
@@ -1747,7 +1763,10 @@ void get_credits(
                 goto cleanup;
             }
 
-            success_callback(zb_credits_response_from_json(j_obj));
+            ZBCreditsResponse typed_response = zb_credits_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -1815,7 +1834,10 @@ void get_api_usage(
                 goto cleanup;
             }
 
-            success_callback(zb_get_api_usage_response_from_json(j_obj));
+            ZBGetApiUsageResponse typed_response = zb_get_api_usage_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -1958,7 +1980,10 @@ void validate_email_with_options(
             if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
                 /* reported */
             } else {
-                success_callback(zb_validate_response_from_json(j_obj));
+                ZBValidateResponse typed_response = zb_validate_response_from_json(j_obj);
+                if (!zb_shape_error_reported(http_code, error_callback)) {
+                    success_callback(typed_response);
+                }
                 json_object_put(j_obj);
             }
         }
@@ -2057,7 +2082,10 @@ void validate_email_with_options(
                 goto cleanup;
             }
 
-            success_callback(zb_validate_response_from_json(j_obj));
+            ZBValidateResponse typed_response = zb_validate_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -2225,7 +2253,10 @@ void validate_email_batch_with_options(
                 }
                 free(account_error);
             } else {
-                success_callback(zb_validate_batch_response_from_json(j_obj));
+                ZBValidateBatchResponse typed_response = zb_validate_batch_response_from_json(j_obj);
+                if (!zb_shape_error_reported(http_code, error_callback)) {
+                    success_callback(typed_response);
+                }
             }
             json_object_put(j_obj);
         }
@@ -2771,7 +2802,10 @@ void get_activity_data(
                 goto cleanup;
             }
 
-            success_callback(zb_activity_data_response_from_json(j_obj));
+            ZBActivityDataResponse typed_response = zb_activity_data_response_from_json(j_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(typed_response);
+            }
             json_object_put(j_obj);
         }
     }
@@ -2850,7 +2884,10 @@ static void score_email_internal(
             goto cleanup;
         }
 
-        success_callback(zb_score_email_response_from_json(j_obj));
+        ZBScoreEmailResponse typed_response = zb_score_email_response_from_json(j_obj);
+        if (!zb_shape_error_reported(http_code, error_callback)) {
+            success_callback(typed_response);
+        }
         json_object_put(j_obj);
     }
 
@@ -3015,7 +3052,9 @@ void find_email(
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
-            success_callback(response_obj);
+            if (!zb_shape_error_reported(http_code, error_callback)) {
+                success_callback(response_obj);
+            }
             zb_find_email_response_free(&response_obj);
             json_object_put(j_obj);
         }

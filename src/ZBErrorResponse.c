@@ -1079,6 +1079,9 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
         return false;
     }
     *out = NULL;
+    /* A typed call decodes what this returns next; start its field-type
+       check afresh. */
+    zb_shape_reset();
     /*
      * LIVE: a "success": false field on an HTTP 200 is a failure, not a
      * result. getfile and deletefile report an unknown or deleted file id
@@ -1109,6 +1112,24 @@ bool zb_read_success_json(const char *body, long status_code, json_object **out,
         return false;
     }
     *out = parsed;
+    return true;
+}
+
+bool zb_shape_error_reported(long status_code, OnErrorCallback error_callback) {
+    const char *field = zb_shape_error_field();
+    char message[160];
+    if (!field) {
+        return false;
+    }
+    /* E7: valid JSON whose field has the wrong type (or a required field is
+       missing) is not the API's answer: an error with the status, never a
+       result filled with defaults. */
+    snprintf(message, sizeof(message),
+             "Unexpected JSON response: field \"%s\" is missing or has the wrong type.", field);
+    zb_shape_reset();
+    if (error_callback) {
+        error_callback(parse_error_with_status(message, status_code));
+    }
     return true;
 }
 

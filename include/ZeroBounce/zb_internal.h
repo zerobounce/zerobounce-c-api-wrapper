@@ -192,4 +192,22 @@ bool zb_batch_has_account_error(const json_object *batch, char **message_out);
  */
 bool zb_download_body_is_json(const char *body, const char *content_type);
 
+/*
+ * E7: field types are part of the response shape. get_json_value and
+ * get_json_string_copy note a field that arrived with a JSON type its model
+ * does not take (null is fine); zb_read_success_json clears the note before a
+ * typed call decodes, and zb_shape_error_reported turns it into an API error
+ * with the response's status.
+ */
+void zb_shape_reset(void);
+void zb_shape_mismatch(const char *field);
+/* The field noted since the last reset, or NULL. */
+const char *zb_shape_error_field(void);
+/* A field the call cannot answer without: present and a JSON string. */
+bool zb_json_require_string(const json_object *obj, const char *key);
+/* A field that is an array when present; *out is the array or NULL. */
+bool zb_json_array_or_null(const json_object *obj, const char *key, json_object **out);
+/* Reports the noted field as an API error with status_code; true if it did. */
+bool zb_shape_error_reported(long status_code, OnErrorCallback error_callback);
+
 #endif

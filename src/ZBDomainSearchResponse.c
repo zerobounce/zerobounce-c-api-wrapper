@@ -3,6 +3,7 @@
 
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 // ZBDomainFormat methods
 
@@ -151,6 +152,10 @@ ZBDomainFormatVector zb_domain_format_vector_from_json(const json_object* j) {
     }
     vector.size = vector_size;
     for (int index = 0; index < vector_size; index ++) {
+        if (!json_object_is_type(json_object_array_get_idx(j, index), json_type_object)) {
+            /* E7: each format is an object. */
+            zb_shape_mismatch("other_domain_formats");
+        }
         vector.data[index] = zb_domain_format_from_json(
             json_object_array_get_idx(j, index)
         );
@@ -245,7 +250,8 @@ ZBDomainSearchResponse zb_domain_search_response_from_json(const json_object* j)
     response.did_you_mean = get_json_string_copy(j, "did_you_mean", "");
     response.failure_reason = get_json_string_copy(j, "failure_reason", "");
 
-    json_object * domain_formats_json = json_object_object_get(j, "other_domain_formats");
+    json_object * domain_formats_json = NULL;
+    zb_json_array_or_null(j, "other_domain_formats", &domain_formats_json);
     response.other_domain_formats = zb_domain_format_vector_from_json(domain_formats_json);
 
     return response;
