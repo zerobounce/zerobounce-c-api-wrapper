@@ -738,6 +738,46 @@ void test_offline_file_job_message_list_is_joined_with_newlines(void) {
     TEST_ASSERT_EQUAL_STRING("Deleted.", g_job_message);
 }
 
+/* A file job's message list holds strings only. A number, a boolean, a null,
+   an object or a nested list among its items is an error with status 200 on
+   every file-job call, not joined as its text (the items used to be read with
+   json_object_get_string, which turns a number into its digits). */
+void test_offline_file_job_message_list_with_a_non_string_item_is_an_error(void) {
+    const char *bodies[] = {
+        "{\"success\":true,\"message\":[5],\"file_id\":\"fid\"}",
+        "{\"success\":true,\"message\":[\"ok\",5],\"file_id\":\"fid\"}",
+        "{\"success\":false,\"message\":[true]}",
+        "{\"success\":false,\"message\":[\"x\",null]}",
+        "{\"success\":false,\"message\":[{\"a\":1}]}",
+        "{\"success\":false,\"message\":[[\"x\"]]}",
+    };
+    ZeroBounce *zb = client_with("file-job-item-type-key");
+    for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+        for (int call = 0; call < 8; call++) {
+            reset_offline();
+            g_job_message[0] = '\0';
+            g_mode_body = bodies[b];
+            g_mode_body_len = strlen(bodies[b]);
+            g_leak_mode = 10;
+            switch (call) {
+            case 0: delete_file(zb, "fid", on_delete_message, on_error); break;
+            case 1: scoring_delete_file(zb, "fid", on_delete_message, on_error); break;
+            case 2: file_status(zb, "fid", on_status_message, on_error); break;
+            case 3: scoring_file_status(zb, "fid", on_status_message, on_error); break;
+            case 4: email_finder_file_status(zb, "fid", on_status_message, on_error); break;
+            case 5: domain_search_file_status(zb, "fid", on_status_message, on_error); break;
+            case 6: email_finder_delete_file(zb, "fid", on_delete_message, on_error); break;
+            default: domain_search_delete_file(zb, "fid", on_delete_message, on_error); break;
+            }
+            g_leak_mode = 0;
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, bodies[b]);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, bodies[b]);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, bodies[b]);
+        }
+    }
+    reset_offline();
+}
+
 void test_offline_get_file_options(void) {
     reset_offline();
     ZeroBounce *zb = client_with("getfile-key");
@@ -4455,6 +4495,83 @@ void test_offline_every_nested_value_of_an_example_is_type_checked(void) {
     g_leak_mode = 0;
 }
 
+/* Standard section 3: a missing optional field reads exactly like a null one,
+   so each documented example with one non-required field left out, at any
+   path, is still an answer: a success with no error. Credits, validate's
+   address and status, and a greylist Message stay required. */
+void test_offline_a_missing_non_required_field_reads_as_empty(void) {
+    ZeroBounce *zb = client_with("missing-sweep");
+    char failures[4096] = "";
+    int failed = 0;
+    int checked = 0;
+    if (TEST_PROTECT()) {
+        for (size_t e = 0; e < sizeof(g_typed_examples) / sizeof(g_typed_examples[0]); e++) {
+            const TypedExample *example = &g_typed_examples[e];
+            json_object *root = json_tokener_parse(example->body);
+            int greylist = strstr(example->body, "\"Message\"") != NULL;
+            int slots = 0;
+            NestedSlot slot;
+            TEST_ASSERT_NOT_NULL_MESSAGE(root, example->body);
+            find_nested_slot(root, "$", &slots, -1, &slot);
+            for (int k = 0; k < slots; k++) {
+                json_object *copy = NULL;
+                int counter = 0;
+                TEST_ASSERT_EQUAL_INT(0, json_object_deep_copy(root, &copy, NULL));
+                TEST_ASSERT_TRUE(find_nested_slot(copy, "$", &counter, k, &slot));
+                if (!slot.key || nested_slot_is_required(&slot, greylist)) {
+                    json_object_put(copy);
+                    continue;
+                }
+                json_object_object_del(slot.parent, slot.key);
+                serve(json_object_to_json_string_ext(copy, JSON_C_TO_STRING_PLAIN));
+                run_typed_example(zb, example->call);
+                checked++;
+                if (g_error_called || !g_success_called) {
+                    size_t used = strlen(failures);
+                    failed++;
+                    if (used + 200 < sizeof failures) {
+                        snprintf(failures + used, sizeof failures - used, "\n  example %zu %s missing: %s", e,
+                                 slot.path, g_error_called ? g_error_text : "no answer");
+                    }
+                }
+                json_object_put(copy);
+            }
+            json_object_put(root);
+        }
+        /* 17 examples and about 150 optional fields when this was written. */
+        TEST_ASSERT_GREATER_OR_EQUAL_INT(120, checked);
+        if (failed) fprintf(stderr, "missing sweep:%s\n", failures);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, failed, "see the list on stderr");
+    }
+    g_leak_mode = 0;
+}
+
+/* The values a missing optional field reads as: "" for a string, false for a
+   boolean, and the same for a null. Only address and status are needed. */
+static int g_empty_fields_ok;
+static void on_validate_empty_fields(ZBValidateResponse response) {
+    g_success_called = 1;
+    g_empty_fields_ok = response.address && strcmp(response.address, "a@b.c") == 0 && response.account &&
+                        response.account[0] == '\0' && response.domain && response.domain[0] == '\0' &&
+                        response.first_name && response.first_name[0] == '\0' && response.error &&
+                        response.error[0] == '\0' && response.domain_website_exists &&
+                        response.domain_website_exists[0] == '\0' && !response.free_email && !response.mx_found &&
+                        !response.catchall_domain;
+}
+
+void test_offline_missing_validate_fields_read_as_empty_values(void) {
+    ZeroBounce *zb = client_with("missing-validate-fields");
+    const char *body = "{\"address\":\"a@b.c\",\"status\":\"valid\"}";
+    reset_offline();
+    g_empty_fields_ok = 0;
+    serve(body);
+    validate_email(zb, "a@b.c", "", on_validate_empty_fields, on_error);
+    TEST_ASSERT_FALSE_MESSAGE(g_error_called, g_error_text);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_TRUE(g_empty_fields_ok);
+    reset_offline();
+}
+
 void offline_run_tests(void) {
     RUN_TEST(test_offline_get_credits);
     RUN_TEST(test_offline_validate_options);
@@ -4467,6 +4584,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_scoring_send_omits_validation_fields);
     RUN_TEST(test_offline_file_status_and_delete);
     RUN_TEST(test_offline_file_job_message_list_is_joined_with_newlines);
+    RUN_TEST(test_offline_file_job_message_list_with_a_non_string_item_is_an_error);
     RUN_TEST(test_offline_message_only_finder_answers_are_errors_whatever_the_value);
     RUN_TEST(test_offline_get_file_json_error_joins_a_message_list);
     RUN_TEST(test_offline_each_html_sniff_marker_rejects_a_download);
@@ -4537,5 +4655,7 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_null_is_accepted_for_every_non_required_field);
     RUN_TEST(test_offline_documented_examples_still_parse);
     RUN_TEST(test_offline_every_nested_value_of_an_example_is_type_checked);
+    RUN_TEST(test_offline_a_missing_non_required_field_reads_as_empty);
+    RUN_TEST(test_offline_missing_validate_fields_read_as_empty_values);
     RUN_TEST(test_offline_a_dead_key_on_200_is_an_error_on_every_call);
 }

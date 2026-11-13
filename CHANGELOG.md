@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Every typed call (`get_credits`, `validate_email`, `get_api_usage`, the bulk file calls, the S3 and SFTP jobs, the email finder and domain search calls and the rest) took an HTTP 200 body that was valid JSON of the wrong shape, such as `0`, `"x"`, `[]` or `true`, as a result filled with defaults (`get_credits` reported `credits` `-1`). It is now an error with status 200; the raw-JSON calls still hand any JSON value over as it is.
 - A response larger than the size cap (`ZB_MAX_JSON_RESPONSE_BYTES`, `ZB_MAX_GETFILE_BYTES` for `get_file` and its siblings) was reported as a transport failure with status 0 (`Failed to perform request. CURLcode: 23`), whatever the server answered. The error now keeps the HTTP status: a 500 stays a 500, and an oversized 200 is an error with status 200 (`The response body was larger than this client accepts (HTTP 200).`).
+- Offline tests: a file job's `message` list holding a non-string item (`[5]`, `["ok",5]`, `[true]`, `[null]`, an object or a nested list) is an error with status 200 on every file-job call, checked by a test that fails when the item check is removed; a missing optional field reads as empty on every documented example, each non-required field left out in turn (required fields excepted), and a missing `validate` field reads as `""` or `false`.
 
 ### Security
 
