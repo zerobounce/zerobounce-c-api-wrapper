@@ -5108,6 +5108,55 @@ void test_offline_an_html_page_after_long_padding_is_not_a_file(void) {
             remove(path);
         }
     }
+    /* The title is read after the padding. 9000 spaces is past the 8192-byte
+       title window, so a skip that was removed would lose "Padded title". */
+    for (int kind = 0; kind < 6; kind++) {
+        size_t len = 0;
+        size_t size = 0;
+        char *body = nt_padded(" ", 1, 9000, "<html><title>Padded title</title></html>", &len);
+        char *content;
+        FILE *seed;
+        snprintf(message, sizeof(message), "%s: title after 9000 spaces", nt_download_name(kind));
+        remove(path);
+        seed = fopen(path, "wb");
+        fwrite("ORIG", 1, 4, seed);
+        fclose(seed);
+        nt_script_n(body, len, 200, "text/csv");
+        nt_download(kind, zb, path);
+        content = nt_read_file(path, &size);
+        TEST_ASSERT_NOT_NULL_MESSAGE(content, message);
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "Padded title"), message);
+        TEST_ASSERT_EQUAL_MEMORY_MESSAGE("ORIG", content, 4, message);
+        free(content);
+        free(body);
+        remove(path);
+    }
+    /* 3000 spaces share the first 4096-byte block with the file. Streaming
+       used to drop them; every download keeps them. */
+    for (int kind = 0; kind < 6; kind++) {
+        size_t pad = 3000;
+        size_t csv_len = 2000;
+        size_t size = 0;
+        char *body = malloc(pad + csv_len);
+        char *content;
+        TEST_ASSERT_NOT_NULL(body);
+        memset(body, ' ', pad);
+        memset(body + pad, 'a', csv_len);
+        snprintf(message, sizeof(message), "%s: 3000 spaces then the file", nt_download_name(kind));
+        remove(path);
+        nt_script_n(body, pad + csv_len, 200, "text/csv");
+        nt_download(kind, zb, path);
+        content = nt_read_file(path, &size);
+        TEST_ASSERT_NOT_NULL_MESSAGE(content, message);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(pad + csv_len, size, message);
+        TEST_ASSERT_EQUAL_MEMORY_MESSAGE(body, content, size, message);
+        free(content);
+        free(body);
+        remove(path);
+    }
     /* A normal CSV, and a CSV behind the same padding, are still saved. */
     for (int kind = 0; kind < 6; kind++) {
         static const char csv[] = "email\na@b.c\n";
@@ -5153,6 +5202,35 @@ void test_offline_a_json_download_error_after_padding_is_the_api_message(void) {
             TEST_ASSERT_NULL_MESSAGE(fopen(path, "rb"), message);
         }
     }
+    /* A JSON error longer than the 4096-byte stream probe. Streaming says so
+       instead of quoting the cut-off body; a buffered download still has the
+       whole message. */
+    {
+        size_t n = 5000;
+        char *body = malloc(n + 1);
+        TEST_ASSERT_NOT_NULL(body);
+        memcpy(body, "{\"Message\":\"", 12);
+        memset(body + 12, 'Q', n - 14);
+        memcpy(body + n - 2, "\"}", 2);
+        body[n] = '\0';
+        for (int kind = 0; kind < 6; kind++) {
+            snprintf(message, sizeof(message), "%s: JSON error longer than the probe", nt_download_name(kind));
+            remove(path);
+            nt_script_n(body, n, 200, "application/json");
+            nt_download(kind, zb, path);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+            TEST_ASSERT_NULL_MESSAGE(fopen(path, "rb"), message);
+            if (kind == 2 || kind == 3) {
+                TEST_ASSERT_NOT_NULL_MESSAGE(
+                    strstr(g_error_text, "larger than this client reads"), message);
+                TEST_ASSERT_NULL_MESSAGE(strstr(g_error_text, "QQQQ"), message);
+            } else {
+                TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "QQQQ"), message);
+            }
+        }
+        free(body);
+    }
     reset_offline();
 }
 
@@ -5196,6 +5274,19 @@ static void *nt_url_thread(void *arg) {
 
 void test_offline_threads_with_their_own_clients_can_set_base_urls_together(void) {
     pthread_t threads[NT_URL_THREADS];
+    size_t before = zb_owned_url_count_for_test();
+    ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+    ZeroBounce *one = new_zero_bounce_instance();
+    zero_bounce_warmup_set_base_url(zbw, "https://count.example.test");
+    TEST_ASSERT_EQUAL_UINT(before + 1, zb_owned_url_count_for_test());
+    zero_bounce_warmup_set_base_url(zbw, "https://count-b.example.test");
+    TEST_ASSERT_EQUAL_UINT(before + 1, zb_owned_url_count_for_test());
+    zero_bounce_warmup_free(zbw);
+    TEST_ASSERT_EQUAL_UINT(before, zb_owned_url_count_for_test());
+    zero_bounce_set_bulk_api_base_url(one, "https://count-main.example.test/");
+    TEST_ASSERT_EQUAL_UINT(before + 1, zb_owned_url_count_for_test());
+    zero_bounce_set_bulk_api_base_url(one, "https://count-main-b.example.test");
+    TEST_ASSERT_EQUAL_UINT(before + 1, zb_owned_url_count_for_test());
     for (long t = 0; t < NT_URL_THREADS; t++) {
         TEST_ASSERT_EQUAL_INT(0, pthread_create(&threads[t], NULL, nt_url_thread, (void *)(intptr_t)t));
     }

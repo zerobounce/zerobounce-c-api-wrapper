@@ -102,7 +102,12 @@ file(GLOB_RECURSE SOURCES "src/*.c")
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 target_include_directories(${PROJECT_NAME} PUBLIC include ${json-c_SOURCE_DIR})
 
+# The copied-URL table is locked with pthread (a critical section on Windows).
+# Link it here: a shared libcurl may not pass -lpthread on to a static link,
+# and glibc before 2.34 does not provide pthread from libc.
+find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PUBLIC json-c libcurl)
+target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 
 if(PROJECT_IS_TOP_LEVEL)
   enable_testing()

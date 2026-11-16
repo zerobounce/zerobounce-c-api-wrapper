@@ -320,10 +320,23 @@ static void t_stop(TServer *server) {
 static int t_errors;
 static long t_status;
 static int t_successes;
+static char t_error_text[1024];
 
 static void t_on_error(ZBErrorResponse error) {
+    size_t used = 0;
     t_errors++;
     t_status = error.status_code;
+    t_error_text[0] = '\0';
+    for (size_t i = 0; i < error.errors.size; i++) {
+        const char *part = error.errors.data[i] ? error.errors.data[i] : "";
+        size_t n = strlen(part);
+        if (used + n >= sizeof(t_error_text)) {
+            n = sizeof(t_error_text) - used - 1;
+        }
+        memcpy(t_error_text + used, part, n);
+        used += n;
+        t_error_text[used] = '\0';
+    }
 }
 static void t_on_credits(ZBCreditsResponse r) { (void)r; t_successes++; }
 static void t_on_score(ZBScoreEmailResponse r) { (void)r; t_successes++; }
@@ -755,6 +768,11 @@ void test_transport_a_failed_download_keeps_the_file_already_there(void) {
                          modes[m], kind, seeded ? "earlier file" : "no earlier file", listing);
                 TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
                 TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+                if (modes[m] < 0) {
+                    TEST_ASSERT_NULL_MESSAGE(strstr(t_error_text, "transport-key"), message);
+                    TEST_ASSERT_NULL_MESSAGE(strstr(t_error_text, "api_key"), message);
+                    TEST_ASSERT_NULL_MESSAGE(strstr(t_error_text, "127.0.0.1"), message);
+                }
                 if (seeded) {
                     TEST_ASSERT_NOT_NULL_MESSAGE(handle, message);
                     TEST_ASSERT_EQUAL_STRING_MESSAGE(previous, content, message);

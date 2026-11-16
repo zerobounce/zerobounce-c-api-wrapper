@@ -12,8 +12,6 @@
 /* ZeroBounce.c: a download body with nothing in it but whitespace, byte order
    marks and no-break spaces. */
 bool zb_download_body_is_blank(const char *body);
-/* ZeroBounce.c: a JSON download error, reported as the API's own message. */
-void zb_report_download_json_error(const char *body, long status_code, OnErrorCallback error_callback);
 
 /* ZeroBounce.c: stores a copy of url in the slot and frees the one it replaces. */
 void zb_replace_base_url(const char **slot, const char *url);

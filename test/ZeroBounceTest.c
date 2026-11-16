@@ -881,6 +881,9 @@ void test_get_file_json_indicates_helper(void)
 {
     TEST_ASSERT_TRUE(zb_get_file_json_indicates_error("{\"success\":false,\"message\":\"\"}"));
     TEST_ASSERT_FALSE(zb_get_file_json_indicates_error("{\"file_id\":\"x\"}"));
+    TEST_ASSERT_TRUE(zb_get_file_json_indicates_error("\xEF\xBB\xBF{\"Error\":\"Invalid API key\"}"));
+    TEST_ASSERT_TRUE(zb_get_file_json_indicates_error("\xC2\xA0{\"success\":false}"));
+    TEST_ASSERT_FALSE(zb_get_file_json_indicates_error("\xEF\xBB\xBF{\"file_id\":\"x\"}"));
 }
 
 void test_get_file_with_options_validation(void)

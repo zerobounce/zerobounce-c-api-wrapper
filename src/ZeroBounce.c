@@ -348,13 +348,14 @@ char *zb_temp_path_for(const char *path, const void *owner) {
     return temp_path;
 }
 
-/* Moves temp_path over path, replacing whatever was there. */
+/* Moves temp_path over path, replacing whatever was there. One call: deleting
+   the old file first would lose it if the rename then failed. */
 bool zb_replace_file(const char *temp_path, const char *path) {
 #ifdef _WIN32
-    /* rename() does not replace an existing file on Windows. */
-    remove(path);
-#endif
+    return MoveFileExA(temp_path, path, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
     return rename(temp_path, path) == 0;
+#endif
 }
 
 int zb_write_file_replacing(const char *path, const char *data, size_t size) {
@@ -537,13 +538,9 @@ bool zb_download_body_is_blank(const char *body) {
 }
 
 bool zb_get_file_json_indicates_error(const char *body) {
-    if (!body) {
-        return false;
-    }
-    while (*body == ' ' || *body == '\t' || *body == '\n' || *body == '\r') {
-        body++;
-    }
-    if (*body != '{') {
+    /* The same padding the downloads skip, including a byte order mark. */
+    body = zb_download_skip_blank(body);
+    if (body[0] != '{') {
         return false;
     }
     json_object *o = json_tokener_parse(body);
@@ -997,6 +994,16 @@ void zb_register_owned_url(const char *url) {
     }
     zb_owned_urls[zb_owned_url_count++] = url;
     zb_owned_urls_release();
+}
+
+/* How many copies the table holds. The offline tests use it to see that a
+   replaced or freed URL was released. */
+size_t zb_owned_url_count_for_test(void) {
+    size_t count;
+    zb_owned_urls_acquire();
+    count = zb_owned_url_count;
+    zb_owned_urls_release();
+    return count;
 }
 
 /* Frees url when this library allocated it; any other pointer (a literal, a
@@ -2633,6 +2640,10 @@ typedef struct {
     bool json_error;
     bool open_failed;
     bool write_failed;
+    /* Leading padding moved out of the probe so the HTML check can see past
+       it. Written ahead of the file when the body is a file; freed otherwise. */
+    char *kept_prefix;
+    size_t kept_prefix_size;
 } ZbDownloadStream;
 
 /* Whether the held-back start of the body is the API's error, not a file. */
@@ -2660,6 +2671,20 @@ static void zb_stream_report_rejection(
     const ZbDownloadStream *stream, long http_code, OnErrorCallback error_callback
 ) {
     if (http_code <= 299 && stream->json_error) {
+        /* The probe is full and still not one JSON value: the error was cut
+           off. The truncated text is not the API's message. */
+        if (stream->probe_size == ZB_STREAM_PROBE_BYTES) {
+            json_object *parsed = json_tokener_parse(zb_download_skip_blank(stream->probe));
+            if (!parsed) {
+                if (error_callback) {
+                    error_callback(parse_error_with_status(
+                        "The download was a JSON error larger than this client reads.",
+                        http_code));
+                }
+                return;
+            }
+            json_object_put(parsed);
+        }
         zb_report_download_json_error(stream->probe, http_code, error_callback);
     } else {
         zb_report_body_error(stream->probe, http_code, error_callback);
@@ -2673,6 +2698,35 @@ static bool zb_stream_put(ZbDownloadStream *stream, const void *data, size_t siz
         return false;
     }
     return true;
+}
+
+static void zb_stream_drop_prefix(ZbDownloadStream *stream) {
+    free(stream->kept_prefix);
+    stream->kept_prefix = NULL;
+    stream->kept_prefix_size = 0;
+}
+
+/* Remembers the padding at the front of the probe. A later file write emits
+   it first; a rejection frees it. */
+static bool zb_stream_stash_padding(ZbDownloadStream *stream, size_t skipped) {
+    char *grown = realloc(stream->kept_prefix, stream->kept_prefix_size + skipped);
+    if (!grown) {
+        return false;
+    }
+    memcpy(grown + stream->kept_prefix_size, stream->probe, skipped);
+    stream->kept_prefix = grown;
+    stream->kept_prefix_size += skipped;
+    return true;
+}
+
+static bool zb_stream_write_kept(ZbDownloadStream *stream) {
+    bool ok = true;
+    if (stream->kept_prefix_size &&
+        !zb_stream_put(stream, stream->kept_prefix, stream->kept_prefix_size)) {
+        ok = false;
+    }
+    zb_stream_drop_prefix(stream);
+    return ok;
 }
 
 static bool zb_stream_open(ZbDownloadStream *stream) {
@@ -2784,11 +2838,16 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
                 stream->past_padding = true;
             }
             if (stream->probe_size == ZB_STREAM_PROBE_BYTES) {
-                /* Padding, then too little to judge: the padding goes, so the
-                   HTML check always sees ZB_HTML_WINDOW bytes after it. */
+                /* Padding, then too little to judge: set the padding aside so
+                   the HTML check can see ZB_HTML_WINDOW bytes after it. A file
+                   is written with that padding put back in front. */
                 size_t skipped = zb_stream_padding_length(stream->probe, stream->probe_size);
                 size_t rest = stream->probe_size - skipped;
                 if (skipped > 0 && rest < ZB_HTML_WINDOW) {
+                    if (!zb_stream_stash_padding(stream, skipped)) {
+                        stream->rejected = true;
+                        return total;
+                    }
                     memmove(stream->probe, stream->probe + skipped, rest);
                     stream->probe_size = rest;
                     stream->probe[rest] = '\0';
@@ -2812,7 +2871,8 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
             stream->open_failed = true;
             return total;
         }
-        if (!zb_stream_put(stream, stream->probe, stream->probe_size) ||
+        if (!zb_stream_write_kept(stream) ||
+            !zb_stream_put(stream, stream->probe, stream->probe_size) ||
             !zb_stream_put(stream, data, left)) {
             return 0;
         }
@@ -2847,11 +2907,15 @@ static void zb_stream_finish(ZbDownloadStream *stream) {
         stream->open_failed = true;
         return;
     }
+    if (!zb_stream_write_kept(stream)) {
+        return;
+    }
     zb_stream_put(stream, stream->probe, stream->probe_size);
 }
 
 /* Removes the file this call was writing, if any. A file at path is kept. */
 static void zb_stream_discard(ZbDownloadStream *stream) {
+    zb_stream_drop_prefix(stream);
     if (stream->temp_path) {
         remove(stream->temp_path);
         free(stream->temp_path);
@@ -2973,6 +3037,7 @@ static void get_file_streaming_internal(
             return;
         }
         if (stream.open_failed) {
+            zb_stream_drop_prefix(&stream);
             if (error_callback) {
                 error_callback(parse_error("Invalid file path"));
             }
@@ -3045,6 +3110,7 @@ static void get_file_streaming_internal(
         return;
     }
     if (stream.open_failed) {
+        zb_stream_drop_prefix(&stream);
         if (error_callback) {
             error_callback(parse_error("Invalid file path"));
         }

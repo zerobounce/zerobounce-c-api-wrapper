@@ -661,10 +661,6 @@ bool zb_content_type_is_html(const char *content_type) {
     return false;
 }
 
-/* ZeroBounce.c: the start of a body past every leading ASCII whitespace byte,
-   byte order mark and no-break space. */
-const char *zb_download_skip_blank(const char *body);
-
 bool zb_body_looks_like_html(const char *body) {
     char lower[2001];
     /* The 2000 bytes after any padding, not the first 2000 bytes: a page behind

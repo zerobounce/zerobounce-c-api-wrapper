@@ -132,8 +132,9 @@ jobs:
             -DFETCHCONTENT_SOURCE_DIR_LIBCURL="$deps/libcurl-src" \
             -DFETCHCONTENT_SOURCE_DIR_JSON-C="$deps/json-c-src"
           cmake --build "$consumer/build" --target consumer
-          # FETCHCONTENT_FULLY_DISCONNECTED only warns about a missing unity-src on
-          # CMake 3.21, so look for the cache entries of a FetchContent_MakeAvailable
+          # The consumer's cmake_minimum_required(VERSION 3.21) leaves CMP0170 at
+          # OLD, so a missing unity or fff source only warns, on every CMake
+          # version. Look for the cache entries of a FetchContent_MakeAvailable
           # of unity or fff instead: they exist only when the library's
           # PROJECT_IS_TOP_LEVEL guard is gone.
           if grep -E 'FETCHCONTENT_SOURCE_DIR_(UNITY|FFF)' "$consumer/build/CMakeCache.txt"; then

@@ -191,6 +191,12 @@ bool zb_batch_has_account_error(const json_object *batch, char **message_out);
  * with "{"), whatever its keys. content_type may be NULL.
  */
 bool zb_download_body_is_json(const char *body, const char *content_type);
+/* The start of body past leading whitespace, a byte order mark and no-break spaces. */
+const char *zb_download_skip_blank(const char *body);
+/* A JSON download error, reported as the API's own message. */
+void zb_report_download_json_error(const char *body, long status_code, OnErrorCallback error_callback);
+/* How many base-URL copies the library currently owns. For tests. */
+size_t zb_owned_url_count_for_test(void);
 
 /*
  * E7: field types are part of the response shape. get_json_value and
