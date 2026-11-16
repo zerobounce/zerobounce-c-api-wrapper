@@ -26,9 +26,14 @@ char *zb_test_dl(const char *name) {
     const char *slash = strrchr(file, '/');
     size_t dir_len = slash ? (size_t)(slash - file) : 0;
     char dir[1024];
-    snprintf(dir, sizeof(dir), "%.*s%sdownloads", (int)dir_len, slash ? file : "", slash ? "/" : "");
+    int dir_written = snprintf(dir, sizeof(dir), "%.*s%sdownloads", (int)dir_len, slash ? file : "", slash ? "/" : "");
+    int out_written;
+    TEST_ASSERT_TRUE_MESSAGE(dir_written >= 0 && (size_t)dir_written < sizeof(dir),
+        "the downloads directory path was truncated");
     mkdir(dir, 0777);
-    snprintf(out, sizeof(ring[0]), "%s/%s", dir, name);
+    out_written = snprintf(out, sizeof(ring[0]), "%s/%s", dir, name);
+    TEST_ASSERT_TRUE_MESSAGE(out_written >= 0 && (size_t)out_written < sizeof(ring[0]),
+        "a download path was truncated");
     return out;
 }
 

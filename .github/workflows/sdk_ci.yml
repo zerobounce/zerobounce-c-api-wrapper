@@ -120,3 +120,20 @@ jobs:
         run: |
           ./build/bin/ZeroBounceTests
           ./build/bin/ZeroBounceTransportTests
+
+  # Builds the Dockerfile and runs the documented test run in it, so a broken image
+  # (a bad pin, a missing file) fails here and not in a contributor's hands. The image's
+  # CMD runs both test binaries; --network=none proves the tests need no network.
+  docker:
+    name: Docker test image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build -t zerobounce-c-test .
+
+      - name: Run the tests in the image
+        run: docker run --rm --network=none zerobounce-c-test

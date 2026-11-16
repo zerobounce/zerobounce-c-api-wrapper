@@ -9,6 +9,16 @@ More information about ZeroBounce you can find in the [official documentation](h
 - Custom API base URLs (when supported) must use `https://`. Do not pass end-user-controlled hosts into those settings.
 - Request URLs include `api_key` as a query parameter (ZeroBounce API contract). Do not log full request URLs or enable payload debug logging in production.
 
+## Requirements
+
+- CMake 3.21 or newer.
+- A C17 compiler (gcc, clang or MinGW gcc).
+- Git, to fetch the dependencies (libcurl, json-c; Unity and fff only when this is the top-level project, for its tests).
+- OpenSSL 3 or newer development headers on Linux and macOS (`libssl-dev` on Debian/Ubuntu, `brew install openssl`); Windows uses Schannel and needs none.
+- A platform thread library (pthreads on Linux and macOS; found by CMake as `Threads::Threads`).
+
+CI builds and runs the tests on Ubuntu (gcc) with the latest CMake and with CMake 3.21.0, and builds and runs the test image (`Dockerfile`) offline. macOS and Windows are supported but not tested in CI.
+
 ## INSTALLATION
 Before installing the wrapper, you have to make sure that `CMake` 3.21 or newer is installed on your system. It can be downloaded from [here](https://cmake.org/download/).
 

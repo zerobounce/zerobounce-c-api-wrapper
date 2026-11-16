@@ -47,11 +47,22 @@ ZBErrorResponse parse_error(const char* error) {
  */
 static _Thread_local char *zb_tls_api_key = NULL;
 
+void zb_secure_free(char *secret) {
+    if (secret) {
+        volatile char *p = secret;
+        size_t n = strlen(secret);
+        while (n--) {
+            *p++ = 0;
+        }
+        free(secret);
+    }
+}
+
 void zb_set_redaction_key(const char *api_key) {
     if (zb_tls_api_key && api_key && strcmp(zb_tls_api_key, api_key) == 0) {
         return;
     }
-    free(zb_tls_api_key);
+    zb_secure_free(zb_tls_api_key);
     zb_tls_api_key = (api_key && api_key[0]) ? strdup(api_key) : NULL;
 }
 
@@ -300,6 +311,134 @@ static long zb_hex_run(const char *text, const char *end, int max_digits, int *d
     return n ? value : -1;
 }
 
+/* The HTML named character references for U+00A0..U+00FF, in order (they
+   decode with or without the closing semicolon, as HTML5 reads them). */
+static const char *const zb_latin1_entities[96] = {
+    "nbsp",
+    "iexcl",
+    "cent",
+    "pound",
+    "curren",
+    "yen",
+    "brvbar",
+    "sect",
+    "uml",
+    "copy",
+    "ordf",
+    "laquo",
+    "not",
+    "shy",
+    "reg",
+    "macr",
+    "deg",
+    "plusmn",
+    "sup2",
+    "sup3",
+    "acute",
+    "micro",
+    "para",
+    "middot",
+    "cedil",
+    "sup1",
+    "ordm",
+    "raquo",
+    "frac14",
+    "frac12",
+    "frac34",
+    "iquest",
+    "Agrave",
+    "Aacute",
+    "Acirc",
+    "Atilde",
+    "Auml",
+    "Aring",
+    "AElig",
+    "Ccedil",
+    "Egrave",
+    "Eacute",
+    "Ecirc",
+    "Euml",
+    "Igrave",
+    "Iacute",
+    "Icirc",
+    "Iuml",
+    "ETH",
+    "Ntilde",
+    "Ograve",
+    "Oacute",
+    "Ocirc",
+    "Otilde",
+    "Ouml",
+    "times",
+    "Oslash",
+    "Ugrave",
+    "Uacute",
+    "Ucirc",
+    "Uuml",
+    "Yacute",
+    "THORN",
+    "szlig",
+    "agrave",
+    "aacute",
+    "acirc",
+    "atilde",
+    "auml",
+    "aring",
+    "aelig",
+    "ccedil",
+    "egrave",
+    "eacute",
+    "ecirc",
+    "euml",
+    "igrave",
+    "iacute",
+    "icirc",
+    "iuml",
+    "eth",
+    "ntilde",
+    "ograve",
+    "oacute",
+    "ocirc",
+    "otilde",
+    "ouml",
+    "divide",
+    "oslash",
+    "ugrave",
+    "uacute",
+    "ucirc",
+    "uuml",
+    "yacute",
+    "thorn",
+    "yuml",
+};
+
+/* A named reference at name (just after the '&'): sets *cp and *used (the
+   name and its semicolon, if any, but not the '&') for quot, amp, lt, gt and
+   the Latin-1 set. */
+static bool zb_named_entity(const char *name, const char *end, long *cp, size_t *used) {
+    static const struct { const char *name; long cp; } basic[] = {
+        {"quot", '"'}, {"amp", '&'}, {"lt", '<'}, {"gt", '>'},
+    };
+    size_t i;
+    for (i = 0; i < sizeof(basic) / sizeof(basic[0]); i++) {
+        size_t n = strlen(basic[i].name);
+        if ((size_t)(end - name) >= n + 1 && strncmp(name, basic[i].name, n) == 0 && name[n] == ';') {
+            *cp = basic[i].cp;
+            *used = n + 1;
+            return true;
+        }
+    }
+    for (i = 0; i < 96; i++) {
+        size_t n = strlen(zb_latin1_entities[i]);
+        if ((size_t)(end - name) >= n && strncmp(name, zb_latin1_entities[i], n) == 0) {
+            *cp = 0xA0 + (long)i;
+            *used = n + ((size_t)(end - name) > n && name[n] == ';' ? 1 : 0);
+            return true;
+        }
+    }
+    return false;
+}
+
 /* text (length bytes) with the character spellings a body can quote a secret
    in undone: \u{27}, \U{27}, \U0027 and \U00000027 (eight hex digits when
    they follow, else four), \x27, \X27, a backslash and exactly three octal
@@ -315,6 +454,7 @@ static char *zb_spelling_decode_view(const char *text, size_t length, size_t *ou
     }
     while (text < end) {
         long cp = -1;
+        int raw = -1; /* a byte spelled \xHH or \ooo: kept as that byte */
         size_t used = 0;
         int digits;
         if (text[0] == '\\' && end - text >= 2) {
@@ -337,37 +477,41 @@ static char *zb_spelling_decode_view(const char *text, size_t length, size_t *ou
                 }
             } else if ((text[1] == 'x' || text[1] == 'X') && end - text >= 4 &&
                        zb_hex_value(text[2]) >= 0 && zb_hex_value(text[3]) >= 0) {
-                cp = zb_hex_value(text[2]) * 16 + zb_hex_value(text[3]);
+                raw = zb_hex_value(text[2]) * 16 + zb_hex_value(text[3]);
                 used = 4;
             } else if (end - text >= 4 && text[1] >= '0' && text[1] <= '3' &&
                        text[2] >= '0' && text[2] <= '7' && text[3] >= '0' && text[3] <= '7') {
-                cp = (text[1] - '0') * 64 + (text[2] - '0') * 8 + (text[3] - '0');
+                raw = (text[1] - '0') * 64 + (text[2] - '0') * 8 + (text[3] - '0');
                 used = 4;
             } else if (text[1] == '\'') {
                 cp = '\'';
                 used = 2;
             }
-        } else if (text[0] == '&' && end - text >= 4 && text[1] == '#') {
+        } else if (text[0] == '&' && end - text >= 3 && text[1] == '#') {
+            /* Any number of digits (leading zeros included), the closing
+               semicolon optional, as an HTML parser reads them. */
             const char *q = text + 2;
-            long value = -1;
+            long value = 0;
             int n = 0;
-            if (*q == 'x' || *q == 'X') {
+            bool hex = (*q == 'x' || *q == 'X');
+            if (hex) {
                 q++;
-                value = zb_hex_run(q, end, 6, &n);
-            } else {
-                value = 0;
-                while (q + n < end && n < 7 && q[n] >= '0' && q[n] <= '9') {
-                    value = value * 10 + (q[n] - '0');
-                    n++;
-                }
-                if (!n) {
-                    value = -1;
-                }
             }
-            if (value >= 0 && value <= 0x10FFFF && q + n < end && q[n] == ';') {
+            while (q + n < end && (hex ? zb_hex_value(q[n]) >= 0 : (q[n] >= '0' && q[n] <= '9'))) {
+                if (value <= 0x10FFFF) {
+                    value = value * (hex ? 16 : 10) + (hex ? zb_hex_value(q[n]) : q[n] - '0');
+                }
+                n++;
+            }
+            if (n && value <= 0x10FFFF) {
                 cp = value;
-                used = (size_t)(q + n + 1 - text);
+                used = (size_t)(q + n - text);
+                if (q + n < end && q[n] == ';') {
+                    used++;
+                }
             }
+        } else if (text[0] == '&' && end - text >= 3 && zb_named_entity(text + 1, end, &cp, &used)) {
+            used += 1;
         } else if (text[0] == '&' && end - text >= 6 && strncasecmp(text + 1, "apos;", 5) == 0) {
             cp = '\'';
             used = 6;
@@ -375,7 +519,10 @@ static char *zb_spelling_decode_view(const char *text, size_t length, size_t *ou
             cp = '\'';
             used = 2;
         }
-        if (cp >= 0 && used) {
+        if (raw >= 0 && used) {
+            *dst++ = (char)raw;
+            text += used;
+        } else if (cp >= 0 && used) {
             dst = zb_put_utf8(dst, (unsigned long)cp);
             text += used;
         } else {
@@ -388,26 +535,35 @@ static char *zb_spelling_decode_view(const char *text, size_t length, size_t *ou
 }
 
 /* Whether needle (a C string) occurs in the length bytes at text, NUL bytes
-   in text included, ignoring ASCII case: an upper-cased echo of a secret is
-   still the secret. */
+   in text included, under Unicode full case folding: an upper-cased echo of a
+   secret, "SS" for a sharp s included, is still the secret. */
 static bool zb_bytes_contain(const char *text, size_t length, const char *needle) {
     size_t needle_length = strlen(needle);
+    size_t folded_length = 0;
+    size_t folded_needle_length = 0;
+    char *folded;
+    char *folded_needle;
+    bool found = false;
     size_t i;
-    size_t k;
     if (needle_length == 0) {
         return true;
     }
-    for (i = 0; i + needle_length <= length; i++) {
-        for (k = 0; k < needle_length; k++) {
-            if (tolower((unsigned char)text[i + k]) != tolower((unsigned char)needle[k])) {
+    folded = zb_casefold(text, length, &folded_length);
+    folded_needle = zb_casefold(needle, needle_length, &folded_needle_length);
+    if (!folded || !folded_needle) {
+        /* Out of memory: assume the worst. */
+        found = true;
+    } else {
+        for (i = 0; i + folded_needle_length <= folded_length; i++) {
+            if (memcmp(folded + i, folded_needle, folded_needle_length) == 0) {
+                found = true;
                 break;
             }
         }
-        if (k == needle_length) {
-            return true;
-        }
     }
-    return false;
+    free(folded);
+    free(folded_needle);
+    return found;
 }
 
 /*
@@ -791,13 +947,23 @@ char *zb_message_from_body(const char *body, long status_code) {
 char *zb_redact_api_key(const char *text) {
     const char *src = text ? text : "";
     size_t len = strlen(src);
-    char *out = malloc(len + 16);
+    size_t matches = 0;
     size_t i = 0;
     size_t j = 0;
+    char *out;
 
+    /* Every "api_key=" (8 bytes) becomes "api_key=REDACTED" (16), so the
+       result is at most len + 8 * matches long; count them first. */
+    for (i = 0; i + 8 <= len; i++) {
+        if (strncmp(src + i, "api_key=", 8) == 0) {
+            matches++;
+        }
+    }
+    out = malloc(len + 8 * matches + 1);
     if (!out) {
         return NULL;
     }
+    i = 0;
     while (i < len) {
         if (strncmp(src + i, "api_key=", 8) == 0) {
             memcpy(out + j, "api_key=REDACTED", 16);
@@ -830,7 +996,24 @@ void zb_report_body_error(const char *body, long status_code, OnErrorCallback er
     }
     message = zb_message_from_body(body, status_code);
     /* parse_error_with_status takes the key out. */
-    error_callback(parse_error_with_status(message, status_code));
+    {
+        ZBErrorResponse response = parse_error_with_status(message, status_code);
+        size_t i;
+        bool has_text = false;
+        for (i = 0; i < response.errors.size; i++) {
+            if (zb_skip_ws(response.errors.data[i])[0] != '\0') {
+                has_text = true;
+                break;
+            }
+        }
+        if (!has_text && message && zb_skip_ws(message)[0] == '{') {
+            /* A JSON object with no message text ({"message":null}, a blank
+               or an empty list): an error all the same, with a fixed text. */
+            string_vector_free(&response.errors);
+            response = parse_error_with_status("ZeroBounce returned an error with no message text.", status_code);
+        }
+        error_callback(response);
+    }
     free(message);
 }
 
@@ -877,9 +1060,26 @@ static json_object *zb_parse_object_without_success(const char *body) {
     if (!parsed) {
         return NULL;
     }
-    if (!json_object_is_type(parsed, json_type_object) || json_object_object_get_ex(parsed, "success", NULL)) {
+    if (!json_object_is_type(parsed, json_type_object)) {
         json_object_put(parsed);
         return NULL;
+    }
+    {
+        /* "success" only decides when it holds a real boolean or a "true" /
+           "false" spelling; a null (or any other type) is no flag, so the
+           message-only and dead-key rules still apply. */
+        json_object *success = NULL;
+        if (json_object_object_get_ex(parsed, "success", &success) && success) {
+            bool decides = json_object_is_type(success, json_type_boolean);
+            if (json_object_is_type(success, json_type_string)) {
+                const char *value = json_object_get_string(success);
+                decides = value && (strcasecmp(value, "false") == 0 || strcasecmp(value, "true") == 0);
+            }
+            if (decides) {
+                json_object_put(parsed);
+                return NULL;
+            }
+        }
     }
     return parsed;
 }

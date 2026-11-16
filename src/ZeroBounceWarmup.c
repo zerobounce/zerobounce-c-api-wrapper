@@ -313,6 +313,12 @@ static void warmup_send(
         return;
     }
 
+    if (!zb_url_text_is_clean(zbw->base_url, false)) {
+        if (error_callback) {
+            error_callback(parse_error(ZB_URL_TEXT_MESSAGE));
+        }
+        return;
+    }
     /* Trailing slashes on the base URL are dropped, so no //api/v1/warmup. */
     base_len = strlen(zbw->base_url);
     while (base_len > 0 && zbw->base_url[base_len - 1] == '/') {

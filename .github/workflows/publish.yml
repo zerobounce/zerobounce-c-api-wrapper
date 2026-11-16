@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   validate-tag:
     outputs:
@@ -70,10 +74,12 @@ jobs:
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout validated commit
+      # The tag is checked out by name (v* tags are protected by the tag ruleset), then
+      # pinned: the job stops unless it is the commit validate-tag checked.
+      - name: Checkout tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag_sha }}
+          ref: refs/tags/${{ github.event.inputs.tag }}
           persist-credentials: false
 
       - name: Verify checked-out commit

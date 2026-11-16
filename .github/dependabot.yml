@@ -21,3 +21,21 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
+
+  # The test image base is pinned by digest. Version updates stay on (one PR at a time) so the digest
+  # moves with the ubuntu:26.04 tag; a new Ubuntu release is a deliberate change (the CI runner and
+  # the Dockerfile move together), not a PR. Such PRs are outside a security group, so
+  # dependabot-auto-merge.yml leaves them for a person.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:00"
+      timezone: Europe/Bucharest
+    open-pull-requests-limit: 1
+    labels:
+      - "docker dependencies"
+    ignore:
+      - dependency-name: "ubuntu"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Source compatible, binary layout changed:** code written for 3.0.x keeps compiling, but `SendFileOptions` and `ZBWarmupManagedSending` each grew by members appended at the end, so a shared library (`.so`, `.dylib`, `.dll`) built against the 3.0.x headers must be rebuilt (a `FetchContent` build always is). Every public function that takes no arguments is now declared `(void)` instead of `()`: a call that passed an argument no longer compiles. The public header no longer declares the library's internal functions or `zero_bounce_instance`.
+- **Behaviour change:** the Inbox Placement Tester calls no longer treat an empty 2xx body as a success, except `delete_inbox_placement_test`; see the first "Behaviour change" entry under Fixed below. Typed calls also treat a 200 body of the wrong shape as an error (see Fixed).
+- A project that pulls this one in with `FetchContent` no longer fetches unity or fff (see Changed).
+- The bundled dependency pins moved: json-c 0.17 to 0.19 (`json-c-0.19-20260627`) and Unity v2.5.2 to v2.7.0 (the test suite passes unchanged on both).
+
 ### Added
 
 - `ZBWarmupManagedSending.timezone_offset_hours` (`double`) and `timezone_offset_hours_set` (`bool`), appended at the end of the struct: hours from UTC with fractional zones such as 5.5 (India) or 5.75 (Nepal). Sent as `timezone_offset` when `timezone_offset_hours_set` is `true`, in place of `timezone_offset` if both are set; a whole number is sent as an integer (`"timezone_offset": 3`), and a value outside -11.0 to 14.0, NaN or an infinity is rejected before anything is sent. `new_warmup_managed_sending` and zero initialisation leave it unset. The struct grew by two members, so a binary built against the old header must be rebuilt (FetchContent always rebuilds); source written for 3.0.x keeps compiling.
@@ -19,12 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Build and CI: json-c moves from 0.17 to 0.19 and Unity from v2.5.2 to v2.7.0 (tag and full commit SHA pinned), `github/codeql-action` to v4.39.3 and `advanced-security/filter-sarif` to v1.1, and the Dockerfile base `ubuntu:26.04` is pinned by digest (Dependabot's `docker` ecosystem keeps it current). The test image's default command runs `ZeroBounceTransportTests` after `ZeroBounceTests`, a CI job builds it and runs it with `--network=none`, and `.dockerignore` leaves out `build-live/` and `zb-sdk-live.csv`. The publish workflow checks the tag out by name in its test job, then verifies HEAD against the validated commit (CodeQL `actions/cache-poisoning` alert), and runs one publish at a time.
 - `send_file` and `scoring_send_file` send `remove_duplicate` with the caller's value on every call, `true` by default (the API's default too), as 3.0.x did, so an explicit `false` always reaches the API. `SendFileOptions` has one more member than in 3.0.1, `remove_duplicate_set`, appended at the end of the struct; it is not needed and is ignored. The struct grew by one member, so a binary built against the 3.0.1 header must be rebuilt (FetchContent always rebuilds).
 - A project that pulls this one in with `FetchContent` or `add_subdirectory` no longer fetches unity and fff or builds `ZeroBounceTests` and `ZeroBounceTransportTests`; the test targets exist only when this is the top-level project.
 - Each base URL setter (`zero_bounce_warmup_set_base_url` and the `ZeroBounce` setters) copies the URL it is given. `zero_bounce_warmup_free` and the setters free only a copy the library made, and leave a `base_url` or `bulk_api_base_url` that the caller assigned itself alone. The list of those copies is locked, so two clients on two threads setting base URLs do not race.
 - Every public function that takes no arguments is declared `(void)`. A call that passed an argument no longer compiles.
 - The public header no longer declares the library's internal functions, or the process-wide `zero_bounce_instance`.
 - The library links the platform thread library itself (`Threads::Threads`), so a static link does not depend on libcurl to pull in `pthread`.
+- **Behaviour change:** the API key check also refuses U+034F, U+115F, U+1160, U+17B4, U+17B5, U+2800, U+3164, U+FFA0, U+FFF0-FFF8, U+110BD, U+110CD, U+13430-1343F, U+1BCA0-1BCA3 and U+E0000-E0FFF (the Rust SDK's list), and a key that is not well-formed UTF-8 (`C0 80`, `E0 80 A0`, `ED A0 80`, `FF`, truncated sequences). Before, these were accepted and sent; now the key is not accepted and each call reports "api_key has surrounding whitespace or control characters".
+- New build option `ZB_SANITIZE` (ASan + UBSan on the SDK and its tests only).
 
 ### Deprecated
 
@@ -67,6 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `send_file`, `delete_file` (and their scoring, email-finder and domain-search forms), `validate_email_batch`, `list_s3_files`, the list-evaluator sends and the S3 and SFTP jobs took `{"message":"m","file_id":null}`, a message beside only null fields, as a result. It is now an error with the HTTP status (200 or 202). `{"domain":null}` with no message is still a result, and so is `{"message":"m","file_id":"x"}`. Affects 3.0.0 to 3.0.1.
 - `get_api_usage`, `get_activity_data` and `score_email` took an empty object, or an object holding only a message, as a result filled with defaults. They are now errors with the HTTP status, as `validate_email` already was. Affects 3.0.0 to 3.0.1.
 - `get_file_streaming` and `scoring_get_file_streaming` decided on a body after its first 4096 bytes, so a body of more than 4096 bytes of BOMs (U+FEFF) or non-breaking spaces (U+00A0) before `{` or `[` was saved as the file, and padding alone was saved as an empty file. Whitespace, U+FEFF and U+00A0 at the start of the body are now skipped however long they run: the body is rejected if it then begins with `{`, `[` or has a `+json` content type, and a file already at the path is left unchanged. A body that is only padding is an empty response and writes nothing. Affects 3.0.0 to 3.0.1.
+- **Behaviour change:** a `"success": null` (or any "success" that is not a boolean or a "true"/"false" string) no longer hides an error. `{"message":"m","success":null}` and `{"error":"Invalid API key","success":null}` answered with HTTP 200/202 used to reach the success callback as an empty result on get_api_usage, validate_email_batch, send_file, delete_file, get_activity_data, score_email, the scoring send/delete calls and the email-finder send/delete calls; they now reach the error callback with the API's message and the HTTP status. Affects every released version before this one.
+- An error object with no message text (`{"message":null}`, a blank message, an empty list) used to reach the error callback with an empty error list; it now carries "ZeroBounce returned an error with no message text."
+- A NULL client passed to any public call used to crash (a NULL dereference); it now reaches the error callback with "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first". A NULL error callback is no longer called on the uninitialised-key path or when libcurl fails to initialise.
+- **Behaviour change:** a base URL that holds a query (or a bare `?`), a fragment, a backslash, whitespace, a control character or an invisible/Unicode-space character (set with `zero_bounce_set_bulk_api_base_url`, `..._root_url`, `..._scoring_base_url`, `zero_bounce_set_list_evaluator_base_url`, `zero_bounce_set_inbox_placement_base_url` or `zero_bounce_warmup_set_base_url`) is now refused when a request is sent, with the error "request URL must not contain a query, a fragment, a backslash, whitespace or control characters". Before, `https://host/v2?x=1` and `https://host/v2?` were sent, the SDK's own path and query ending up inside the caller's query. Affects all released versions.
+- Every libcurl handle now sets `CURLOPT_NOSIGNAL`, so a request timeout does not use SIGALRM and is safe in a multi-threaded program.
 
 ### Security
 
@@ -77,6 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An API key with a Unicode space or an invisible character was sent. It is now rejected. Affects 3.0.0 to 3.0.1.
 - An error that echoed a secret with a different letter case, or with a quote written as `\u{27}`, `\047`, `&APOS;`, `&#39;`, `\X27`, `\'` or `''`, still contained the secret. Such an error is now redacted. Affects 3.0.0 to 3.0.1.
 - The redaction of an error also undoes `\U{27}`, `\U0027` and `\U00000027` (a capital `\U`, with 4 or 8 hex digits, or braces), so an error that echoed the API key, the Warmup key or the SMTP password through these spellings no longer holds it. Affects 3.0.0 to 3.0.1.
+- Fixed a heap buffer overflow in the redaction of `api_key=` parameters in error messages: every `api_key=` grows by 8 bytes but the buffer only had 16 spare, so a server-controlled text with several (`api_key=&api_key=&...`) wrote past it. The buffer is now sized from the match count. Affects all released versions that redact (every error path, Warmup included). A new test runs under ASan (`-DZB_SANITIZE=ON`).
+- Redaction compares under Unicode full case folding, not ASCII only: `PÄSSWÖRD-SSETA` echoing `Pässwörd-ßeta` is now caught (table generated by `tools/gen_casefold.py`).
+- Redaction also decodes `&#00000039;` (any number of digits), `&#39` / `&#x27` without the semicolon, the HTML named references `&quot; &amp; &lt; &gt;` and the Latin-1 set (`&auml;`, `&szlig;`, ...), and `\xHH` / `\ooo` spelled as the UTF-8 bytes of a non-ASCII secret.
+- The API key copies are zeroed before they are freed.
 
 ## [3.0.1] - 2026-11-11
 
@@ -191,6 +210,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Query parameters are percent-encoded, so a value cannot rewrite the request URL.
 - Error callbacks no longer include the raw HTML access-denied page or a multi-megabyte body.
 
+## [2.1.4] - 2026-08-14
+
+### Changed
+
+- CI dependency bumps only: `actions/checkout` 6 to 7 and `github/codeql-action` 4.35.2 to 4.36.3. No library change.
+
 ## [2.1.3] - 2026-06-18
 
 ### Fixed
@@ -253,6 +278,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [3.0.1]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.4...v2.2.0
+[2.1.4]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.0...v2.1.2
 [2.1.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.10...v2.1.0

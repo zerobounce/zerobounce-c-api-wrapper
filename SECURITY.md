@@ -6,7 +6,7 @@ If you think you've found a security issue, please report it privately instead o
 
 **Email:** integrations@zerobounce.net (use a subject like `[zerobounce-c-api-wrapper] Security`).
 
-We'll look into reports as we can. If the issue is in the Zero Bounce API or service rather than this wrapper, we may forward it to the right team.
+We'll look into reports as we can. If the issue is in the Zero Bounce API or service rather than this SDK, we may forward it to the right team.
 
 ## Supported Versions
 

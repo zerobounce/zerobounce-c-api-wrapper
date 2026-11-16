@@ -20,6 +20,15 @@ char *zb_redact_api_key(const char *text);
  */
 void zb_set_redaction_key(const char *api_key);
 char *zb_url_escape(const char *value);
+/*
+ * text (length bytes of UTF-8; bytes that are not valid UTF-8 are kept) with
+ * Unicode full case folding applied, as a NUL-terminated string whose length
+ * is in *out_length. The caller owns it; NULL on out of memory.
+ */
+char *zb_casefold(const char *text, size_t length, size_t *out_length);
+/* Overwrites a secret's bytes (not optimised away) and frees them. */
+void zb_secure_free(char *secret);
+
 /* What an error says in place of a body that still held a secret. */
 #define ZB_SECRET_OMITTED_MESSAGE \
     "The response body was omitted because it contained a credential."
@@ -55,6 +64,15 @@ int zb_write_file_replacing(const char *path, const char *data, size_t size);
 char *zb_temp_path_for(const char *path, const void *owner);
 /* Moves temp_path over path, replacing what was there. */
 bool zb_replace_file(const char *temp_path, const char *path);
+#define ZB_URL_TEXT_MESSAGE \
+    "request URL must not contain a query, a fragment, a backslash, whitespace or control characters"
+/* Whether url holds no '#', backslash, whitespace, control or invisible
+   character, and no '?' unless allow_query. */
+bool zb_url_text_is_clean(const char *url, bool allow_query);
+/* Whether everything after the first '?' of url could be the SDK's own query. */
+bool zb_url_query_is_the_sdks_own(const char *url);
+/* Test hook: how many handles zb_set_transport_options set CURLOPT_NOSIGNAL on. */
+long zb_nosignal_applied_for_test(void);
 /* A copy of a base URL without its trailing slashes. The caller owns it. */
 char *zb_normalized_base_url(const char *url);
 /* The timeouts, no-redirect and https-only options every request gets. */

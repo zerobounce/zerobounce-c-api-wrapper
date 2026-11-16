@@ -10,6 +10,8 @@ documentation*.md
 
 # Build and IDE
 build/
+build-live/
+zb-sdk-live.csv
 cmake-build-*/
 .vscode/
 .idea/

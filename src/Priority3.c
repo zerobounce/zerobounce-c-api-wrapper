@@ -663,6 +663,10 @@ void send_email_finder_file(
         }
         return;
     }
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char url[512];
     snprintf(url, sizeof(url), "%s/email-finder/sendfile", zb->bulk_api_root_url);
     EmailFinderMimeCtx ctx = {domain_column, options};
@@ -677,6 +681,10 @@ void email_finder_file_status(
     OnSuccessCallbackFileStatus success_callback,
     OnErrorCallback error_callback
 ) {
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char base[256];
     snprintf(base, sizeof(base), "%s/email-finder", zb->bulk_api_root_url);
     p3_bulk_root_file_status(zb, base, file_id, success_callback, error_callback);
@@ -689,6 +697,10 @@ void email_finder_get_file(
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char base[256];
     snprintf(base, sizeof(base), "%s/email-finder", zb->bulk_api_root_url);
     p3_bulk_root_get_file(zb, base, file_id, local_download_path, success_callback, error_callback);
@@ -700,6 +712,10 @@ void email_finder_delete_file(
     OnSuccessCallbackDeleteFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char base[256];
     snprintf(base, sizeof(base), "%s/email-finder", zb->bulk_api_root_url);
     p3_bulk_root_delete_file(zb, base, file_id, success_callback, error_callback);
@@ -719,6 +735,10 @@ void send_domain_search_file(
         }
         return;
     }
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char url[512];
     snprintf(url, sizeof(url), "%s/domain-search/sendfile", zb->bulk_api_root_url);
     DomainSearchMimeCtx ctx = {domain_column, options};
@@ -733,6 +753,10 @@ void domain_search_file_status(
     OnSuccessCallbackFileStatus success_callback,
     OnErrorCallback error_callback
 ) {
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char base[256];
     snprintf(base, sizeof(base), "%s/domain-search", zb->bulk_api_root_url);
     p3_bulk_root_file_status(zb, base, file_id, success_callback, error_callback);
@@ -745,6 +769,10 @@ void domain_search_get_file(
     OnSuccessCallbackGetFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char base[256];
     snprintf(base, sizeof(base), "%s/domain-search", zb->bulk_api_root_url);
     p3_bulk_root_get_file(zb, base, file_id, local_download_path, success_callback, error_callback);
@@ -756,6 +784,10 @@ void domain_search_delete_file(
     OnSuccessCallbackDeleteFile success_callback,
     OnErrorCallback error_callback
 ) {
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
+        return;
+    }
     char base[256];
     snprintf(base, sizeof(base), "%s/domain-search", zb->bulk_api_root_url);
     p3_bulk_root_delete_file(zb, base, file_id, success_callback, error_callback);
@@ -772,6 +804,10 @@ void send_list_evaluator_file(
         if (error_callback) {
             error_callback(parse_error("Empty parameter: email_address_column"));
         }
+        return;
+    }
+    if (!zb) {
+        zero_bounce_invalid_api_key(zb, error_callback);
         return;
     }
     char url[512];

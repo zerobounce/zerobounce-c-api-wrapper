@@ -260,6 +260,12 @@ void zb_transport_timeouts(long *timeout_ms, long *connect_timeout_ms) {
     *connect_timeout_ms = s_connect_timeout_ms;
 }
 
+static long s_nosignal_applied = 0;
+
+long zb_nosignal_applied_for_test(void) {
+    return s_nosignal_applied;
+}
+
 void zb_set_transport_options(CURL* curl) {
     long timeout_ms;
     long connect_timeout_ms;
@@ -269,6 +275,11 @@ void zb_set_transport_options(CURL* curl) {
     /* A redirect could send the api_key to another host, so one is reported
        rather than followed, and only https is ever dialled. */
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    /* No SIGALRM-based timeouts: a signal handler is not thread safe, and a
+       client may be used from several threads. */
+    if (curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L) == CURLE_OK) {
+        s_nosignal_applied++;
+    }
 #if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, s_allow_loopback_http ? "http,https" : "https");
 #else
@@ -303,7 +314,9 @@ void zb_report_perform_error(CURL *curl, CURLcode res, OnErrorCallback error_cal
         "Failed to perform request. CURLcode: %d. Error: %s",
         res, curl_easy_strerror(res)
     );
-    error_callback(parse_error(error_message));
+    if (error_callback) {
+        error_callback(parse_error(error_message));
+    }
 }
 
 /* Every request reads its status here, so this is also where the response's
@@ -800,19 +813,27 @@ ZeroBounce* zero_bounce_get_instance(void) {
 static bool zb_codepoint_is_blank_or_invisible(unsigned long cp) {
     return (cp >= 0x80 && cp <= 0xA0) ||                 /* C1 controls, no-break space */
         cp == 0x00AD ||                                   /* soft hyphen */
+        cp == 0x034F ||                                   /* combining grapheme joiner */
         (cp >= 0x0600 && cp <= 0x0605) || cp == 0x061C || cp == 0x06DD || cp == 0x070F ||
         (cp >= 0x0890 && cp <= 0x0891) || cp == 0x08E2 ||
+        cp == 0x115F || cp == 0x1160 ||                   /* Hangul choseong/jungseong fillers */
+        cp == 0x17B4 || cp == 0x17B5 ||                   /* Khmer inherent vowels */
         cp == 0x1680 ||                                   /* ogham space mark */
         (cp >= 0x180B && cp <= 0x180F) ||                 /* Mongolian selectors, vowel separator */
         (cp >= 0x2000 && cp <= 0x200F) ||                 /* en/em spaces ... zero width, marks */
         (cp >= 0x2028 && cp <= 0x202F) ||                 /* separators, bidi embeddings, nnbsp */
         (cp >= 0x205F && cp <= 0x206F) ||                 /* math space, word joiner, isolates */
-        cp == 0x3000 ||                                   /* ideographic space */
+        cp == 0x2800 ||                                   /* braille pattern blank */
+        cp == 0x3000 || cp == 0x3164 ||                   /* ideographic space, Hangul filler */
         (cp >= 0xFE00 && cp <= 0xFE0F) ||                 /* variation selectors */
         cp == 0xFEFF ||                                   /* zero width no-break space, BOM */
-        (cp >= 0xFFF9 && cp <= 0xFFFB) ||                 /* interlinear annotation */
+        cp == 0xFFA0 ||                                   /* halfwidth Hangul filler */
+        (cp >= 0xFFF0 && cp <= 0xFFFB) ||                 /* specials, interlinear annotation */
+        cp == 0x110BD || cp == 0x110CD ||                 /* Kaithi number signs */
+        (cp >= 0x13430 && cp <= 0x1343F) ||               /* Egyptian hieroglyph format controls */
+        (cp >= 0x1BCA0 && cp <= 0x1BCA3) ||               /* shorthand format controls */
         (cp >= 0x1D173 && cp <= 0x1D17A) ||               /* musical formatting */
-        cp == 0xE0001 || (cp >= 0xE0020 && cp <= 0xE007F);/* tags */
+        (cp >= 0xE0000 && cp <= 0xE0FFF);                 /* tags, variation selectors supplement */
 }
 
 bool zb_api_key_is_clean(const char *api_key) {
@@ -838,22 +859,74 @@ bool zb_api_key_is_clean(const char *api_key) {
         }
         /* A multi-byte character: decoded, so a Unicode space or an invisible
            character in the middle of a key is refused as an ASCII control
-           character is. A byte that is not valid UTF-8 is skipped, as the key
-           is sent as it is. */
-        if (c >= 0xF0 && c < 0xF8) {
+           character is. Bytes that are not well-formed UTF-8 (a stray
+           continuation byte, an overlong form, a surrogate, a value past
+           U+10FFFF, a truncated sequence) are refused too: such a key cannot
+           be told from a valid one by eye. */
+        if (c >= 0xF0 && c <= 0xF4) {
             cp = c & 0x07;
             extra = 3;
-        } else if (c >= 0xE0) {
+        } else if (c >= 0xE0 && c <= 0xEF) {
             cp = c & 0x0F;
             extra = 2;
-        } else if (c >= 0xC2) {
+        } else if (c >= 0xC2 && c <= 0xDF) {
             cp = c & 0x1F;
             extra = 1;
         } else {
+            return false;
+        }
+        for (i = 1; i <= extra; i++) {
+            if (((unsigned char)p[i] & 0xC0) != 0x80) {
+                return false;
+            }
+            cp = (cp << 6) | ((unsigned char)p[i] & 0x3F);
+        }
+        if ((extra == 2 && cp < 0x800) || (extra == 3 && cp < 0x10000) ||
+            (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
+            return false;
+        }
+        p += extra + 1;
+        if (zb_codepoint_is_blank_or_invisible(cp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+/*
+ * Whether a URL holds none of what would send a request somewhere else once
+ * the SDK adds its own path and query: a '#', a backslash, whitespace, a
+ * control or an invisible character (decoded, so a Unicode space counts), and
+ * a '?' when allow_query is false (a base URL) .
+ */
+bool zb_url_text_is_clean(const char *url, bool allow_query) {
+    const char *p;
+    if (!url) {
+        return true;
+    }
+    for (p = url; *p;) {
+        unsigned char c = (unsigned char)*p;
+        unsigned long cp;
+        int extra;
+        int i;
+        if (c <= 32 || c == 127 || c == '#' || c == '\\' || (c == '?' && !allow_query)) {
+            return false;
+        }
+        if (c < 0x80) {
             p++;
             continue;
         }
-        if (c >= 0xF8) {
+        if (c >= 0xF0 && c < 0xF8) {
+            cp = c & 0x07;
+            extra = 3;
+        } else if (c >= 0xE0 && c < 0xF0) {
+            cp = c & 0x0F;
+            extra = 2;
+        } else if (c >= 0xC2 && c < 0xE0) {
+            cp = c & 0x1F;
+            extra = 1;
+        } else {
             p++;
             continue;
         }
@@ -875,6 +948,14 @@ bool zb_api_key_is_clean(const char *api_key) {
     return true;
 }
 
+/* The SDK escapes every value it puts after the '?', so a second '?' or a '/'
+   after the first one belongs to a base URL that held a query of its own. */
+bool zb_url_query_is_the_sdks_own(const char *url) {
+    const char *q = url ? strchr(url, '?') : NULL;
+    return !q || (!strchr(q + 1, '?') && !strchr(q + 1, '/'));
+}
+
+
 /*
  * A rejected key also drops the one set before it: carrying on with the old
  * key would send requests the caller believes go out under the new one. Every
@@ -882,7 +963,7 @@ bool zb_api_key_is_clean(const char *api_key) {
  */
 static bool zb_accept_api_key(ZeroBounce *zb, const char *api_key) {
     if (zb->api_key) {
-        free(zb->api_key);
+        zb_secure_free(zb->api_key);
         zb->api_key = NULL;
     }
     if (!zb_api_key_is_clean(api_key)) {
@@ -1109,6 +1190,12 @@ bool zb_check_request_url(const char *url, OnErrorCallback error_callback) {
         }
         return false;
     }
+    if (!zb_url_text_is_clean(url, true) || !zb_url_query_is_the_sdks_own(url)) {
+        if (error_callback) {
+            error_callback(parse_error(ZB_URL_TEXT_MESSAGE));
+        }
+        return false;
+    }
     zb_host_of(url, host, sizeof(host));
     if (!warned_about_region && zb_tls_region &&
         strcmp(host, "bulkapi.zerobounce.net") == 0) {
@@ -1135,6 +1222,15 @@ bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback)
             zb_tls_region = "US";
         }
     }
+    if (!zb) {
+        zb_set_redaction_key(NULL);
+        if (error_callback) {
+            error_callback(parse_error(
+                "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first"
+            ));
+        }
+        return true;
+    }
     /* Every error this call reports has the key taken out. */
     zb_set_redaction_key(zb->api_key_rejected ? NULL : zb->api_key);
     if (zb->api_key_rejected) {
@@ -1147,7 +1243,9 @@ bool zero_bounce_invalid_api_key(ZeroBounce *zb, OnErrorCallback error_callback)
         ZBErrorResponse error_response = parse_error(
             "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first"
         );
-        error_callback(error_response);
+        if (error_callback) {
+            error_callback(error_response);
+        }
         return true;
     }
     return false;
@@ -1211,7 +1309,9 @@ int zb_make_request_with_extra_header_ct(
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error_callback(parse_error("Failed to initialize libcurl"));
+        if (error_callback) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+        }
         return 0;
     }
 
@@ -1270,7 +1370,9 @@ int zb_make_request_with_post_body(
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error_callback(parse_error("Failed to initialize libcurl"));
+        if (error_callback) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+        }
         curl_easy_cleanup(curl);
         return 0;
     }
@@ -1322,7 +1424,9 @@ int zb_make_request(
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error_callback(parse_error("Failed to initialize libcurl"));
+        if (error_callback) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+        }
         curl_easy_cleanup(curl);
         return 0;
     }
@@ -1453,7 +1557,9 @@ static void send_file_internal(
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error_callback(parse_error("Failed to initialize libcurl"));
+        if (error_callback) {
+            error_callback(parse_error("Failed to initialize libcurl"));
+        }
         curl_easy_cleanup(curl);
         goto cleanup;
     }
@@ -1687,7 +1793,9 @@ static void get_file_internal(
     } else {
         CURL* curl = curl_easy_init();
         if (!curl) {
-            error_callback(parse_error("Failed to initialize libcurl"));
+            if (error_callback) {
+                error_callback(parse_error("Failed to initialize libcurl"));
+            }
             goto cleanup;
         }
 
@@ -2516,7 +2624,9 @@ void validate_email_batch_with_options(
     } else {
         CURL* curl = curl_easy_init();
         if (!curl) {
-            error_callback(parse_error("Failed to initialize libcurl"));
+            if (error_callback) {
+                error_callback(parse_error("Failed to initialize libcurl"));
+            }
             curl_easy_cleanup(curl);
             json_object_put(payload);
             return;
@@ -3062,7 +3172,9 @@ static void get_file_streaming_internal(
     if (!curl) {
         free(url_path);
         if (error_callback) {
-            error_callback(parse_error("Failed to initialize libcurl"));
+            if (error_callback) {
+                error_callback(parse_error("Failed to initialize libcurl"));
+            }
         }
         return;
     }

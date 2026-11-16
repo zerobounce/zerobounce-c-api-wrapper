@@ -38,9 +38,14 @@ static char *zb_test_dl(const char *name) {
     const char *slash = strrchr(file, '/');
     size_t dir_len = slash ? (size_t)(slash - file) : 0;
     char dir[1024];
-    snprintf(dir, sizeof(dir), "%.*s%sdownloads", (int)dir_len, slash ? file : "", slash ? "/" : "");
+    int dir_written = snprintf(dir, sizeof(dir), "%.*s%sdownloads", (int)dir_len, slash ? file : "", slash ? "/" : "");
+    int out_written;
+    TEST_ASSERT_TRUE_MESSAGE(dir_written >= 0 && (size_t)dir_written < sizeof(dir),
+        "the downloads directory path was truncated");
     mkdir(dir, 0777);
-    snprintf(out, sizeof(ring[0]), "%s/%s", dir, name);
+    out_written = snprintf(out, sizeof(ring[0]), "%s/%s", dir, name);
+    TEST_ASSERT_TRUE_MESSAGE(out_written >= 0 && (size_t)out_written < sizeof(ring[0]),
+        "a download path was truncated");
     return out;
 }
 
@@ -704,13 +709,14 @@ static void t_list_dir(const char *dir, char *out, size_t size) {
 static void t_clear_dir(const char *dir) {
     DIR *handle = opendir(dir);
     struct dirent *entry;
-    char path[512];
+    char path[2048];
     if (!handle) {
         return;
     }
     while ((entry = readdir(handle)) != NULL) {
         if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
-            snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+            int written = snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+            TEST_ASSERT_TRUE_MESSAGE(written >= 0 && (size_t)written < sizeof(path), "a path was truncated");
             remove(path);
         }
     }
@@ -958,6 +964,99 @@ void test_transport_default_timeouts_are_120_s_and_30_s(void) {
     TEST_ASSERT_EQUAL_INT(30000, (int)connect_timeout_ms);
 }
 
+
+/* C2: the https-only protocol guard on the handle itself. zb_check_request_url
+   refuses http first, so only a real handle shows the guard is set. */
+void test_transport_the_handle_dials_https_only_unless_loopback_is_allowed(void) {
+    CURL *curl;
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(0, 0, false);
+    curl = curl_easy_init();
+    TEST_ASSERT_NOT_NULL(curl);
+    zb_set_transport_options(curl);
+    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:1/");
+    TEST_ASSERT_EQUAL_INT(CURLE_UNSUPPORTED_PROTOCOL, curl_easy_perform(curl));
+    curl_easy_setopt(curl, CURLOPT_URL, "ftp://127.0.0.1:1/");
+    TEST_ASSERT_EQUAL_INT(CURLE_UNSUPPORTED_PROTOCOL, curl_easy_perform(curl));
+    curl_easy_cleanup(curl);
+
+    zero_bounce_set_transport_for_test(2000, 2000, true);
+    curl = curl_easy_init();
+    zb_set_transport_options(curl);
+    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:1/");
+    TEST_ASSERT_NOT_EQUAL_INT(CURLE_UNSUPPORTED_PROTOCOL, curl_easy_perform(curl));
+    curl_easy_setopt(curl, CURLOPT_URL, "ftp://127.0.0.1:1/");
+    TEST_ASSERT_EQUAL_INT(CURLE_UNSUPPORTED_PROTOCOL, curl_easy_perform(curl));
+    curl_easy_cleanup(curl);
+    zero_bounce_set_transport_for_test(0, 0, false);
+}
+
+/* C3: CURLOPT_NOSIGNAL on the handle of every request path. */
+void test_transport_every_path_sets_nosignal(void) {
+    TServer server;
+    long before;
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(5000, 5000, true);
+    t_redirect_status = 302;
+    t_start(&server, 1);
+    ZeroBounce *zb = t_client("http", server.port);
+    ZeroBounceWarmup *zbw = t_warmup("http", server.port);
+    before = zb_nosignal_applied_for_test();
+    for (int i = 0; i < T_PATHS; i++) {
+        t_call_path(i, zb, zbw);
+    }
+    t_stop(&server);
+    TEST_ASSERT_EQUAL_INT(T_PATHS, server.requests);
+    TEST_ASSERT_EQUAL_INT(T_PATHS, (int)(zb_nosignal_applied_for_test() - before));
+    zero_bounce_warmup_free(zbw);
+    t_redirect_status = 0;
+    zero_bounce_set_transport_for_test(0, 0, false);
+}
+
+/* C1: base URLs that would change where a request goes. */
+static const char *t_bad_urls[] = {
+    "https://h.example/v2?x=1", "https://h.example/v2?", "https://h.example/v2#f",
+    "https://h.example\\v2", "https://h.example/v 2", "https://h.example/v2\t",
+    "https://h.example/v2\n", "https://h.example/v2\x01", "https://h.example/\xE2\x80\x8B" "v2",
+    "https://h.example/\xC2\xA0" "v2", "https://h.example/\xEF\xBB\xBF" "v2",
+};
+#define T_BAD_URLS ((int)(sizeof(t_bad_urls) / sizeof(t_bad_urls[0])))
+
+void test_transport_a_base_url_with_a_query_fragment_backslash_or_blank_is_refused(void) {
+    char message[96];
+    char built[256];
+    for (int i = 0; i < T_BAD_URLS; i++) {
+        ZeroBounce *zb = new_zero_bounce_instance();
+        ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+        zero_bounce_initialize(zb, "transport-key");
+        zero_bounce_warmup_initialize(zbw, "transport-warmup-key");
+        snprintf(message, sizeof(message), "url %d", i);
+        zero_bounce_warmup_set_base_url(zbw, t_bad_urls[i]);
+        t_errors = 0;
+        t_error_text[0] = '\0';
+        warmup_list_sending_accounts(zbw, t_on_raw, t_on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+        /* Each base-URL setter's request is refused before anything is sent. */
+        zero_bounce_set_bulk_api_base_url(zb, t_bad_urls[i]);
+        t_errors = 0;
+        file_status(zb, "fid", NULL, t_on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+
+        /* At send time, whatever got into the URL by another way. */
+        t_errors = 0;
+        t_error_text[0] = '\0';
+        snprintf(built, sizeof(built), "%s/getfile?api_key=k", t_bad_urls[i]);
+        TEST_ASSERT_FALSE_MESSAGE(zb_check_request_url(built, t_on_error), message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+        zero_bounce_warmup_free(zbw);
+    }
+    /* A clean URL, with the query the SDK adds, still goes. */
+    TEST_ASSERT_TRUE(zb_check_request_url("https://api.zerobounce.net/v2/getcredits?api_key=k", t_on_error));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -980,5 +1079,8 @@ int main(void) {
     RUN_TEST(test_transport_a_download_replaces_the_file_already_there);
     RUN_TEST(test_transport_a_column_number_of_any_int_is_sent_whole);
     RUN_TEST(test_transport_send_file_sends_exactly_these_parts);
+    RUN_TEST(test_transport_the_handle_dials_https_only_unless_loopback_is_allowed);
+    RUN_TEST(test_transport_every_path_sets_nosignal);
+    RUN_TEST(test_transport_a_base_url_with_a_query_fragment_backslash_or_blank_is_refused);
     return UNITY_END();
 }

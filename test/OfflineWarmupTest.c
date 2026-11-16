@@ -684,8 +684,10 @@ void test_warmup_a_failed_write_keeps_the_file_already_at_the_path(void) {
     struct dirent *old_entry;
     while ((old_entry = readdir(stale)) != NULL) {
         if (strncmp(old_entry->d_name, part_prefix, strlen(part_prefix)) == 0) {
-            char old_path[512];
-            snprintf(old_path, sizeof(old_path), "%s%s", zb_test_dl(""), old_entry->d_name);
+            char old_path[2048];
+            int old_written = snprintf(old_path, sizeof(old_path), "%s%s", zb_test_dl(""), old_entry->d_name);
+            TEST_ASSERT_TRUE_MESSAGE(old_written >= 0 && (size_t)old_written < sizeof(old_path),
+                "a path was truncated");
             remove(old_path);
         }
     }

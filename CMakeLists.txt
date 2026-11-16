@@ -18,12 +18,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include(FetchContent)
 
-# Download and build json-c, pinned to the commit the json-c-0.17-20230812 tag
+# Download and build json-c, pinned to the commit the json-c-0.19-20260627 tag
 # points at.
 FetchContent_Declare(
   json-c
   GIT_REPOSITORY https://github.com/json-c/json-c.git
-  GIT_TAG b4c371fa0cbc4dcbaccc359ce9e957a22988fb34 # json-c-0.17-20230812
+  GIT_TAG aa716cd8d663c976b99b0f30f102ee1d8ef63146 # json-c-0.19-20260627
 )
 # Download and build libcurl 8.23.0, pinned to the commit the curl-8_23_0 tag
 # points at. NTLM stays off to avoid weak DES crypto in CodeQL/security scans:
@@ -83,7 +83,7 @@ if(PROJECT_IS_TOP_LEVEL)
   FetchContent_Declare(
     unity
     GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-    GIT_TAG        0b899aec14d3a9abb2bf260ac355f0f28630a6a3 # v2.5.2
+    GIT_TAG        b6763fbd9cedfacaa89e2ad9fd00d615a234e355 # v2.7.0
   )
   # Download and build fff
   FetchContent_Declare(
@@ -107,12 +107,24 @@ target_include_directories(${PROJECT_NAME} PUBLIC include ${json-c_SOURCE_DIR})
 # and glibc before 2.34 does not provide pthread from libc.
 find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PUBLIC json-c libcurl)
+
+# -DZB_SANITIZE=ON builds the SDK and its tests (not json-c or libcurl, whose
+# configure steps break with sanitizer flags) with AddressSanitizer and
+# UndefinedBehaviorSanitizer.
+option(ZB_SANITIZE "Build the SDK and tests with ASan and UBSan" OFF)
+if(ZB_SANITIZE AND NOT MSVC)
+  target_compile_options(${PROJECT_NAME} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(${PROJECT_NAME} PUBLIC -fsanitize=address,undefined)
+endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 
 if(PROJECT_IS_TOP_LEVEL)
   enable_testing()
   add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
   target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
+  if(ZB_SANITIZE AND NOT MSVC)
+    target_compile_options(ZeroBounceTests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  endif()
   target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
   # The sweep's completeness test reads the public header to list the request
   # functions.

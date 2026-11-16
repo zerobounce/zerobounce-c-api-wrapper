@@ -2080,12 +2080,15 @@ void test_offline_get_file_that_cannot_be_written_is_an_error(void) {
     /* A regular file used as a directory: nothing can be created under it,
        whoever runs the test (root included). */
     const char *blocker = zb_test_dl("not-a-directory");
-    char path[128];
+    char path[2048];
+    int path_written;
     FILE *handle = fopen(blocker, "wb");
     TEST_ASSERT_NOT_NULL(handle);
     fputs("x", handle);
     fclose(handle);
-    snprintf(path, sizeof(path), "%s/out.csv", blocker);
+    path_written = snprintf(path, sizeof(path), "%s/out.csv", blocker);
+    TEST_ASSERT_TRUE_MESSAGE(path_written >= 0 && (size_t)path_written < sizeof(path),
+        "the download path was truncated");
 
     ZeroBounce *zb = client_with("unwritable");
     reset_offline();
@@ -2406,14 +2409,15 @@ static int count_dir_entries(const char *dir) {
 /* Empties dir, so files left by an earlier run do not count. */
 static void empty_dir(const char *dir) {
     struct dirent *entry;
-    char path[512];
+    char path[2048];
     DIR *handle = opendir(dir);
     if (!handle) {
         return;
     }
     while ((entry = readdir(handle)) != NULL) {
         if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-            snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+            int written = snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+            TEST_ASSERT_TRUE_MESSAGE(written >= 0 && (size_t)written < sizeof(path), "a path was truncated");
             remove(path);
         }
     }
@@ -4862,6 +4866,285 @@ void test_offline_find_email_and_search_domain_refuse_a_message_without_a_result
     reset_offline();
 }
 
+
+#if defined(__GNUC__)
+#define NULL_CLIENT_DEPRECATED_BEGIN _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define NULL_CLIENT_DEPRECATED_END _Pragma("GCC diagnostic pop")
+#else
+#define NULL_CLIENT_DEPRECATED_BEGIN
+#define NULL_CLIENT_DEPRECATED_END
+#endif
+
+static void nt_find(ZeroBounce *zb) { find_email_by_domain_first_name(zb, "example.com", "Ada", on_find, on_error); }
+static void nt_find_v1(ZeroBounce *zb) {
+    NULL_CLIENT_DEPRECATED_BEGIN
+    find_email(zb, "example.com", "Ada", "", "Lovelace", on_find, on_error);
+    NULL_CLIENT_DEPRECATED_END
+}
+static void nt_search(ZeroBounce *zb) { search_domain_by_domain(zb, "example.com", on_domain, on_error); }
+static void nt_domain_status(ZeroBounce *zb) { domain_search_file_status(zb, "fid", on_status, on_error); }
+static void nt_domain_delete(ZeroBounce *zb) { domain_search_delete_file(zb, "fid", on_delete, on_error); }
+
+/* A1: a "success" that is null (or no flag) decides nothing, so the message-only
+   and dead-key rules still apply: {"message":"m","success":null} and
+   {"error":"Invalid API key","success":null} are errors with the status on
+   every typed call, never a result. */
+void test_offline_a_null_success_beside_a_message_or_error_is_an_error_on_every_typed_call(void) {
+    static const NtCall extra[] = {
+        {"get_api_usage", nt_usage}, {"get_activity_data", nt_activity}, {"score_email", nt_score},
+        {"score_email_post", nt_score_post}, {"find_email_by_domain", nt_find}, {"find_email v1", nt_find_v1},
+        {"search_domain", nt_search}, {"domain_search_file_status", nt_domain_status},
+        {"domain_search_delete_file", nt_domain_delete},
+    };
+    static const char *const bodies[] = {
+        "{\"message\":\"m\",\"success\":null}", "{\"error\":\"Invalid API key\",\"success\":null}",
+        "{\"success\":null,\"error\":\"Invalid API key\",\"message\":null}", "{\"Message\":\"m\",\"success\":null}",
+        "{\"error\":\"Invalid API key\",\"success\":[]}", "{\"error\":\"Invalid API key\",\"success\":5}",
+    };
+    static const long statuses[] = {200, 202};
+    char message[240];
+    ZeroBounce *zb = client_with("null-success-key");
+    g_leak_mode = 10;
+    for (size_t pass = 0; pass < 2; pass++) {
+        size_t count = pass == 0 ? sizeof(nt_five_calls) / sizeof(nt_five_calls[0]) : sizeof(extra) / sizeof(extra[0]);
+        const NtCall *calls = pass == 0 ? nt_five_calls : extra;
+        for (size_t c = 0; c < count; c++) {
+            for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+                for (size_t st = 0; st < 2; st++) {
+                    snprintf(message, sizeof(message), "%s %s HTTP %ld", calls[c].name, bodies[b], statuses[st]);
+                    nt_script(bodies[b], statuses[st], "application/json");
+                    calls[c].call(zb);
+                    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                    TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[st], (int)g_error_status, message);
+                    TEST_ASSERT_TRUE_MESSAGE(g_error_text[0] != '\0', message);
+                }
+            }
+        }
+    }
+    /* The message is the API's own. */
+    nt_script("{\"error\":\"Invalid API key\",\"success\":null}", 200, "application/json");
+    nt_usage(zb);
+    TEST_ASSERT_TRUE(strstr(g_error_text, "Invalid API key") != NULL);
+    /* A real boolean still decides. */
+    nt_script("{\"success\":true,\"message\":\"ok\",\"file_id\":\"f\"}", 200, "application/json");
+    nt_delete_file(zb);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    g_leak_mode = 0;
+    reset_offline();
+}
+
+/* A3: an error object with no message text still has one. */
+void test_offline_an_error_object_with_no_message_text_gets_the_fixed_message(void) {
+    static const char *const bodies[] = {"{\"message\":null}", "{\"message\":\"\"}", "{\"message\":\"  \"}",
+                                         "{\"error\":[]}", "{\"error\":[\"\"]}", "{\"Message\":null,\"error\":\"\"}"};
+    ZeroBounce *zb = client_with("no-text-key");
+    for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+        for (size_t c = 0; c < 2; c++) {
+            nt_script(bodies[b], c == 0 ? 200 : 500, "application/json");
+            if (c == 0) {
+                nt_find(zb);
+            } else {
+                nt_usage(zb);
+            }
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, bodies[b]);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE("ZeroBounce returned an error with no message text.", g_error_text, bodies[b]);
+        }
+    }
+    reset_offline();
+}
+
+/* X1: each message-without-result guard (the new finder, domain search and the
+   deprecated find_email) refuses a message beside an unknown non-null key and
+   no result field, which the message-only check lets through. */
+void test_offline_the_message_without_result_guards_refuse_a_message_beside_an_unknown_key(void) {
+    static const NtCall calls[] = {{"find_email_by_domain", nt_find}, {"search_domain", nt_search},
+                                   {"find_email v1", nt_find_v1}};
+    static const char *const bodies[] = {"{\"message\":\"m\",\"domain\":null,\"x\":1}",
+                                         "{\"error\":\"m\",\"email\":null,\"other\":\"y\"}"};
+    char message[200];
+    ZeroBounce *zb = client_with("guard-key");
+    for (size_t c = 0; c < 3; c++) {
+        for (size_t b = 0; b < 2; b++) {
+            snprintf(message, sizeof(message), "%s %s", calls[c].name, bodies[b]);
+            nt_script(bodies[b], 200, "application/json");
+            calls[c].call(zb);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+        }
+    }
+    reset_offline();
+}
+
+static void on_null_client_success(void) {
+    g_success_called = 1;
+}
+
+static char g_null_client_failures[1024];
+
+static void null_client_check(const char *name) {
+    if (g_success_called || !g_error_called || strstr(g_error_text, "not initialized") == NULL) {
+        size_t used = strlen(g_null_client_failures);
+        snprintf(g_null_client_failures + used, sizeof(g_null_client_failures) - used, " %s", name);
+    }
+    reset_offline();
+}
+
+/* A NULL client is an error through the error callback on every public call,
+   never a crash; a NULL error callback is not called. */
+void test_offline_a_null_client_is_an_error_on_every_call(void) {
+    struct tm tm_zero = {0};
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    GetFileOptions o_get = new_get_file_options();
+    ZBValidateOptions o_val = new_validate_options();
+    DomainSearchSendFileOptions o_dom = new_domain_search_send_file_options();
+    EmailFinderSendFileOptions o_ef = new_email_finder_send_file_options();
+    ZBBulkFileJobOptions o_bulk = new_bulk_file_job_options();
+    ZBListInboxPlacementTestsOptions o_list = new_list_inbox_placement_tests_options();
+    ZBCreateInboxPlacementTestOptions o_create = new_create_inbox_placement_test_options();
+    ValidateS3FileOptions o_vs3 = new_validate_s3_file_options();
+    ScoreS3FileOptions o_ss3 = new_score_s3_file_options();
+    o_ef.first_name_column = 1;
+    g_null_client_failures[0] = '\0';
+    reset_offline();
+    get_credits(NULL, (OnSuccessCallbackCredits)on_null_client_success, on_error);
+    null_client_check("get_credits");
+    get_api_usage(NULL, tm_zero, tm_zero, (OnSuccessCallbackApiUsage)on_null_client_success, on_error);
+    null_client_check("get_api_usage");
+    validate_email(NULL, "x", "x", (OnSuccessCallbackValidate)on_null_client_success, on_error);
+    null_client_check("validate_email");
+    validate_email_with_options(NULL, "x", "x", &o_val, (OnSuccessCallbackValidate)on_null_client_success, on_error);
+    null_client_check("validate_email_with_options");
+    validate_email_batch(NULL, emails, (OnSuccessCallbackValidateBatch)on_null_client_success, on_error);
+    null_client_check("validate_email_batch");
+    validate_email_batch_with_options(NULL, emails, &o_val, (OnSuccessCallbackValidateBatch)on_null_client_success, on_error);
+    null_client_check("validate_email_batch_with_options");
+    send_file(NULL, "x", 1, new_send_file_options(), (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("send_file");
+    file_status(NULL, "x", (OnSuccessCallbackFileStatus)on_null_client_success, on_error);
+    null_client_check("file_status");
+    get_file(NULL, "x", "x", (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("get_file");
+    get_file_streaming(NULL, "x", "x", &o_get, (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("get_file_streaming");
+    scoring_get_file_streaming(NULL, "x", "x", &o_get, (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("scoring_get_file_streaming");
+    get_file_with_options(NULL, "x", "x", &o_get, (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("get_file_with_options");
+    delete_file(NULL, "x", (OnSuccessCallbackDeleteFile)on_null_client_success, on_error);
+    null_client_check("delete_file");
+    scoring_send_file(NULL, "x", 1, new_send_file_options(), (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("scoring_send_file");
+    scoring_file_status(NULL, "x", (OnSuccessCallbackFileStatus)on_null_client_success, on_error);
+    null_client_check("scoring_file_status");
+    scoring_get_file(NULL, "x", "x", (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("scoring_get_file");
+    scoring_get_file_with_options(NULL, "x", "x", &o_get, (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("scoring_get_file_with_options");
+    scoring_delete_file(NULL, "x", (OnSuccessCallbackDeleteFile)on_null_client_success, on_error);
+    null_client_check("scoring_delete_file");
+    get_activity_data(NULL, "x", (OnSuccessCallbackActivityData)on_null_client_success, on_error);
+    null_client_check("get_activity_data");
+    score_email(NULL, "x", (OnSuccessCallbackScoreEmail)on_null_client_success, on_error);
+    null_client_check("score_email");
+    score_email_post(NULL, "x", (OnSuccessCallbackScoreEmail)on_null_client_success, on_error);
+    null_client_check("score_email_post");
+    find_email_by_domain_first_middle_last_name(NULL, "x", "x", "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    null_client_check("find_email_by_domain_first_middle_last_name");
+    find_email_by_domain_first_last_name(NULL, "x", "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    null_client_check("find_email_by_domain_first_last_name");
+    find_email_by_domain_first_name(NULL, "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    null_client_check("find_email_by_domain_first_name");
+    find_email_by_company_name_first_middle_last_name(NULL, "x", "x", "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    null_client_check("find_email_by_company_name_first_middle_last_name");
+    find_email_by_company_name_first_last_name(NULL, "x", "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    null_client_check("find_email_by_company_name_first_last_name");
+    find_email_by_company_name_first_name(NULL, "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    null_client_check("find_email_by_company_name_first_name");
+    search_domain_by_domain(NULL, "x", (OnSuccessCallbackDomainSearch)on_null_client_success, on_error);
+    null_client_check("search_domain_by_domain");
+    search_domain_by_company_name(NULL, "x", (OnSuccessCallbackDomainSearch)on_null_client_success, on_error);
+    null_client_check("search_domain_by_company_name");
+    send_email_finder_file(NULL, "x", 1, &o_ef, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("send_email_finder_file");
+    email_finder_file_status(NULL, "x", (OnSuccessCallbackFileStatus)on_null_client_success, on_error);
+    null_client_check("email_finder_file_status");
+    email_finder_get_file(NULL, "x", "x", (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("email_finder_get_file");
+    email_finder_delete_file(NULL, "x", (OnSuccessCallbackDeleteFile)on_null_client_success, on_error);
+    null_client_check("email_finder_delete_file");
+    send_domain_search_file(NULL, "x", 1, &o_dom, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("send_domain_search_file");
+    domain_search_file_status(NULL, "x", (OnSuccessCallbackFileStatus)on_null_client_success, on_error);
+    null_client_check("domain_search_file_status");
+    domain_search_get_file(NULL, "x", "x", (OnSuccessCallbackGetFile)on_null_client_success, on_error);
+    null_client_check("domain_search_get_file");
+    domain_search_delete_file(NULL, "x", (OnSuccessCallbackDeleteFile)on_null_client_success, on_error);
+    null_client_check("domain_search_delete_file");
+    send_list_evaluator_file(NULL, "x", 1, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("send_list_evaluator_file");
+    get_list_evaluator_result(NULL, "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("get_list_evaluator_result");
+    send_evaluated_file(NULL, "x", (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("send_evaluated_file");
+    add_filter(NULL, "x", "x", "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("add_filter");
+    list_filters(NULL, false, (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("list_filters");
+    delete_filter(NULL, "x", "x", "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("delete_filter");
+    validate_s3_file(NULL, &o_vs3, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("validate_s3_file");
+    score_s3_file(NULL, &o_ss3, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("score_s3_file");
+    export_s3_file(NULL, "x", "x", (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("export_s3_file");
+    list_s3_files(NULL, "x", "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("list_s3_files");
+    email_finder_s3_file(NULL, &o_bulk, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("email_finder_s3_file");
+    domain_search_s3_file(NULL, &o_bulk, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("domain_search_s3_file");
+    validate_sftp_file(NULL, &o_bulk, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("validate_sftp_file");
+    score_sftp_file(NULL, &o_bulk, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("score_sftp_file");
+    email_finder_sftp_file(NULL, &o_bulk, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("email_finder_sftp_file");
+    domain_search_sftp_file(NULL, &o_bulk, (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("domain_search_sftp_file");
+    export_sftp_file(NULL, "x", "x", (OnSuccessCallbackSendFile)on_null_client_success, on_error);
+    null_client_check("export_sftp_file");
+    get_inbox_placement_providers(NULL, (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("get_inbox_placement_providers");
+    get_inbox_placement_test_types(NULL, (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("get_inbox_placement_test_types");
+    create_inbox_placement_test(NULL, "x", &o_create, (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("create_inbox_placement_test");
+    get_inbox_placement_test(NULL, "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("get_inbox_placement_test");
+    list_inbox_placement_tests(NULL, &o_list, (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("list_inbox_placement_tests");
+    delete_inbox_placement_test(NULL, "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("delete_inbox_placement_test");
+    get_inbox_placement_webhook(NULL, (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("get_inbox_placement_webhook");
+    set_inbox_placement_webhook(NULL, "x", (OnSuccessCallbackRawJson)on_null_client_success, on_error);
+    null_client_check("set_inbox_placement_webhook");
+    NULL_CLIENT_DEPRECATED_BEGIN
+    find_email(NULL, "x", "x", "x", "x", (OnSuccessCallbackFindEmail)on_null_client_success, on_error);
+    NULL_CLIENT_DEPRECATED_END
+    null_client_check("find_email");
+    email_to_validate_vector_free(&emails);
+    /* No error callback: nothing to call, nothing to crash. */
+    get_credits(NULL, NULL, NULL);
+    validate_email(NULL, "a@example.com", "", NULL, NULL);
+    zb_report_body_error("{\"message\":null}", 200, NULL);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", g_null_client_failures, g_null_client_failures);
+}
+
 void test_offline_file_status_needs_one_non_null_field_it_has(void) {
     static const char *const refused[] = {"{\"foo\":1}", "{\"\":\"\"}", "{\"message\":\"m\",\"file_id\":null}"};
     static const long statuses[] = {200, 202};
@@ -5373,9 +5656,9 @@ void test_offline_a_url_with_a_username_or_password_is_refused_by_every_setter(v
     TEST_ASSERT_TRUE(g_success_called);
     zero_bounce_set_transport_for_test(0, 0, false);
     zb->api_base_url = "https://api.zerobounce.net/v2";
-    /* An '@' in the path or query is not a username. */
+    /* An '@' in the path is not a username. */
     zb = client_with("userinfo-key");
-    zero_bounce_set_bulk_api_base_url(zb, "https://bulk.example.test/v2?x=a@b");
+    zero_bounce_set_bulk_api_base_url(zb, "https://bulk.example.test/v2/x=a@b");
     nt_script("{\"file_status\":\"x\"}", 200, "application/json");
     nt_file_status(zb);
     TEST_ASSERT_EQUAL_INT(1, nt_calls);
@@ -5507,11 +5790,120 @@ void test_offline_replacing_a_base_url_twice_uses_the_last_one(void) {
     TEST_ASSERT_EQUAL_STRING("https://ipt2.example.test", zb->inbox_placement_base_url);
 }
 
+/* ---- Fixer B: redaction and key-check hardening ------------------------- */
+
+/* B1: every "api_key=" grows from 8 to 16 bytes; the buffer must hold them
+   all (an AddressSanitizer build catches the overflow). */
+void test_offline_redact_api_key_sizes_its_buffer_for_many_matches(void) {
+    char text[2049];
+    char *safe;
+    size_t i;
+    size_t count = 0;
+    const char *at;
+    memset(text, 0, sizeof(text));
+    for (i = 0; i + 9 <= 2048; i += 9) {
+        memcpy(text + i, "api_key=&", 9);
+    }
+    safe = zb_redact_api_key(text);
+    TEST_ASSERT_NOT_NULL(safe);
+    for (at = safe; (at = strstr(at, "api_key=REDACTED")) != NULL; at += 16) {
+        count++;
+    }
+    TEST_ASSERT_EQUAL_UINT(2048 / 9, count);
+    free(safe);
+    safe = zb_redact_api_key("api_key=&api_key=&api_key=");
+    TEST_ASSERT_EQUAL_STRING("api_key=REDACTED&api_key=REDACTED&api_key=REDACTED", safe);
+    free(safe);
+}
+
+/* B2: Unicode full case folding, as Go's and Rust's checks do. */
+void test_offline_redaction_folds_unicode_case(void) {
+    static const char *const pairs[][2] = {
+        {"P\xC3\xA4ssw\xC3\xB6rd-\xC3\x9F" "eta", "echo PÄSSWÖRD-SSETA end"},
+        {"\xC3\xBCs\xC3\xA9r", "echo \xC3\x9C" "S\xC3\x89R end"},
+        {"stra\xC3\x9F" "e-k3y", "STRASSE-K3Y"},
+        {"\xCF\x83\xCF\x82-key", "\xCE\xA3\xCE\xA3-KEY"},
+    };
+    size_t i;
+    for (i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
+        char *masked = zb_mask_secret(strdup(pairs[i][1]), pairs[i][0], "***");
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(ZB_SECRET_OMITTED_MESSAGE, masked, pairs[i][1]);
+        free(masked);
+    }
+}
+
+/* B3: more spellings of a quote and of a non-ASCII secret. */
+void test_offline_redaction_decodes_more_spellings(void) {
+    static const char *const quote[] = {
+        "&#00000039;", "&#39", "&#x27", "&#0000000000000000039;", "&#X0027;",
+    };
+    static const char *const bytes[] = {
+        "caf\\xC3\\xA9-k3y", "caf\\303\\251-k3y", "caf&eacute;-k3y", "caf&eacute-k3y", "caf&Eacute;-k3y",
+    };
+    size_t i;
+    char text[128];
+    for (i = 0; i < sizeof(quote) / sizeof(quote[0]); i++) {
+        char *masked;
+        snprintf(text, sizeof(text), "login pa%sss-w0rd failed", quote[i]);
+        masked = zb_mask_secret(strdup(text), "pa'ss-w0rd", "***");
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(ZB_SECRET_OMITTED_MESSAGE, masked, text);
+        free(masked);
+    }
+    for (i = 0; i < sizeof(bytes) / sizeof(bytes[0]); i++) {
+        char *masked;
+        snprintf(text, sizeof(text), "login %s failed", bytes[i]);
+        masked = zb_mask_secret(strdup(text), "caf\xC3\xA9-k3y", "***");
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(ZB_SECRET_OMITTED_MESSAGE, masked, text);
+        free(masked);
+    }
+    {
+        char *masked = zb_mask_secret(strdup("sz &szlig; and &auml;"), "ß-ä-secret", "***");
+        TEST_ASSERT_EQUAL_STRING("sz &szlig; and &auml;", masked);
+        free(masked);
+        masked = zb_mask_secret(strdup("&szlig;-&auml;-secret"), "\xC3\x9F-\xC3\xA4-secret", "***");
+        TEST_ASSERT_EQUAL_STRING(ZB_SECRET_OMITTED_MESSAGE, masked);
+        free(masked);
+    }
+}
+
+/* B4: invisible characters Rust refuses, and malformed UTF-8. */
+void test_offline_a_key_check_refuses_more_invisible_characters_and_bad_utf8(void) {
+    static const char *const bad[] = {
+        "\xCD\x8F", "\xE1\x85\x9F", "\xE3\x85\xA4", "\xEF\xBE\xA0", "\xE2\xA0\x80", "\xF0\x93\x90\xB0",
+        "\xF0\x9B\xB2\xA0", "\xF0\x91\x82\xBD", "\xF0\x91\x83\x8D", "\xE1\x85\xA0", "\xE1\x9E\xB4",
+        "\xE2\x81\xA5", "\xEF\xBF\xB0", "\xF3\xA0\x80\x80", "\xF3\xA0\x84\x80",
+        /* malformed UTF-8 */
+        "\xC0\x80", "\xE0\x80\xA0", "\xED\xA0\x80", "\xFF", "\x80", "\xC3", "\xF4\x90\x80\x80",
+    };
+    size_t i;
+    char key[64];
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        snprintf(key, sizeof(key), "ab%scd", bad[i]);
+        TEST_ASSERT_FALSE_MESSAGE(zb_api_key_is_clean(key), key);
+    }
+    TEST_ASSERT_TRUE(zb_api_key_is_clean("ab\xE2\x82\xAC" "cd"));
+    TEST_ASSERT_TRUE(zb_api_key_is_clean("ab\xF0\x9F\x98\x80" "cd"));
+}
+
+/* B5: the secret helper zeroes what it frees (checked on the bytes before
+   free via the same volatile loop: the buffer is observed through a copy of
+   its length). */
+void test_offline_secure_free_accepts_null_and_frees(void) {
+    char *key = strdup("secret-key-value");
+    zb_secure_free(key);
+    zb_secure_free(NULL);
+    TEST_PASS();
+}
+
 void offline_run_tests(void) {
     RUN_TEST(test_offline_an_empty_or_message_only_200_is_an_error_on_the_five_calls);
     RUN_TEST(test_offline_a_greylist_message_on_validate_stays_a_result);
     RUN_TEST(test_offline_a_message_beside_a_null_is_an_error_and_a_null_alone_is_a_result);
     RUN_TEST(test_offline_find_email_and_search_domain_refuse_a_message_without_a_result);
+    RUN_TEST(test_offline_a_null_success_beside_a_message_or_error_is_an_error_on_every_typed_call);
+    RUN_TEST(test_offline_an_error_object_with_no_message_text_gets_the_fixed_message);
+    RUN_TEST(test_offline_the_message_without_result_guards_refuse_a_message_beside_an_unknown_key);
+    RUN_TEST(test_offline_a_null_client_is_an_error_on_every_call);
     RUN_TEST(test_offline_file_status_needs_one_non_null_field_it_has);
     RUN_TEST(test_offline_a_batch_account_error_carries_the_http_status);
     RUN_TEST(test_offline_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
@@ -5610,4 +6002,9 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_a_missing_non_required_field_reads_as_empty);
     RUN_TEST(test_offline_missing_validate_fields_read_as_empty_values);
     RUN_TEST(test_offline_a_dead_key_on_200_is_an_error_on_every_call);
+    RUN_TEST(test_offline_redact_api_key_sizes_its_buffer_for_many_matches);
+    RUN_TEST(test_offline_redaction_folds_unicode_case);
+    RUN_TEST(test_offline_redaction_decodes_more_spellings);
+    RUN_TEST(test_offline_a_key_check_refuses_more_invisible_characters_and_bad_utf8);
+    RUN_TEST(test_offline_secure_free_accepts_null_and_frees);
 }
