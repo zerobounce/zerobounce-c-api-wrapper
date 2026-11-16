@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-16
+
 ### Upgrading
 
 - **Source compatible, binary layout changed:** code written for 3.0.x keeps compiling, but `SendFileOptions` and `ZBWarmupManagedSending` each grew by members appended at the end, so a shared library (`.so`, `.dylib`, `.dll`) built against the 3.0.x headers must be rebuilt (a `FetchContent` build always is). Every public function that takes no arguments is now declared `(void)` instead of `()`: a call that passed an argument no longer compiles. The public header no longer declares the library's internal functions or `zero_bounce_instance`.
@@ -338,7 +340,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: `get_credits`, `get_api_usage`, `validate_email`, `validate_email_batch`, bulk and AI-scoring file functions, and `get_activity_data`.
 
-[Unreleased]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.4...v2.2.0
