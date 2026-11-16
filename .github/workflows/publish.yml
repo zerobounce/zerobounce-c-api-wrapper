@@ -33,7 +33,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: refs/tags/${{ github.event.inputs.tag }}
-
           persist-credentials: false
       - name: Verify tag and project version
         env:
@@ -57,7 +56,6 @@ jobs:
             echo "Error: CMakeLists.txt version ($PKG_VERSION) does not match tag ($TAG)."
             exit 1
           fi
-          
       - name: Record tag commit SHA
         id: tag_sha
         env:
@@ -117,7 +115,6 @@ jobs:
         with:
           ref: ${{ needs.validate-tag.outputs.tag_sha }}
           fetch-depth: 0
-
           persist-credentials: false
       - name: Create release if missing
         env:

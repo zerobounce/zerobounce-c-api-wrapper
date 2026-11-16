@@ -104,7 +104,7 @@ ZeroBounceWarmup *new_zero_bounce_warmup_instance(void);
 void zero_bounce_warmup_initialize(ZeroBounceWarmup *zbw, const char *api_key);
 /** Overrides the base URL ZeroBounce gave you. Must be https; trailing slashes are dropped. */
 void zero_bounce_warmup_set_base_url(ZeroBounceWarmup *zbw, const char *url);
-/** Frees the client and its key. */
+/** Frees the client, its key, and the base URL if zero_bounce_warmup_set_base_url copied it. */
 void zero_bounce_warmup_free(ZeroBounceWarmup *zbw);
 
 /* -- sending accounts ---------------------------------------------------- */

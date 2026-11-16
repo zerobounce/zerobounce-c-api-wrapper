@@ -73,6 +73,9 @@ typedef struct {
     char last_request[16384];
 } TServer;
 
+/* The status the redirect mode (1) answers with; 302 when 0. */
+static int t_redirect_status;
+
 static long t_now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -109,6 +112,8 @@ static void t_answer_redirect(TServer *server, int fd) {
     char *header_end = NULL;
     size_t content_length = 0;
     const char *response;
+    const char *response_tail = NULL;
+    char redirect_response[160];
     switch (server->redirect) {
     case 2:
         response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 24\r\nConnection: close\r\n\r\n"
@@ -171,8 +176,25 @@ static void t_answer_redirect(TServer *server, int fd) {
         response = over_cap;
         break;
     }
+    case 12:
+        /* 0x100 bytes promised, T_JSON delivered. */
+        response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n"
+                   "Connection: close\r\n\r\n100\r\n" T_JSON;
+        break;
+    case 13:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nTransfer-Encoding: chunked\r\n"
+                   "Connection: close\r\n\r\n100\r\nemail\nchunked@example.com\n";
+        break;
+    case 14:
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 31\r\n"
+                   "Connection: close\r\n\r\n\xEF\xBB";
+        response_tail = "\xBF{\"Message\":\"File not found\"}";
+        break;
     default:
-        response = "HTTP/1.1 302 Found\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        snprintf(redirect_response, sizeof(redirect_response),
+                 "HTTP/1.1 %d Redirect\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                 t_redirect_status ? t_redirect_status : 302);
+        response = redirect_response;
         break;
     }
 
@@ -214,6 +236,11 @@ static void t_answer_redirect(TServer *server, int fd) {
     }
     pthread_mutex_unlock(&server->mu);
     t_send_all(fd, response, strlen(response));
+    if (response_tail) {
+        struct timespec pause = {0, 150 * 1000000L};
+        nanosleep(&pause, NULL);
+        t_send_all(fd, response_tail, strlen(response_tail));
+    }
     close(fd);
 }
 
@@ -372,28 +399,33 @@ static ZeroBounceWarmup *t_warmup(const char *scheme, int port) {
 }
 
 void test_transport_redirects_are_not_followed(void) {
-    TServer server;
-    char message[32];
+    static const int redirect_statuses[] = {301, 302, 303, 307, 308};
+    char message[48];
     zero_bounce_set_http_perform_for_test(NULL);
     zero_bounce_set_transport_for_test(5000, 5000, true);
-    t_start(&server, 1);
-    ZeroBounce *zb = t_client("http", server.port);
-    ZeroBounceWarmup *zbw = t_warmup("http", server.port);
+    for (size_t r = 0; r < sizeof(redirect_statuses) / sizeof(redirect_statuses[0]); r++) {
+        TServer server;
+        t_redirect_status = redirect_statuses[r];
+        t_start(&server, 1);
+        ZeroBounce *zb = t_client("http", server.port);
+        ZeroBounceWarmup *zbw = t_warmup("http", server.port);
 
-    for (int i = 0; i < T_PATHS; i++) {
-        t_errors = t_successes = 0;
-        t_status = 0;
-        snprintf(message, sizeof(message), "request path %d", i);
-        t_call_path(i, zb, zbw);
-        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
-        TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
-        TEST_ASSERT_EQUAL_INT_MESSAGE(302, (int)t_status, message);
+        for (int i = 0; i < T_PATHS; i++) {
+            t_errors = t_successes = 0;
+            t_status = 0;
+            snprintf(message, sizeof(message), "HTTP %d, request path %d", redirect_statuses[r], i);
+            t_call_path(i, zb, zbw);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(redirect_statuses[r], (int)t_status, message);
+        }
+        t_stop(&server);
+        /* A followed redirect would have come back for /landed, key and all. */
+        TEST_ASSERT_EQUAL_INT(0, server.landed);
+        TEST_ASSERT_EQUAL_INT(T_PATHS, server.requests);
+        zero_bounce_warmup_free(zbw);
     }
-    t_stop(&server);
-    /* A followed redirect would have come back for /landed, key and all. */
-    TEST_ASSERT_EQUAL_INT(0, server.landed);
-    TEST_ASSERT_EQUAL_INT(T_PATHS, server.requests);
-    zero_bounce_warmup_free(zbw);
+    t_redirect_status = 0;
     zero_bounce_set_transport_for_test(0, 0, false);
 }
 
@@ -564,6 +596,42 @@ void test_transport_a_json_response_cut_short_is_an_error(void) {
     }
 }
 
+void test_transport_a_chunked_body_cut_short_is_not_saved(void) {
+    /* Each chunk size promises more than arrives, then the connection
+       closes: a partial transfer, a status-0 error, no file. */
+    t_expect_no_download(13, 0);
+}
+
+void test_transport_a_chunked_json_response_cut_short_is_an_error(void) {
+    /* One buffered call (Credits) and one more that reads a JSON body. */
+    static const int paths[] = {0, 5};
+    char message[48];
+    TServer server;
+    zero_bounce_set_http_perform_for_test(NULL);
+    zero_bounce_set_transport_for_test(5000, 5000, true);
+    t_start(&server, 12);
+    ZeroBounce *zb = t_client("http", server.port);
+    ZeroBounceWarmup *zbw = t_warmup("http", server.port);
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        t_errors = t_successes = 0;
+        t_status = -1;
+        t_call_path(paths[i], zb, zbw);
+        snprintf(message, sizeof(message), "chunked, request path %d", paths[i]);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)t_status, message);
+    }
+    t_stop(&server);
+    zero_bounce_warmup_free(zbw);
+    zero_bounce_set_transport_for_test(0, 0, false);
+}
+
+void test_transport_a_byte_order_mark_split_across_chunks_is_not_torn(void) {
+    /* The first chunk ends inside the mark; the JSON object after it is
+       still an error, and the streaming download opens no file. */
+    t_expect_no_download(14, 200);
+}
+
 /* A body over the size cap keeps its HTTP status in the error, on every
    buffered request path (the streamed download has no cap): a 500 stays a
    500, and a 200 is an API error with status 200, not a status-0 transport
@@ -645,7 +713,7 @@ void test_transport_a_failed_download_keeps_the_file_already_there(void) {
     const char *dir = zb_test_dl("transport-keep");
     const char *path = zb_test_dl("transport-keep/result.csv");
     const char *previous = "email\nprevious@example.com\n";
-    const int modes[] = {-1, 3, 5, 8, 9};
+    const int modes[] = {-1, 3, 5, 8, 9, 13, 14};
     char message[384];
     char listing[256];
     mkdir(zb_test_dl(""), 0777);
@@ -886,6 +954,9 @@ int main(void) {
     RUN_TEST(test_transport_a_download_cut_short_is_not_saved);
     RUN_TEST(test_transport_a_non_2xx_download_is_not_saved);
     RUN_TEST(test_transport_a_json_response_cut_short_is_an_error);
+    RUN_TEST(test_transport_a_chunked_body_cut_short_is_not_saved);
+    RUN_TEST(test_transport_a_chunked_json_response_cut_short_is_an_error);
+    RUN_TEST(test_transport_a_byte_order_mark_split_across_chunks_is_not_torn);
     RUN_TEST(test_transport_a_body_over_the_size_cap_keeps_its_status);
     RUN_TEST(test_transport_a_failed_download_keeps_the_file_already_there);
     RUN_TEST(test_transport_a_download_replaces_the_file_already_there);

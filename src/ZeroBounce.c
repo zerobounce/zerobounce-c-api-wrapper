@@ -915,15 +915,56 @@ char *zb_normalized_base_url(const char *url) {
     return copy;
 }
 
-/* Stores a normalized copy of url in *slot and frees the copy it replaces; a
-   starting default is a literal and is left alone. */
+/*
+ * The base URLs this library copied. A URL field is a plain const char *, so
+ * a caller can store a literal or its own buffer there; only a pointer that is
+ * in this table was allocated here and may be freed. Not thread-safe, like
+ * the rest of the client's setters.
+ */
+static const char **zb_owned_urls = NULL;
+static size_t zb_owned_url_count = 0;
+static size_t zb_owned_url_capacity = 0;
+
+/* Records url (a pointer this library allocated) as owned. */
+void zb_register_owned_url(const char *url) {
+    if (!url) {
+        return;
+    }
+    if (zb_owned_url_count == zb_owned_url_capacity) {
+        size_t capacity = zb_owned_url_capacity ? zb_owned_url_capacity * 2 : 8;
+        const char **grown = realloc((void *)zb_owned_urls, capacity * sizeof(*grown));
+        if (!grown) {
+            fprintf(stderr, "Memory allocation failed.\n");
+            exit(EXIT_FAILURE);
+        }
+        zb_owned_urls = grown;
+        zb_owned_url_capacity = capacity;
+    }
+    zb_owned_urls[zb_owned_url_count++] = url;
+}
+
+/* Frees url when this library allocated it; any other pointer (a literal, a
+   caller's buffer, a starting default) is left alone. */
+void zb_free_owned_url(const char *url) {
+    size_t i;
+    if (!url) {
+        return;
+    }
+    for (i = 0; i < zb_owned_url_count; i++) {
+        if (zb_owned_urls[i] == url) {
+            zb_owned_urls[i] = zb_owned_urls[--zb_owned_url_count];
+            free((char *)url);
+            return;
+        }
+    }
+}
+
+/* Stores a normalized copy of url in *slot and frees the copy it replaces, if
+   it was one; anything else the slot held is left alone. */
 void zb_replace_base_url(const char **slot, const char *url) {
     char *copy = zb_normalized_base_url(url);
-    if (*slot != zb_default_bulk_api_root_url && *slot != zb_default_list_evaluator_base_url &&
-        *slot != zb_default_inbox_placement_base_url && *slot != zb_default_bulk_api_base_url &&
-        *slot != zb_default_bulk_api_scoring_base_url) {
-        free((char *)*slot);
-    }
+    zb_register_owned_url(copy);
+    zb_free_owned_url(*slot);
     *slot = copy;
 }
 
@@ -2043,7 +2084,7 @@ void get_api_usage(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -2529,6 +2570,8 @@ typedef struct {
     /* The content type the test hook supplied, when there is no handle. */
     const char *content_type;
     bool decided;
+    /* A byte that is not padding has arrived. */
+    bool past_padding;
     bool rejected;
     bool open_failed;
     bool write_failed;
@@ -2591,21 +2634,80 @@ static bool zb_stream_open(ZbDownloadStream *stream) {
     return true;
 }
 
+/* How many bytes at the start of data (size bytes) are whole padding units:
+   ASCII whitespace, a byte order mark (EF BB BF) or a no-break space (C2 A0).
+   A unit cut off by the end of data is not counted. */
+static size_t zb_stream_padding_length(const char *data, size_t size) {
+    size_t i = 0;
+    while (i < size) {
+        unsigned char c = (unsigned char)data[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') {
+            i++;
+        } else if (c == 0xEF && size - i >= 3 && (unsigned char)data[i + 1] == 0xBB &&
+                   (unsigned char)data[i + 2] == 0xBF) {
+            i += 3;
+        } else if (c == 0xC2 && size - i >= 2 && (unsigned char)data[i + 1] == 0xA0) {
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    return i;
+}
+
+/* Whether the size bytes at data (at most two) could be the start of a byte
+   order mark or a no-break space that the next chunk completes. */
+static bool zb_stream_padding_partial(const char *data, size_t size) {
+    if (size == 1) {
+        return (unsigned char)data[0] == 0xEF || (unsigned char)data[0] == 0xC2;
+    }
+    return size == 2 && (unsigned char)data[0] == 0xEF && (unsigned char)data[1] == 0xBB;
+}
+
 static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *userp) {
     ZbDownloadStream *stream = (ZbDownloadStream *)userp;
     size_t total = size * nmemb;
+    const char *data = (const char *)contents;
+    size_t left = total;
 
     if (stream->rejected || stream->open_failed) {
         /* Keep draining so libcurl reports the HTTP status, not a write error. */
         return total;
     }
     if (!stream->decided) {
-        size_t room = ZB_STREAM_PROBE_BYTES - stream->probe_size;
-        size_t take = total < room ? total : room;
-        memcpy(stream->probe + stream->probe_size, contents, take);
-        stream->probe_size += take;
-        stream->probe[stream->probe_size] = '\0';
-        if (stream->probe_size < ZB_STREAM_PROBE_BYTES && take == total) {
+        while (left) {
+            size_t room = ZB_STREAM_PROBE_BYTES - stream->probe_size;
+            size_t take = left < room ? left : room;
+            memcpy(stream->probe + stream->probe_size, data, take);
+            stream->probe_size += take;
+            data += take;
+            left -= take;
+            stream->probe[stream->probe_size] = '\0';
+            if (!stream->past_padding) {
+                /* Padding decides nothing, however much of it comes. A
+                   split byte order mark or no-break space (at most two
+                   bytes) is left for the next chunk to finish. Padding is
+                   kept while it fits in the probe along with what follows;
+                   once the probe is full of it, it is dropped, so the cap
+                   never turns padding into a file. */
+                size_t skipped = zb_stream_padding_length(stream->probe, stream->probe_size);
+                size_t rest = stream->probe_size - skipped;
+                if (rest == 0 || zb_stream_padding_partial(stream->probe + skipped, rest)) {
+                    if (stream->probe_size == ZB_STREAM_PROBE_BYTES) {
+                        memmove(stream->probe, stream->probe + skipped, rest);
+                        stream->probe_size = rest;
+                        stream->probe[rest] = '\0';
+                    }
+                    continue;
+                }
+                stream->past_padding = true;
+            }
+            if (stream->probe_size < ZB_STREAM_PROBE_BYTES) {
+                continue;
+            }
+            break;
+        }
+        if (!stream->past_padding || stream->probe_size < ZB_STREAM_PROBE_BYTES) {
             return total;
         }
         /* Enough to tell a file from an error page. */
@@ -2619,7 +2721,7 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
             return total;
         }
         if (!zb_stream_put(stream, stream->probe, stream->probe_size) ||
-            !zb_stream_put(stream, (const char *)contents + take, total - take)) {
+            !zb_stream_put(stream, data, left)) {
             return 0;
         }
         return total;
@@ -2630,14 +2732,16 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
     return total;
 }
 
-/* Flushes whatever the probe still holds when the body was shorter than it. */
+/* Flushes whatever the probe still holds when the body ended before it was
+   full. */
 static void zb_stream_finish(ZbDownloadStream *stream) {
     if (stream->decided || stream->rejected || stream->open_failed) {
         return;
     }
     stream->decided = true;
-    if (zb_download_body_is_blank(stream->probe)) {
-        /* Nothing, or nothing but whitespace and byte order marks: no file. */
+    if (stream->probe_size == 0 || zb_download_body_is_blank(stream->probe)) {
+        /* Nothing, or nothing but whitespace and byte order marks, of any
+           length: an empty response, so no file. */
         stream->probe[0] = '\0';
         stream->probe_size = 0;
         stream->rejected = true;
@@ -3018,7 +3122,7 @@ void get_activity_data(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -3100,7 +3204,7 @@ static void score_email_internal(
         zb_report_body_error(response_data.response, http_code, error_callback);
     } else if (success_callback) {
         json_object *j_obj = NULL;
-        if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+        if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
             goto cleanup;
         }
 

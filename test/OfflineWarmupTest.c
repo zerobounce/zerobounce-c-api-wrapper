@@ -1587,6 +1587,7 @@ void test_warmup_a_key_with_a_unicode_space_or_invisible_character_is_refused(vo
 void test_warmup_redaction_decodes_every_quote_spelling_and_ignores_case(void) {
     static const char *const spellings[] = {
         "\\u{27}", "\\047", "&APOS;", "&apos;", "&#39;", "\\X27", "\\x27", "\\'", "''",
+        "\\U{27}", "\\U0027", "\\U00000027",
     };
     char body[400];
     ZeroBounceWarmup *zbw = w_client("Warm-Key-77a");
@@ -1620,9 +1621,46 @@ void test_warmup_redaction_decodes_every_quote_spelling_and_ignores_case(void) {
         }
     }
     zero_bounce_warmup_free(zbw);
+
+    /* The Warmup key itself, quoted with a quote spelling. */
+    for (size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); i++) {
+        ZeroBounceWarmup *keyed = w_client("Warm'Key-77a");
+        w_reset();
+        snprintf(body, sizeof(body), "Rejected key Warm%sKey-77a", spellings[i]);
+        w_next_status = 500;
+        w_next_type = "text/plain";
+        w_next_body = body;
+        warmup_list_sending_accounts(keyed, w_on_raw, w_on_error);
+        TEST_ASSERT_TRUE_MESSAGE(w_error_called, body);
+        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, "Key-77a"), w_error);
+        zero_bounce_warmup_free(keyed);
+    }
+}
+
+/* A base URL the caller stored itself (a literal) is not the library's to
+   free: neither zero_bounce_warmup_free nor the setter may free it. */
+void test_warmup_a_base_url_the_caller_stored_is_never_freed(void) {
+    ZeroBounceWarmup *zbw = w_client("warm-key");
+    zbw->base_url = "https://caller-literal.example.test";
+    zero_bounce_warmup_free(zbw);
+
+    zbw = w_client("warm-key");
+    zbw->base_url = "https://caller-literal.example.test";
+    zero_bounce_warmup_set_base_url(zbw, "https://copied.example.test");
+    TEST_ASSERT_EQUAL_STRING("https://copied.example.test", zbw->base_url);
+    zbw->base_url = "https://caller-literal-2.example.test";
+    zero_bounce_warmup_free(zbw);
+
+    /* A copy the library made is still released, and replacing it works. */
+    zbw = w_client("warm-key");
+    zero_bounce_warmup_set_base_url(zbw, "https://one.example.test");
+    zero_bounce_warmup_set_base_url(zbw, "https://two.example.test");
+    TEST_ASSERT_EQUAL_STRING("https://two.example.test", zbw->base_url);
+    zero_bounce_warmup_free(zbw);
 }
 
 void warmup_run_tests(void) {
+    RUN_TEST(test_warmup_a_base_url_the_caller_stored_is_never_freed);
     RUN_TEST(test_warmup_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
     RUN_TEST(test_warmup_a_url_with_a_username_or_password_is_refused);
     RUN_TEST(test_warmup_the_base_url_is_copied);

@@ -3264,6 +3264,8 @@ static int needs_named_fields(const char *call) {
    object is not their result. */
 static int empty_object_is_error(const char *call) {
     return strncmp(call, "validate_email_batch", 20) == 0 || strstr(call, "send_file(") != NULL ||
+        strncmp(call, "get_api_usage(", 14) == 0 || strncmp(call, "get_activity_data(", 18) == 0 ||
+        strncmp(call, "score_email(", 12) == 0 || strncmp(call, "score_email_post(", 17) == 0 ||
         strstr(call, "delete_file(") != NULL || strncmp(call, "find_email", 10) == 0 ||
         strncmp(call, "search_domain", 13) == 0 || strncmp(call, "list_s3_files(", 14) == 0 ||
         strstr(call, "s3_file(") != NULL || strstr(call, "sftp_file(") != NULL ||
@@ -4761,6 +4763,61 @@ void test_offline_a_greylist_message_on_validate_stays_a_result(void) {
     reset_offline();
 }
 
+static void nt_usage(ZeroBounce *zb) {
+    struct tm day = {0};
+    day.tm_year = 118;
+    day.tm_mon = 0;
+    day.tm_mday = 1;
+    get_api_usage(zb, day, day, on_usage, on_error);
+}
+static void nt_activity(ZeroBounce *zb) { get_activity_data(zb, "a@example.com", on_activity, on_error); }
+static void nt_score(ZeroBounce *zb) { score_email(zb, "a@example.com", on_score, on_error); }
+static void nt_score_post(ZeroBounce *zb) { score_email_post(zb, "a@example.com", on_score, on_error); }
+
+/* A message beside a null is still only a message: the null is not a field. */
+void test_offline_a_message_beside_a_null_is_an_error_and_a_null_alone_is_a_result(void) {
+    static const NtCall calls[] = {
+        {"send_file", nt_send_file}, {"delete_file", nt_delete_file}, {"validate_email_batch", nt_batch},
+        {"list_s3_files", nt_list_s3}, {"validate_s3_file", nt_validate_s3}, {"get_api_usage", nt_usage},
+        {"get_activity_data", nt_activity}, {"score_email", nt_score}, {"score_email_post", nt_score_post},
+    };
+    static const char *const errors[] = {"{\"message\":\"m\",\"file_id\":null}",
+                                         "{\"Message\":\"m\",\"a\":null,\"b\":null}",
+                                         "{\"detail\":null,\"domain\":null}"};
+    static const long statuses[] = {200, 202};
+    char message[200];
+    ZeroBounce *zb = client_with("message-null-key");
+    /* The usage and activity callbacks check named fields; an object that is
+       only a null has none. */
+    g_leak_mode = 10;
+    for (size_t c = 0; c < sizeof(calls) / sizeof(calls[0]); c++) {
+        for (size_t b = 0; b < sizeof(errors) / sizeof(errors[0]); b++) {
+            for (size_t s = 0; s < 2; s++) {
+                snprintf(message, sizeof(message), "%s %s HTTP %ld", calls[c].name, errors[b], statuses[s]);
+                nt_script(errors[b], statuses[s], "application/json");
+                calls[c].call(zb);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(1, nt_calls, message);
+                TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[s], (int)g_error_status, message);
+            }
+        }
+        /* A null with no message, and a message beside a real value, are results. */
+        snprintf(message, sizeof(message), "%s {\"domain\":null}", calls[c].name);
+        nt_script("{\"domain\":null}", 200, "application/json");
+        calls[c].call(zb);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+        snprintf(message, sizeof(message), "%s {\"message\":\"m\",\"file_id\":\"x\"}", calls[c].name);
+        nt_script("{\"message\":\"m\",\"file_id\":\"x\"}", 200, "application/json");
+        calls[c].call(zb);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+    }
+    g_leak_mode = 0;
+    reset_offline();
+}
+
 void test_offline_find_email_and_search_domain_refuse_a_message_without_a_result(void) {
     static const char *const refused[] = {"{}", "{\"message\":\"Invalid domain\",\"domain\":null}",
                                           "{\"Message\":\"Invalid domain\",\"email\":null,\"domain\":null}"};
@@ -4944,6 +5001,76 @@ void test_offline_a_download_that_is_not_a_file_is_an_error_and_writes_nothing(v
     reset_offline();
 }
 
+/* Padding (whitespace, U+FEFF, U+00A0) decides nothing, however much of it
+   there is: the 4096-byte probe cap must not turn it into a saved file. */
+static char *nt_padded(const char *unit, size_t unit_len, size_t units, const char *tail, size_t *len) {
+    size_t tail_len = strlen(tail);
+    char *body = malloc(unit_len * units + tail_len + 1);
+    for (size_t i = 0; i < units; i++) {
+        memcpy(body + i * unit_len, unit, unit_len);
+    }
+    memcpy(body + unit_len * units, tail, tail_len);
+    *len = unit_len * units + tail_len;
+    return body;
+}
+
+void test_offline_streaming_padding_longer_than_the_probe_is_not_a_file(void) {
+    static const struct {
+        const char *name;
+        const char *unit;
+        size_t unit_len;
+        size_t units;
+        const char *tail;
+        int is_file;
+    } cases[] = {
+        {"4200 bytes of BOM then {", "\xEF\xBB\xBF", 3, 1400, "{", 0},
+        {"4200 bytes of BOM alone", "\xEF\xBB\xBF", 3, 1400, "", 0},
+        {"5000 spaces", " ", 1, 5000, "", 0},
+        {"2100 NBSP then [", "\xC2\xA0", 2, 2100, "[", 0},
+        {"5000 spaces then a csv", " ", 1, 5000, "email\na@b.c\n", 1},
+        {"4200 bytes of BOM then a csv", "\xEF\xBB\xBF", 3, 1400, "email\na@b.c\n", 1},
+    };
+    char message[200];
+    char *path = zb_test_dl("audit-padding.csv");
+    ZeroBounce *zb = client_with("padding-key");
+    for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        for (int kind = 2; kind <= 3; kind++) {
+            size_t len = 0;
+            size_t size = 0;
+            char *body = nt_padded(cases[k].unit, cases[k].unit_len, cases[k].units, cases[k].tail, &len);
+            char *content;
+            FILE *seed;
+            snprintf(message, sizeof(message), "%s: %s", nt_download_name(kind), cases[k].name);
+            remove(path);
+            seed = fopen(path, "wb");
+            fwrite("ORIG", 1, 4, seed);
+            fclose(seed);
+            nt_script_n(body, len, 200, "text/csv");
+            nt_download(kind, zb, path);
+            content = nt_read_file(path, &size);
+            TEST_ASSERT_NOT_NULL_MESSAGE(content, message);
+            if (cases[k].is_file) {
+                size_t tail_len = strlen(cases[k].tail);
+                TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+                /* The padding skipped is not required to be in the file. */
+                TEST_ASSERT_TRUE_MESSAGE(size >= tail_len && size <= len, message);
+                TEST_ASSERT_EQUAL_MEMORY_MESSAGE(cases[k].tail, content + size - tail_len, tail_len, message);
+            } else {
+                TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+                TEST_ASSERT_EQUAL_UINT_MESSAGE(4, size, message);
+                TEST_ASSERT_EQUAL_MEMORY_MESSAGE("ORIG", content, 4, message);
+            }
+            free(content);
+            free(body);
+            remove(path);
+        }
+    }
+    reset_offline();
+}
+
 /* S1: a URL with a username or password is refused before anything is sent. */
 static const char *const nt_userinfo_urls[] = {
     "https://api.zerobounce.net@evil.example/v2", "https://@evil.example", "https://:@evil.example",
@@ -5060,6 +5187,7 @@ void test_offline_a_key_with_a_unicode_space_or_invisible_character_is_refused(v
 /* S4/S7: the quote spellings and the case a text body can quote a secret in. */
 static const char *const nt_quote_spellings[] = {
     "\\u{27}", "\\047", "&APOS;", "&apos;", "&#39;", "\\X27", "\\x27", "\\'", "''",
+    "\\U{27}", "\\U0027", "\\U00000027",
 };
 
 void test_offline_redaction_decodes_every_quote_spelling_and_ignores_case(void) {
@@ -5106,6 +5234,28 @@ void test_offline_redaction_decodes_every_quote_spelling_and_ignores_case(void) 
     reset_offline();
 }
 
+/* A URL the caller stored itself (a literal) is not the library's to free. */
+void test_offline_a_base_url_the_caller_stored_is_never_freed(void) {
+    ZeroBounce *zb = client_with("owner-key");
+    zb->bulk_api_base_url = "https://caller-a.example.test/v2";
+    zero_bounce_set_bulk_api_base_url(zb, "https://copied-a.example.test/v2/");
+    TEST_ASSERT_EQUAL_STRING("https://copied-a.example.test/v2", zb->bulk_api_base_url);
+    zb->bulk_api_root_url = "https://caller-b.example.test";
+    zero_bounce_set_bulk_api_root_url(zb, "https://copied-b.example.test");
+    zb->bulk_api_scoring_base_url = "https://caller-c.example.test";
+    zero_bounce_set_bulk_api_scoring_base_url(zb, "https://copied-c.example.test");
+    zb->list_evaluator_base_url = "https://caller-d.example.test";
+    zero_bounce_set_list_evaluator_base_url(zb, "https://copied-d.example.test");
+    zb->inbox_placement_base_url = "https://caller-e.example.test";
+    zero_bounce_set_inbox_placement_base_url(zb, "https://copied-e.example.test");
+    TEST_ASSERT_EQUAL_STRING("https://copied-d.example.test", zb->list_evaluator_base_url);
+    TEST_ASSERT_EQUAL_STRING("https://copied-e.example.test", zb->inbox_placement_base_url);
+    /* A copy the library made is replaced (and freed) as before. */
+    zero_bounce_set_bulk_api_base_url(zb, "https://copied-f.example.test");
+    TEST_ASSERT_EQUAL_STRING("https://copied-f.example.test", zb->bulk_api_base_url);
+    reset_offline();
+}
+
 /* The setters keep their own copies and free the ones they replace. */
 void test_offline_replacing_a_base_url_twice_uses_the_last_one(void) {
     ZeroBounce *zb = client_with("setter-key");
@@ -5134,13 +5284,16 @@ void test_offline_replacing_a_base_url_twice_uses_the_last_one(void) {
 void offline_run_tests(void) {
     RUN_TEST(test_offline_an_empty_or_message_only_200_is_an_error_on_the_five_calls);
     RUN_TEST(test_offline_a_greylist_message_on_validate_stays_a_result);
+    RUN_TEST(test_offline_a_message_beside_a_null_is_an_error_and_a_null_alone_is_a_result);
     RUN_TEST(test_offline_find_email_and_search_domain_refuse_a_message_without_a_result);
     RUN_TEST(test_offline_file_status_needs_one_non_null_field_it_has);
     RUN_TEST(test_offline_a_batch_account_error_carries_the_http_status);
     RUN_TEST(test_offline_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
+    RUN_TEST(test_offline_streaming_padding_longer_than_the_probe_is_not_a_file);
     RUN_TEST(test_offline_a_url_with_a_username_or_password_is_refused_by_every_setter);
     RUN_TEST(test_offline_a_key_with_a_unicode_space_or_invisible_character_is_refused);
     RUN_TEST(test_offline_redaction_decodes_every_quote_spelling_and_ignores_case);
+    RUN_TEST(test_offline_a_base_url_the_caller_stored_is_never_freed);
     RUN_TEST(test_offline_replacing_a_base_url_twice_uses_the_last_one);
 
     RUN_TEST(test_offline_get_credits);

@@ -8,14 +8,17 @@
 #include "ZeroBounce/ZeroBounceWarmup.h"
 #include "ZeroBounce/zb_internal.h"
 
-/* An array, not a macro: the setter tells the default from a copy it owns by
-   address. */
+/* An array, not a macro, so the default has one address. */
 static const char zb_warmup_default_base_url[] = "https://warmup-api.zerobounce.net";
 #define ZB_WARMUP_DEFAULT_BASE_URL zb_warmup_default_base_url
 
 /* ZeroBounce.c: a download body with nothing in it but whitespace, byte order
    marks and no-break spaces. */
 bool zb_download_body_is_blank(const char *body);
+/* ZeroBounce.c: the table of base URLs this library copied. A URL is freed
+   only when it is in it. */
+void zb_register_owned_url(const char *url);
+void zb_free_owned_url(const char *url);
 #define ZB_WARMUP_BASE_PATH "/api/v1/warmup"
 /* team_id is required by the schema but always replaced with the key's team. */
 #define ZB_WARMUP_ANY_TEAM_ID 1
@@ -78,9 +81,8 @@ void zero_bounce_warmup_set_base_url(ZeroBounceWarmup *zbw, const char *url) {
         if (!copy) {
             return;
         }
-        if (zbw->base_url != zb_warmup_default_base_url) {
-            free((char *)zbw->base_url);
-        }
+        zb_register_owned_url(copy);
+        zb_free_owned_url(zbw->base_url);
         zbw->base_url = copy;
     }
 }
@@ -90,9 +92,7 @@ void zero_bounce_warmup_free(ZeroBounceWarmup *zbw) {
         return;
     }
     free(zbw->api_key);
-    if (zbw->base_url != zb_warmup_default_base_url) {
-        free((char *)zbw->base_url);
-    }
+    zb_free_owned_url(zbw->base_url);
     free(zbw);
 }
 

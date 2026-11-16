@@ -301,8 +301,9 @@ static long zb_hex_run(const char *text, const char *end, int max_digits, int *d
 }
 
 /* text (length bytes) with the character spellings a body can quote a secret
-   in undone: \u{27}, \x27, \X27, a backslash and exactly three octal digits
-   (\047), \' , &#39; and &#x27; (any digits), &apos; in any case, and a
+   in undone: \u{27}, \U{27}, \U0027 and \U00000027 (eight hex digits when
+   they follow, else four), \x27, \X27, a backslash and exactly three octal
+   digits (\047), \' , &#39; and &#x27; (any digits), &apos; in any case, and a
    doubled '' for a single quote. Anything else is kept. A decoded NUL stays a
    byte, so the view's length is in *out_length. The caller owns it. */
 static char *zb_spelling_decode_view(const char *text, size_t length, size_t *out_length) {
@@ -317,12 +318,22 @@ static char *zb_spelling_decode_view(const char *text, size_t length, size_t *ou
         size_t used = 0;
         int digits;
         if (text[0] == '\\' && end - text >= 2) {
-            if (text[1] == 'u' && end - text >= 3 && text[2] == '{') {
+            if ((text[1] == 'u' || text[1] == 'U') && end - text >= 3 && text[2] == '{') {
                 cp = zb_hex_run(text + 3, end, 6, &digits);
                 if (cp >= 0 && cp <= 0x10FFFF && text + 3 + digits < end && text[3 + digits] == '}') {
                     used = 4 + (size_t)digits;
                 } else {
                     cp = -1;
+                }
+            } else if (text[1] == 'U' && zb_hex_run(text + 2, end, 8, &digits) >= 0 && digits >= 4) {
+                /* \UXXXXXXXX when eight hex digits follow (so \U00000027 is
+                   one character), else \UXXXX. */
+                cp = digits == 8 ? zb_hex_run(text + 2, end, 8, &digits) : -1;
+                if (cp >= 0 && cp <= 0x10FFFF) {
+                    used = 10;
+                } else {
+                    cp = zb_hex_run(text + 2, end, 4, &digits);
+                    used = 6;
                 }
             } else if ((text[1] == 'x' || text[1] == 'X') && end - text >= 4 &&
                        zb_hex_value(text[2]) >= 0 && zb_hex_value(text[3]) >= 0) {
@@ -886,31 +897,37 @@ bool zb_error_only_body(const char *body) {
 
 /* An object with no "success" field and only message keys; an empty object
    has none, so it is message-only too. The values do not matter: a string, a
-   blank, null or a list is a message. */
+   blank, null or a list is a message. A null under another key does not count
+   as a field, so {"message":"m","file_id":null} is still message-only, but an
+   object with no message key at all ({"domain":null}) is not. */
 static bool zb_message_only_body(const char *body) {
     static const char *const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
     json_object *parsed = zb_parse_object_without_success(body);
     bool only_messages = true;
+    bool has_message = false;
+    bool has_key = false;
     if (!parsed) {
         return false;
     }
     json_object_object_foreach(parsed, key, value) {
         bool known = false;
         size_t i;
-        (void)value;
+        has_key = true;
         for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(key, keys[i]) == 0) {
                 known = true;
                 break;
             }
         }
-        if (!known) {
+        if (known) {
+            has_message = true;
+        } else if (value != NULL && !json_object_is_type(value, json_type_null)) {
             only_messages = false;
             break;
         }
     }
     json_object_put(parsed);
-    return only_messages;
+    return only_messages && (has_message || !has_key);
 }
 
 /*

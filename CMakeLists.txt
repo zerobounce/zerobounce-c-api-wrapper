@@ -83,13 +83,13 @@ if(PROJECT_IS_TOP_LEVEL)
   FetchContent_Declare(
     unity
     GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-    GIT_TAG        v2.5.2
+    GIT_TAG        0b899aec14d3a9abb2bf260ac355f0f28630a6a3 # v2.5.2
   )
   # Download and build fff
   FetchContent_Declare(
     fff
     GIT_REPOSITORY https://github.com/meekrosoft/fff.git
-    GIT_TAG        v1.1
+    GIT_TAG        7e09f07e5b262b1cc826189dc5057379e40ce886 # v1.1
   )
 endif()
 
@@ -122,6 +122,17 @@ if(PROJECT_IS_TOP_LEVEL)
   if(NOT WIN32)
     add_executable(ZeroBounceTransportTests test/TransportTest.c)
     target_link_libraries(ZeroBounceTransportTests PRIVATE ${PROJECT_NAME} unity)
+  endif()
+
+  # The public headers must compile warning-free for a consumer: a #warning in
+  # one fails this target. It includes both headers and calls nothing, so a
+  # deprecation attribute on a function does not fire.
+  add_executable(ZeroBounceIncludeOnly test/include_only.c)
+  target_link_libraries(ZeroBounceIncludeOnly PRIVATE ${PROJECT_NAME})
+  if(MSVC)
+    target_compile_options(ZeroBounceIncludeOnly PRIVATE /W4 /WX)
+  else()
+    target_compile_options(ZeroBounceIncludeOnly PRIVATE -Wall -Wextra -Werror)
   endif()
 endif()
 

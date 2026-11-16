@@ -35,6 +35,46 @@ jobs:
           ./build/bin/ZeroBounceTests
           ./build/bin/ZeroBounceTransportTests
 
+      - name: Build as a FetchContent consumer
+        # A project that pulls this repository in with FetchContent links the
+        # library only: it must not fetch unity or fff, or define the test targets.
+        # The parent build's _deps are reused so nothing is downloaded twice.
+        run: |
+          deps="$GITHUB_WORKSPACE/build/_deps"
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$consumer"
+          cat > "$consumer/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.21)
+          project(ZeroBounceConsumer LANGUAGES C)
+          include(FetchContent)
+          FetchContent_Declare(zerobounce GIT_REPOSITORY https://example.invalid/zerobounce.git)
+          FetchContent_MakeAvailable(zerobounce)
+          add_executable(consumer main.c)
+          target_link_libraries(consumer PRIVATE ZeroBounce)
+          EOF
+          cat > "$consumer/main.c" <<'EOF'
+          #include "ZeroBounce/ZeroBounce.h"
+
+          int main(void) {
+              void (*init)(ZeroBounce *, const char *) = zero_bounce_initialize;
+              return init == 0;
+          }
+          EOF
+          cmake -S "$consumer" -B "$consumer/build" -G "Unix Makefiles" \
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+            -DFETCHCONTENT_SOURCE_DIR_ZEROBOUNCE="$GITHUB_WORKSPACE" \
+            -DFETCHCONTENT_SOURCE_DIR_LIBCURL="$deps/libcurl-src" \
+            -DFETCHCONTENT_SOURCE_DIR_JSON-C="$deps/json-c-src"
+          cmake --build "$consumer/build" --target consumer
+          if [ -e "$consumer/build/_deps/unity-src" ] || [ -e "$consumer/build/_deps/fff-src" ]; then
+            echo "::error::A FetchContent consumer fetched unity or fff."
+            exit 1
+          fi
+          if cmake --build "$consumer/build" --target help | grep -E 'ZeroBounceTests|ZeroBounceTransportTests|ZeroBounceIncludeOnly'; then
+            echo "::error::A FetchContent consumer defines a test target."
+            exit 1
+          fi
+
   test-min-cmake:
     # Builds and tests with the oldest CMake the project supports. 3.21 is the
     # floor because CMAKE_C_STANDARD 17 is new in CMake 3.21; 3.20 cannot
