@@ -6,7 +6,7 @@
 
 #include "ZeroBounce/zb_internal.h"
 
-ZBErrorResponse new_zb_error_response() {
+ZBErrorResponse new_zb_error_response(void) {
     ZBErrorResponse response;
 
     response.success = false;
@@ -661,9 +661,15 @@ bool zb_content_type_is_html(const char *content_type) {
     return false;
 }
 
+/* ZeroBounce.c: the start of a body past every leading ASCII whitespace byte,
+   byte order mark and no-break space. */
+const char *zb_download_skip_blank(const char *body);
+
 bool zb_body_looks_like_html(const char *body) {
     char lower[2001];
-    zb_lower_prefix(body, lower, sizeof(lower));
+    /* The 2000 bytes after any padding, not the first 2000 bytes: a page behind
+       thousands of spaces is still a page. */
+    zb_lower_prefix(body ? zb_download_skip_blank(body) : NULL, lower, sizeof(lower));
     return strstr(lower, "<!doctype html") != NULL ||
         strstr(lower, "<html") != NULL ||
         strstr(lower, "<head") != NULL ||
@@ -677,6 +683,8 @@ static char *zb_html_title(const char *body) {
     const char *close;
     size_t len;
     char *title;
+    /* The same start as zb_body_looks_like_html looks at. */
+    body = zb_download_skip_blank(body);
     zb_lower_prefix(body, lower, sizeof(lower));
     start = strstr(lower, "<title");
     if (!start) {

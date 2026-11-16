@@ -98,7 +98,7 @@ typedef struct {
  *
  * @return SendFileOptions new instance
  */
-SendFileOptions new_send_file_options();
+SendFileOptions new_send_file_options(void);
 
 /**
  * @brief Default GetFileOptions (no download_type, activity_data omitted).
@@ -209,14 +209,14 @@ typedef struct {
  *
  * @return ZeroBounce* pointer to instance
  */
-ZeroBounce* new_zero_bounce_instance();
+ZeroBounce* new_zero_bounce_instance(void);
 
 /**
  * @brief Get pointer to ZeroBounce instance.
  *
  * @return ZeroBounce* pointer to instance
  */
-ZeroBounce* zero_bounce_get_instance();
+ZeroBounce* zero_bounce_get_instance(void);
 
 /**
  * @brief Initializes the wrapper with the default base URL.

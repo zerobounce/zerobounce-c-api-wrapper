@@ -6,7 +6,7 @@
 #include "ZeroBounce/utils.h"
 #include "ZeroBounce/zb_internal.h"
 
-StringVector string_vector_init() {
+StringVector string_vector_init(void) {
     StringVector vector;
     vector.size = 0;
     vector.data = NULL;

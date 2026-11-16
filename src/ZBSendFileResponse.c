@@ -3,7 +3,7 @@
 
 #include "ZeroBounce/ZBSendFileResponse.h"
 
-ZBSendFileResponse new_zb_send_file_response() {
+ZBSendFileResponse new_zb_send_file_response(void) {
     ZBSendFileResponse response;
 
     response.success = false;

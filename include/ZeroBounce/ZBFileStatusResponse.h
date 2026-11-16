@@ -27,7 +27,7 @@ typedef struct {
  *
  * @return ZBFileStatusResponse new instance
  */
-ZBFileStatusResponse new_zb_file_status_response();
+ZBFileStatusResponse new_zb_file_status_response(void);
 
 /**
  * @brief Function used to serialize a ZBFileStatusResponse.

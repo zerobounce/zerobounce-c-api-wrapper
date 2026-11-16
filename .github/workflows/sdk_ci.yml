@@ -1,4 +1,4 @@
-# Build and run Unity tests on every PR.
+# Build and run the Unity tests on a pull request, on a push to main, and on a manual dispatch.
 name: SDK CI
 
 on:
@@ -66,11 +66,19 @@ jobs:
             -DFETCHCONTENT_SOURCE_DIR_LIBCURL="$deps/libcurl-src" \
             -DFETCHCONTENT_SOURCE_DIR_JSON-C="$deps/json-c-src"
           cmake --build "$consumer/build" --target consumer
-          if [ -e "$consumer/build/_deps/unity-src" ] || [ -e "$consumer/build/_deps/fff-src" ]; then
+          # FETCHCONTENT_FULLY_DISCONNECTED only warns about a missing unity-src on
+          # CMake 3.21, so look for the cache entries of a FetchContent_MakeAvailable
+          # of unity or fff instead: they exist only when the library's
+          # PROJECT_IS_TOP_LEVEL guard is gone.
+          if grep -E 'FETCHCONTENT_SOURCE_DIR_(UNITY|FFF)' "$consumer/build/CMakeCache.txt"; then
             echo "::error::A FetchContent consumer fetched unity or fff."
             exit 1
           fi
-          if cmake --build "$consumer/build" --target help | grep -E 'ZeroBounceTests|ZeroBounceTransportTests|ZeroBounceIncludeOnly'; then
+          if ! targets=$(cmake --build "$consumer/build" --target help); then
+            echo "::error::cmake --build --target help failed in the FetchContent consumer."
+            exit 1
+          fi
+          if printf '%s\n' "$targets" | grep -E 'ZeroBounceTests|ZeroBounceTransportTests|ZeroBounceIncludeOnly'; then
             echo "::error::A FetchContent consumer defines a test target."
             exit 1
           fi

@@ -4,7 +4,7 @@
 #include "ZeroBounce/ZBGetApiUsageResponse.h"
 #include "ZeroBounce/utils.h"
 
-ZBGetApiUsageResponse new_zb_get_api_usage_response() {
+ZBGetApiUsageResponse new_zb_get_api_usage_response(void) {
     ZBGetApiUsageResponse response;
 
     response.total = 0;

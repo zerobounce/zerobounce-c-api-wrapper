@@ -56,7 +56,7 @@ typedef struct {
  *
  * @return ZBGetApiUsageResponse new instance
  */
-ZBGetApiUsageResponse new_zb_get_api_usage_response();
+ZBGetApiUsageResponse new_zb_get_api_usage_response(void);
 
 /**
  * @brief Function used to serialize a ZBGetApiUsageResponse.

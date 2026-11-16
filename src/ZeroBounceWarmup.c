@@ -19,6 +19,8 @@ bool zb_download_body_is_blank(const char *body);
    only when it is in it. */
 void zb_register_owned_url(const char *url);
 void zb_free_owned_url(const char *url);
+/* ZeroBounce.c: a JSON download error, reported as the API's own message. */
+void zb_report_download_json_error(const char *body, long status_code, OnErrorCallback error_callback);
 #define ZB_WARMUP_BASE_PATH "/api/v1/warmup"
 /* team_id is required by the schema but always replaced with the key's team. */
 #define ZB_WARMUP_ANY_TEAM_ID 1
@@ -359,7 +361,7 @@ static void warmup_send(
         if (zb_download_body_is_blank(text)) {
             zb_report_body_error("", http_code, warmup_on_error);
         } else if (zb_download_body_is_json(text, content_type)) {
-            zb_report_body_error(text, http_code, warmup_on_error);
+            zb_report_download_json_error(text, http_code, warmup_on_error);
         } else {
             bool saved = true;
             if (download_path && download_path[0]) {

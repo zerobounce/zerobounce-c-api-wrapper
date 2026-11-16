@@ -1,6 +1,7 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 
 #include "unity.h"
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/ZeroBounceWarmup.h"
 #include "ZeroBounce/zb_internal.h"
 
 /* ZeroBounceTest.c: an absolute path in the downloads directory. */
@@ -5071,6 +5073,139 @@ void test_offline_streaming_padding_longer_than_the_probe_is_not_a_file(void) {
     reset_offline();
 }
 
+/* An HTML page behind more than 2000 bytes of padding is still a page: the
+   check looks at the 2000 bytes after the padding, not the first 2000 bytes.
+   Run on the six ZeroBounce downloads; the Warmup two are in
+   OfflineWarmupTest.c. */
+void test_offline_an_html_page_after_long_padding_is_not_a_file(void) {
+    static const size_t pads[] = {2500, 4095, 5000};
+    char message[200];
+    char *path = zb_test_dl("audit3-padded-html.csv");
+    ZeroBounce *zb = client_with("padded-html-key");
+    for (size_t k = 0; k < sizeof(pads) / sizeof(pads[0]); k++) {
+        for (int kind = 0; kind < 6; kind++) {
+            size_t len = 0;
+            size_t size = 0;
+            char *body = nt_padded(" ", 1, pads[k], "<html></html>", &len);
+            char *content;
+            FILE *seed;
+            snprintf(message, sizeof(message), "%s: %zu spaces then <html>", nt_download_name(kind), pads[k]);
+            remove(path);
+            seed = fopen(path, "wb");
+            fwrite("ORIG", 1, 4, seed);
+            fclose(seed);
+            nt_script_n(body, len, 200, "text/csv");
+            nt_download(kind, zb, path);
+            content = nt_read_file(path, &size);
+            TEST_ASSERT_NOT_NULL_MESSAGE(content, message);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+            TEST_ASSERT_EQUAL_UINT_MESSAGE(4, size, message);
+            TEST_ASSERT_EQUAL_MEMORY_MESSAGE("ORIG", content, 4, message);
+            free(content);
+            free(body);
+            remove(path);
+        }
+    }
+    /* A normal CSV, and a CSV behind the same padding, are still saved. */
+    for (int kind = 0; kind < 6; kind++) {
+        static const char csv[] = "email\na@b.c\n";
+        size_t size = 0;
+        char *content;
+        snprintf(message, sizeof(message), "%s: a csv", nt_download_name(kind));
+        remove(path);
+        nt_script_n(csv, sizeof(csv) - 1, 200, "text/csv");
+        nt_download(kind, zb, path);
+        content = nt_read_file(path, &size);
+        TEST_ASSERT_NOT_NULL_MESSAGE(content, message);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(sizeof(csv) - 1, size, message);
+        TEST_ASSERT_EQUAL_MEMORY_MESSAGE(csv, content, size, message);
+        free(content);
+        remove(path);
+    }
+    reset_offline();
+}
+
+/* A JSON download error behind a byte order mark or spaces is reported as the
+   API's message, as get_file does, not as the raw body. */
+void test_offline_a_json_download_error_after_padding_is_the_api_message(void) {
+    static const char *const bodies[] = {
+        "\xEF\xBB\xBF{\"Message\":\"File not found\"}",
+        "   {\"Message\":\"File not found\"}",
+        " \xC2\xA0\n\t{\"Message\":\"File not found\"}",
+    };
+    char message[200];
+    char *path = zb_test_dl("audit3-padded-json.csv");
+    ZeroBounce *zb = client_with("padded-json-key");
+    for (size_t k = 0; k < sizeof(bodies) / sizeof(bodies[0]); k++) {
+        for (int kind = 0; kind < 6; kind++) {
+            snprintf(message, sizeof(message), "%s: body %zu", nt_download_name(kind), k);
+            remove(path);
+            nt_script(bodies[k], 200, "application/octet-stream");
+            nt_download(kind, zb, path);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE("File not found", g_error_text, message);
+            TEST_ASSERT_NULL_MESSAGE(fopen(path, "rb"), message);
+        }
+    }
+    reset_offline();
+}
+
+/* The list of base URLs the library copied is one table for the whole
+   process: eight threads, each with its own client, set base URLs together. */
+#define NT_URL_THREADS 8
+#define NT_URL_ROUNDS 2000
+
+static void *nt_url_thread(void *arg) {
+    long id = (long)(intptr_t)arg;
+    char url[96];
+    if (id % 2 == 0) {
+        /* A Warmup client: set twice, then freed, over and over. */
+        for (int i = 0; i < NT_URL_ROUNDS; i++) {
+            ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+            snprintf(url, sizeof(url), "https://w%ld-%d.example.test/", id, i);
+            zero_bounce_warmup_set_base_url(zbw, url);
+            snprintf(url, sizeof(url), "https://w%ld-%d-b.example.test", id, i);
+            zero_bounce_warmup_set_base_url(zbw, url);
+            if (strcmp(zbw->base_url, url) != 0) {
+                return (void *)1;
+            }
+            zero_bounce_warmup_free(zbw);
+        }
+    } else {
+        /* A main client: its own setters, many times. */
+        ZeroBounce *zb = new_zero_bounce_instance();
+        for (int i = 0; i < NT_URL_ROUNDS; i++) {
+            snprintf(url, sizeof(url), "https://m%ld-%d.example.test/", id, i);
+            zero_bounce_set_bulk_api_base_url(zb, url);
+            zero_bounce_set_bulk_api_root_url(zb, url);
+            zero_bounce_set_bulk_api_scoring_base_url(zb, url);
+            snprintf(url, sizeof(url), "https://m%ld-%d.example.test", id, i);
+            if (strcmp(zb->bulk_api_base_url, url) != 0) {
+                return (void *)1;
+            }
+        }
+    }
+    return NULL;
+}
+
+void test_offline_threads_with_their_own_clients_can_set_base_urls_together(void) {
+    pthread_t threads[NT_URL_THREADS];
+    for (long t = 0; t < NT_URL_THREADS; t++) {
+        TEST_ASSERT_EQUAL_INT(0, pthread_create(&threads[t], NULL, nt_url_thread, (void *)(intptr_t)t));
+    }
+    for (int t = 0; t < NT_URL_THREADS; t++) {
+        void *result = (void *)1;
+        TEST_ASSERT_EQUAL_INT(0, pthread_join(threads[t], &result));
+        TEST_ASSERT_NULL_MESSAGE(result, "a thread read back another URL than the one it set");
+    }
+}
+
 /* S1: a URL with a username or password is refused before anything is sent. */
 static const char *const nt_userinfo_urls[] = {
     "https://api.zerobounce.net@evil.example/v2", "https://@evil.example", "https://:@evil.example",
@@ -5290,6 +5425,9 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_a_batch_account_error_carries_the_http_status);
     RUN_TEST(test_offline_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
     RUN_TEST(test_offline_streaming_padding_longer_than_the_probe_is_not_a_file);
+    RUN_TEST(test_offline_an_html_page_after_long_padding_is_not_a_file);
+    RUN_TEST(test_offline_a_json_download_error_after_padding_is_the_api_message);
+    RUN_TEST(test_offline_threads_with_their_own_clients_can_set_base_urls_together);
     RUN_TEST(test_offline_a_url_with_a_username_or_password_is_refused_by_every_setter);
     RUN_TEST(test_offline_a_key_with_a_unicode_space_or_invisible_character_is_refused);
     RUN_TEST(test_offline_redaction_decodes_every_quote_spelling_and_ignores_case);

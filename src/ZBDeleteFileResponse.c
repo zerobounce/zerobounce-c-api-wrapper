@@ -4,7 +4,7 @@
 #include "ZeroBounce/ZBDeleteFileResponse.h"
 #include "ZeroBounce/utils.h"
 
-ZBDeleteFileResponse new_zb_delete_file_response() {
+ZBDeleteFileResponse new_zb_delete_file_response(void) {
     ZBDeleteFileResponse response;
 
     response.success = false;

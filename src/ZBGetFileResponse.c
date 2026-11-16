@@ -4,7 +4,7 @@
 #include "ZeroBounce/ZBGetFileResponse.h"
 #include "ZeroBounce/utils.h"
 
-ZBGetFileResponse new_zb_get_file_response() {
+ZBGetFileResponse new_zb_get_file_response(void) {
     ZBGetFileResponse response;
 
     response.success = false;

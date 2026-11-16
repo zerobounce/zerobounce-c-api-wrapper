@@ -43,7 +43,7 @@ typedef struct {
  *
  * @return ZBDomainFormat new instance
  */
-ZBDomainFormat zb_domain_format_init();
+ZBDomainFormat zb_domain_format_init(void);
 
 /**
  * @brief Function used to serialize a ZBDomainFormat.
@@ -84,7 +84,7 @@ int zb_domain_format_compare(ZBDomainFormat* instance1, ZBDomainFormat* instance
  *
  * @return ZBDomainFormatVector new instance
  */
-ZBDomainFormatVector zb_domain_format_vector_init();
+ZBDomainFormatVector zb_domain_format_vector_init(void);
 
 /**
  * @brief Function used to add a ZBDomainFormat instance to the vector.
@@ -133,7 +133,7 @@ int zb_domain_format_vector_compare(ZBDomainFormatVector* instance1, ZBDomainFor
  *
  * @return ZBDomainSearchResponse new instance
  */
-ZBDomainSearchResponse zb_domain_search_response_init();
+ZBDomainSearchResponse zb_domain_search_response_init(void);
 
 /**
  * @brief Function used to serialize a ZBDomainSearchResponse.

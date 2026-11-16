@@ -23,7 +23,7 @@ typedef struct {
  *
  * @return ZBSendFileResponse new instance
  */
-ZBSendFileResponse new_zb_send_file_response();
+ZBSendFileResponse new_zb_send_file_response(void);
 
 /**
  * @brief Function used to serialize a ZBSendFileResponse.

@@ -6,7 +6,7 @@
 
 // ZBFindEmailResponse methods
 
-ZBFindEmailResponse zb_find_email_response_init() {
+ZBFindEmailResponse zb_find_email_response_init(void) {
     ZBFindEmailResponse response;
     response.email = NULL;
     response.email_confidence = NULL;

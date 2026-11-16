@@ -7,7 +7,7 @@
 
 // ZBDomainFormat methods
 
-ZBDomainFormat zb_domain_format_init() {
+ZBDomainFormat zb_domain_format_init(void) {
     ZBDomainFormat domain_format;
     domain_format.format = NULL;
     domain_format.confidence = NULL;
@@ -63,7 +63,7 @@ int zb_domain_format_compare(ZBDomainFormat* instance1, ZBDomainFormat* instance
 
 // ZBDomainFormatVector methods
 
-ZBDomainFormatVector zb_domain_format_vector_init() {
+ZBDomainFormatVector zb_domain_format_vector_init(void) {
     ZBDomainFormatVector vector;
     vector.size = 0;
     vector.data = NULL;
@@ -177,7 +177,7 @@ int zb_domain_format_vector_compare(ZBDomainFormatVector* instance1, ZBDomainFor
 
 // ZBDomainSearchResponse methods
 
-ZBDomainSearchResponse zb_domain_search_response_init() {
+ZBDomainSearchResponse zb_domain_search_response_init(void) {
     ZBDomainSearchResponse response;
     response.domain = NULL;
     response.company_name = NULL;

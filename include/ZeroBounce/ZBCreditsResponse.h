@@ -16,7 +16,7 @@ typedef struct {
  *
  * @return ZBCreditsResponse new instance
  */
-ZBCreditsResponse new_zb_credits_response();
+ZBCreditsResponse new_zb_credits_response(void);
 
 /**
  * @brief Function used to serialize a ZBCreditsResponse.

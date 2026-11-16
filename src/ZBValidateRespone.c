@@ -79,7 +79,7 @@ ZBValidateSubStatus sub_status_from_string(const char* string) {
     return None;
 }
 
-ZBValidateResponse new_zb_validate_response() {
+ZBValidateResponse new_zb_validate_response(void) {
     ZBValidateResponse response;
 
     response.address = "";

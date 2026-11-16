@@ -960,6 +960,77 @@ void test_warmup_csv_downloads_reject_every_non_file_answer(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* An HTML page behind more than 2000 bytes of padding is not a CSV, and a JSON
+   error behind a byte order mark or spaces is the API's message. */
+void test_warmup_csv_downloads_see_through_padding(void) {
+    static const size_t pads[] = {2500, 4095, 5000};
+    static const char *const json_bodies[] = {
+        "\xEF\xBB\xBF{\"Message\":\"File not found\"}",
+        "  \xC2\xA0{\"Message\":\"File not found\"}",
+    };
+    const char *path = zb_test_dl("warmup-audit3.csv");
+    ZeroBounceWarmup *zbw;
+    char message[200];
+    mkdir(zb_test_dl(""), 0777);
+    zbw = w_client("warm-key");
+    for (size_t k = 0; k < sizeof(pads) / sizeof(pads[0]); k++) {
+        static const char tail[] = "<html></html>";
+        size_t len = pads[k] + sizeof(tail) - 1;
+        char *body = malloc(len + 1);
+        memset(body, ' ', pads[k]);
+        memcpy(body + pads[k], tail, sizeof(tail));
+        for (int call = 0; call < 2; call++) {
+            FILE *handle;
+            char content[16] = {0};
+            size_t size;
+            snprintf(message, sizeof message, "%s: %zu spaces then <html>", call ? "statistics" : "seeds", pads[k]);
+            remove(path);
+            handle = fopen(path, "wb");
+            fwrite("ORIG", 1, 4, handle);
+            fclose(handle);
+            w_reset();
+            w_next_body = body;
+            w_next_len = len;
+            w_next_type = "text/csv";
+            if (call == 0) {
+                warmup_download_seeds(zbw, path, w_on_raw, w_on_error);
+            } else {
+                warmup_download_statistics(zbw, "sender@example.com", path, w_on_raw, w_on_error);
+            }
+            TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+            handle = fopen(path, "rb");
+            TEST_ASSERT_NOT_NULL_MESSAGE(handle, message);
+            size = fread(content, 1, sizeof(content), handle);
+            fclose(handle);
+            TEST_ASSERT_EQUAL_UINT_MESSAGE(4, size, message);
+            TEST_ASSERT_EQUAL_MEMORY_MESSAGE("ORIG", content, 4, message);
+        }
+        free(body);
+    }
+    for (size_t k = 0; k < sizeof(json_bodies) / sizeof(json_bodies[0]); k++) {
+        for (int call = 0; call < 2; call++) {
+            snprintf(message, sizeof message, "%s: json body %zu", call ? "statistics" : "seeds", k);
+            remove(path);
+            w_reset();
+            w_next_body = json_bodies[k];
+            w_next_type = "text/csv";
+            if (call == 0) {
+                warmup_download_seeds(zbw, path, w_on_raw, w_on_error);
+            } else {
+                warmup_download_statistics(zbw, "sender@example.com", path, w_on_raw, w_on_error);
+            }
+            TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE("File not found", w_error, message);
+        }
+    }
+    remove(path);
+    zero_bounce_warmup_free(zbw);
+}
+
 /* -- every call ------------------------------------------------------------ */
 
 int offline_count_swept_request_functions(const char *header_path, int (*is_swept)(const char *name));
@@ -1661,6 +1732,7 @@ void test_warmup_a_base_url_the_caller_stored_is_never_freed(void) {
 
 void warmup_run_tests(void) {
     RUN_TEST(test_warmup_a_base_url_the_caller_stored_is_never_freed);
+    RUN_TEST(test_warmup_csv_downloads_see_through_padding);
     RUN_TEST(test_warmup_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
     RUN_TEST(test_warmup_a_url_with_a_username_or_password_is_refused);
     RUN_TEST(test_warmup_the_base_url_is_copied);

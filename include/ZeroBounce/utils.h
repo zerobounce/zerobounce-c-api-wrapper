@@ -17,7 +17,7 @@ typedef struct {
  *
  * @return StringVector new instance
  */
-StringVector string_vector_init();
+StringVector string_vector_init(void);
 
 /**
  * @brief Function used to add a string to the vector of strings.

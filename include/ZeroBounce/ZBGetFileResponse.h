@@ -20,7 +20,7 @@ typedef struct {
  *
  * @return ZBGetFileResponse new instance
  */
-ZBGetFileResponse new_zb_get_file_response();
+ZBGetFileResponse new_zb_get_file_response(void);
 
 /**
  * @brief Function used to serialize a ZBGetFileResponse.

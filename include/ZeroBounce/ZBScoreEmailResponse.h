@@ -14,7 +14,7 @@ typedef struct {
     bool score_is_set;
 } ZBScoreEmailResponse;
 
-ZBScoreEmailResponse new_zb_score_email_response();
+ZBScoreEmailResponse new_zb_score_email_response(void);
 
 char* zb_score_email_response_to_string(ZBScoreEmailResponse* response);
 

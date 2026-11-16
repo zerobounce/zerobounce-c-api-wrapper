@@ -5,7 +5,7 @@
 #include "ZeroBounce/utils.h"
 #include "ZeroBounce/zb_internal.h"
 
-ZBEmailToValidate new_zb_email_to_validate() {
+ZBEmailToValidate new_zb_email_to_validate(void) {
     ZBEmailToValidate response;
 
     response.email_address = "";
@@ -14,7 +14,7 @@ ZBEmailToValidate new_zb_email_to_validate() {
     return response;
 }
 
-EmailToValidateVector email_to_validate_vector_init() {
+EmailToValidateVector email_to_validate_vector_init(void) {
     EmailToValidateVector vector;
     vector.size = 0;
     vector.data = NULL;
@@ -47,7 +47,7 @@ void email_to_validate_vector_free(EmailToValidateVector* vector) {
     vector->size = 0;
 }
 
-ValidateErrorVector validate_error_vector_init() {
+ValidateErrorVector validate_error_vector_init(void) {
     ValidateErrorVector vector;
     vector.size = 0;
     vector.data = NULL;
@@ -95,7 +95,7 @@ int compare_validate_error_vector(const ValidateErrorVector* vec1, const Validat
     return 1;
 }
 
-ValidateResponseVector validate_response_vector_init() {
+ValidateResponseVector validate_response_vector_init(void) {
     ValidateResponseVector vector;
     vector.size = 0;
     vector.data = NULL;
@@ -186,7 +186,7 @@ int compare_validate_response_vector(const ValidateResponseVector* vec1, const V
     return 1;
 }
 
-ZBValidateError new_zb_validate_error() {
+ZBValidateError new_zb_validate_error(void) {
     ZBValidateError validate_error;
 
     validate_error.error = "";
@@ -230,7 +230,7 @@ ZBValidateError zb_validate_error_from_json(const json_object* j) {
     return validate_error;
 }
 
-ZBValidateBatchResponse new_zb_validate_batch_response() {
+ZBValidateBatchResponse new_zb_validate_batch_response(void) {
     ZBValidateBatchResponse response;
 
     response.email_batch = validate_response_vector_init();

@@ -4,7 +4,7 @@
 #include "ZeroBounce/ZBActivityDataResponse.h"
 #include "ZeroBounce/utils.h"
 
-ZBActivityDataResponse new_zb_activity_data_response() {
+ZBActivityDataResponse new_zb_activity_data_response(void) {
     ZBActivityDataResponse response;
 
     response.found = false;

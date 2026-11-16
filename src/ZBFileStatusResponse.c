@@ -6,7 +6,7 @@
 #include "ZeroBounce/utils.h"
 #include "ZeroBounce/zb_internal.h"
 
-ZBFileStatusResponse new_zb_file_status_response() {
+ZBFileStatusResponse new_zb_file_status_response(void) {
     ZBFileStatusResponse response;
 
     response.success = false;

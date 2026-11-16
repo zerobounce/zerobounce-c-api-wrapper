@@ -12,6 +12,8 @@
 /* ZeroBounce.c: a download body with nothing in it but whitespace, byte order
    marks and no-break spaces. */
 bool zb_download_body_is_blank(const char *body);
+/* ZeroBounce.c: a JSON download error, reported as the API's own message. */
+void zb_report_download_json_error(const char *body, long status_code, OnErrorCallback error_callback);
 
 /* ZeroBounce.c: stores a copy of url in the slot and frees the one it replaces. */
 void zb_replace_base_url(const char **slot, const char *url);
@@ -478,8 +480,11 @@ static void p3_bulk_root_get_file(
     /* A JSON body, whatever its keys or content type, is the API saying why
        there is no file; so is a body with nothing in it but whitespace. */
     if (http_code > 299 || zb_body_looks_like_html(body) || zb_content_type_is_html(content_type) ||
-        zb_download_body_is_blank(body) || zb_download_body_is_json(body, content_type)) {
+        zb_download_body_is_blank(body)) {
         zb_report_body_error(zb_download_body_is_blank(body) ? "" : body, http_code, error_callback);
+    } else if (zb_download_body_is_json(body, content_type)) {
+        /* The API's own message, as get_file reports it. */
+        zb_report_download_json_error(body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
         /* Moved into place only when complete: a failed write leaves no

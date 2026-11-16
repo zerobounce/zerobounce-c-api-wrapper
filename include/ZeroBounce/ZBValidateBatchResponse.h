@@ -17,7 +17,7 @@ typedef struct {
  *
  * @return ZBEmailToValidate new instance
  */
-ZBEmailToValidate new_zb_email_to_validate();
+ZBEmailToValidate new_zb_email_to_validate(void);
 
 
 /**
@@ -34,7 +34,7 @@ typedef struct {
  *
  * @return EmailToValidateVector new instance
  */
-EmailToValidateVector email_to_validate_vector_init();
+EmailToValidateVector email_to_validate_vector_init(void);
 
 /**
  * @brief Function used to add a ZBEmailToValidate instance to the vector.
@@ -66,7 +66,7 @@ typedef struct {
  *
  * @return ZBValidateError new instance
  */
-ZBValidateError new_zb_validate_error();
+ZBValidateError new_zb_validate_error(void);
 
 /**
  * @brief Function used to serialize a ZBValidateError.
@@ -99,7 +99,7 @@ typedef struct {
  *
  * @return ValidateErrorVector new instance
  */
-ValidateErrorVector validate_error_vector_init();
+ValidateErrorVector validate_error_vector_init(void);
 
 /**
  * @brief Function used to add a ZBValidateError instance to the vector.
@@ -140,7 +140,7 @@ typedef struct {
  *
  * @return ValidateResponseVector new instance
  */
-ValidateResponseVector validate_response_vector_init();
+ValidateResponseVector validate_response_vector_init(void);
 
 /**
  * @brief Function used to add a ZBValidateResponse instance to the vector.
@@ -181,7 +181,7 @@ typedef struct {
  *
  * @return ZBValidateBatchResponse new instance
  */
-ZBValidateBatchResponse new_zb_validate_batch_response();
+ZBValidateBatchResponse new_zb_validate_batch_response(void);
 
 /**
  * @brief Function used to serialize a ZBValidateBatchResponse.

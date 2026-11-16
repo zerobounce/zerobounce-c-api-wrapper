@@ -11,9 +11,14 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <process.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #define ZB_STRICMP _stricmp
 #define zb_strncasecmp _strnicmp
 #else
+#include <pthread.h>
 #include <strings.h>
 #define ZB_STRICMP strcasecmp
 #define zb_strncasecmp strncasecmp
@@ -379,7 +384,7 @@ int zb_write_file_replacing(const char *path, const char *data, size_t size) {
 }
 
 
-SendFileOptions new_send_file_options() {
+SendFileOptions new_send_file_options(void) {
     SendFileOptions options;
 
     options.return_url = "";
@@ -509,7 +514,7 @@ static bool zb_ct_includes_application_json(const char *content_type) {
 
 /* The start of body past every leading ASCII whitespace byte, UTF-8 byte order
    mark (EF BB BF) and no-break space (C2 A0), in any order. */
-static const char *zb_download_skip_blank(const char *body) {
+const char *zb_download_skip_blank(const char *body) {
     while (body) {
         unsigned char c = (unsigned char)body[0];
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') {
@@ -651,6 +656,19 @@ char *zb_format_get_file_error_message(const char *body) {
     return strdup(body);
 }
 
+/* A JSON download error (not a file) after any padding, reported as the API's
+   own message, as get_file does, not as the raw body. */
+void zb_report_download_json_error(const char *body, long status_code, OnErrorCallback error_callback) {
+    char *msg;
+    if (!error_callback) {
+        return;
+    }
+    msg = zb_format_get_file_error_message(zb_download_skip_blank(body));
+    /* The API did answer: the status goes with the error. */
+    error_callback(parse_error_with_status(msg ? msg : "", status_code));
+    free(msg);
+}
+
 
 static char *zb_build_getfile_url(
     ZeroBounce *zb,
@@ -749,7 +767,7 @@ static const char zb_default_bulk_api_scoring_base_url[] = "https://bulkapi.zero
 
 static ZeroBounce *zero_bounce_instance = NULL;
 
-ZeroBounce* new_zero_bounce_instance() {
+ZeroBounce* new_zero_bounce_instance(void) {
     ZeroBounce* zb = (ZeroBounce*) malloc(sizeof(ZeroBounce));
 
     zb->api_key = NULL;
@@ -766,7 +784,7 @@ ZeroBounce* new_zero_bounce_instance() {
 }
 
 
-ZeroBounce* zero_bounce_get_instance() {
+ZeroBounce* zero_bounce_get_instance(void) {
     if (zero_bounce_instance == NULL) {
         zero_bounce_instance = new_zero_bounce_instance();
     }
@@ -918,29 +936,67 @@ char *zb_normalized_base_url(const char *url) {
 /*
  * The base URLs this library copied. A URL field is a plain const char *, so
  * a caller can store a literal or its own buffer there; only a pointer that is
- * in this table was allocated here and may be freed. Not thread-safe, like
- * the rest of the client's setters.
+ * in this table was allocated here and may be freed. The table is shared by
+ * every client in the process, so every register and every free of it holds
+ * one lock: two clients on two threads do not race on it. (The clients
+ * themselves are still not thread-safe; one client belongs to one thread.)
  */
 static const char **zb_owned_urls = NULL;
 static size_t zb_owned_url_count = 0;
 static size_t zb_owned_url_capacity = 0;
 
-/* Records url (a pointer this library allocated) as owned. */
+#ifdef _WIN32
+static CRITICAL_SECTION zb_owned_urls_lock;
+static INIT_ONCE zb_owned_urls_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK zb_owned_urls_init(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    InitializeCriticalSection(&zb_owned_urls_lock);
+    return TRUE;
+}
+
+static void zb_owned_urls_acquire(void) {
+    InitOnceExecuteOnce(&zb_owned_urls_once, zb_owned_urls_init, NULL, NULL);
+    EnterCriticalSection(&zb_owned_urls_lock);
+}
+
+static void zb_owned_urls_release(void) {
+    LeaveCriticalSection(&zb_owned_urls_lock);
+}
+#else
+static pthread_mutex_t zb_owned_urls_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void zb_owned_urls_acquire(void) {
+    pthread_mutex_lock(&zb_owned_urls_lock);
+}
+
+static void zb_owned_urls_release(void) {
+    pthread_mutex_unlock(&zb_owned_urls_lock);
+}
+#endif
+
+/* Records url (a pointer this library allocated) as owned. When the table
+   cannot grow the pointer is not recorded (so it is never freed); nothing
+   exits. */
 void zb_register_owned_url(const char *url) {
     if (!url) {
         return;
     }
+    zb_owned_urls_acquire();
     if (zb_owned_url_count == zb_owned_url_capacity) {
         size_t capacity = zb_owned_url_capacity ? zb_owned_url_capacity * 2 : 8;
         const char **grown = realloc((void *)zb_owned_urls, capacity * sizeof(*grown));
         if (!grown) {
-            fprintf(stderr, "Memory allocation failed.\n");
-            exit(EXIT_FAILURE);
+            zb_owned_urls_release();
+            return;
         }
         zb_owned_urls = grown;
         zb_owned_url_capacity = capacity;
     }
     zb_owned_urls[zb_owned_url_count++] = url;
+    zb_owned_urls_release();
 }
 
 /* Frees url when this library allocated it; any other pointer (a literal, a
@@ -950,13 +1006,16 @@ void zb_free_owned_url(const char *url) {
     if (!url) {
         return;
     }
+    zb_owned_urls_acquire();
     for (i = 0; i < zb_owned_url_count; i++) {
         if (zb_owned_urls[i] == url) {
             zb_owned_urls[i] = zb_owned_urls[--zb_owned_url_count];
+            zb_owned_urls_release();
             free((char *)url);
             return;
         }
     }
+    zb_owned_urls_release();
 }
 
 /* Stores a normalized copy of url in *slot and frees the copy it replaces, if
@@ -1669,12 +1728,7 @@ static void get_file_internal(
         /* A JSON body, whatever its keys or content type, is the API saying
            why there is no file. */
         if (zb_download_body_is_json(body, content_type)) {
-            if (error_callback) {
-                char *msg = zb_format_get_file_error_message(zb_download_skip_blank(body));
-                /* The API did answer: the status goes with the error. */
-                error_callback(parse_error_with_status(msg ? msg : "", http_code));
-                free(msg);
-            }
+            zb_report_download_json_error(body, http_code, error_callback);
         } else {
             struct stat sb;
 
@@ -2555,6 +2609,8 @@ void file_status(
  * not an error does the file get created and the rest stream through.
  */
 #define ZB_STREAM_PROBE_BYTES 4096
+/* How far past the padding the HTML check looks. */
+#define ZB_HTML_WINDOW 2000
 
 typedef struct {
     FILE *file;
@@ -2573,6 +2629,8 @@ typedef struct {
     /* A byte that is not padding has arrived. */
     bool past_padding;
     bool rejected;
+    /* The rejection is a JSON answer (not an HTML page): the API's message. */
+    bool json_error;
     bool open_failed;
     bool write_failed;
 } ZbDownloadStream;
@@ -2586,8 +2644,26 @@ static bool zb_stream_probe_is_error(ZbDownloadStream *stream) {
             content_type = from_curl;
         }
     }
-    return zb_body_looks_like_html(stream->probe) || zb_content_type_is_html(content_type) ||
-        zb_success_means_failure(stream->probe) || zb_download_body_is_json(stream->probe, content_type);
+    if (zb_body_looks_like_html(stream->probe) || zb_content_type_is_html(content_type)) {
+        return true;
+    }
+    if (zb_success_means_failure(stream->probe) || zb_download_body_is_json(stream->probe, content_type)) {
+        stream->json_error = true;
+        return true;
+    }
+    return false;
+}
+
+/* Reports a rejected stream: a JSON answer under a success status is the API's
+   message, anything else is the body as it came. */
+static void zb_stream_report_rejection(
+    const ZbDownloadStream *stream, long http_code, OnErrorCallback error_callback
+) {
+    if (http_code <= 299 && stream->json_error) {
+        zb_report_download_json_error(stream->probe, http_code, error_callback);
+    } else {
+        zb_report_body_error(stream->probe, http_code, error_callback);
+    }
 }
 
 /* Writes one chunk; a short write stops the transfer (CURLE_WRITE_ERROR). */
@@ -2678,6 +2754,11 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
         while (left) {
             size_t room = ZB_STREAM_PROBE_BYTES - stream->probe_size;
             size_t take = left < room ? left : room;
+            if (take == 0) {
+                /* A full probe that took nothing would spin: reject. */
+                stream->rejected = true;
+                return total;
+            }
             memcpy(stream->probe + stream->probe_size, data, take);
             stream->probe_size += take;
             data += take;
@@ -2701,6 +2782,17 @@ static size_t zb_stream_write(void *contents, size_t size, size_t nmemb, void *u
                     continue;
                 }
                 stream->past_padding = true;
+            }
+            if (stream->probe_size == ZB_STREAM_PROBE_BYTES) {
+                /* Padding, then too little to judge: the padding goes, so the
+                   HTML check always sees ZB_HTML_WINDOW bytes after it. */
+                size_t skipped = zb_stream_padding_length(stream->probe, stream->probe_size);
+                size_t rest = stream->probe_size - skipped;
+                if (skipped > 0 && rest < ZB_HTML_WINDOW) {
+                    memmove(stream->probe, stream->probe + skipped, rest);
+                    stream->probe_size = rest;
+                    stream->probe[rest] = '\0';
+                }
             }
             if (stream->probe_size < ZB_STREAM_PROBE_BYTES) {
                 continue;
@@ -2877,7 +2969,7 @@ static void get_file_streaming_internal(
         }
         if (http_code > 299 || stream.rejected) {
             zb_stream_discard(&stream);
-            zb_report_body_error(stream.probe, http_code, error_callback);
+            zb_stream_report_rejection(&stream, http_code, error_callback);
             return;
         }
         if (stream.open_failed) {
@@ -2949,7 +3041,7 @@ static void get_file_streaming_internal(
     }
     if (http_code > 299 || stream.rejected) {
         zb_stream_discard(&stream);
-        zb_report_body_error(stream.probe, http_code, error_callback);
+        zb_stream_report_rejection(&stream, http_code, error_callback);
         return;
     }
     if (stream.open_failed) {

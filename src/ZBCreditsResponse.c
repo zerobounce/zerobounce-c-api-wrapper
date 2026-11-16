@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <limits.h>
 
-ZBCreditsResponse new_zb_credits_response() {
+ZBCreditsResponse new_zb_credits_response(void) {
     ZBCreditsResponse response;
 
     response.credits = -1;

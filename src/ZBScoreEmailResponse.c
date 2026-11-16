@@ -8,7 +8,7 @@
 #include "ZeroBounce/utils.h"
 #include "ZeroBounce/zb_internal.h"
 
-ZBScoreEmailResponse new_zb_score_email_response() {
+ZBScoreEmailResponse new_zb_score_email_response(void) {
     ZBScoreEmailResponse response;
     response.email = "";
     response.score = 0;

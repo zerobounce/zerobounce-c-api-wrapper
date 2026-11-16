@@ -117,7 +117,7 @@ typedef struct {
  *
  * @return ZBValidateResponse new instance
  */
-ZBValidateResponse new_zb_validate_response();
+ZBValidateResponse new_zb_validate_response(void);
 
 /**
  * @brief Function used to serialize a ZBValidateResponse.

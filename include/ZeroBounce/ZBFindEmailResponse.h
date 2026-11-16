@@ -24,7 +24,7 @@ typedef struct {
  *
  * @return ZBFindEmailResponse new instance
  */
-ZBFindEmailResponse zb_find_email_response_init();
+ZBFindEmailResponse zb_find_email_response_init(void);
 
 /**
  * @brief Function used to serialize a ZBFindEmailResponse.

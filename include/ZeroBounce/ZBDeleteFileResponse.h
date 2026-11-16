@@ -21,7 +21,7 @@ typedef struct {
  *
  * @return ZBDeleteFileResponse new instance
  */
-ZBDeleteFileResponse new_zb_delete_file_response();
+ZBDeleteFileResponse new_zb_delete_file_response(void);
 
 /**
  * @brief Function used to serialize a ZBDeleteFileResponse.

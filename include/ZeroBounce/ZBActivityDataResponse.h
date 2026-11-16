@@ -20,7 +20,7 @@ typedef struct {
  *
  * @return ZBActivityDataResponse new instance
  */
-ZBActivityDataResponse new_zb_activity_data_response();
+ZBActivityDataResponse new_zb_activity_data_response(void);
 
 /**
  * @brief Function used to serialize a ZBActivityDataResponse.

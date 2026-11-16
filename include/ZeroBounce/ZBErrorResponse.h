@@ -34,7 +34,7 @@ typedef struct {
  *
  * @return ZBErrorResponse new instance
  */
-ZBErrorResponse new_zb_error_response();
+ZBErrorResponse new_zb_error_response(void);
 
 /**
  * @brief Function used to serialize a ZBErrorResponse.
