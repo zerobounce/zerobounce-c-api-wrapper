@@ -28,6 +28,13 @@ char *zb_url_escape(const char *value);
 char *zb_casefold(const char *text, size_t length, size_t *out_length);
 /* Overwrites a secret's bytes (not optimised away) and frees them. */
 void zb_secure_free(char *secret);
+/* Like realloc for a NUL-terminated string (or NULL) that may hold a secret:
+   the contents move to a new block and the old one is zeroed before it is
+   freed, so no copy of the key is left behind in the heap. NULL on failure
+   (the old block is untouched). */
+char *zb_secure_realloc(char *old, size_t new_size);
+/* Zero a curl_easy_escape result, then curl_free it. */
+void zb_secure_curl_free(char *secret);
 
 /* What an error says in place of a body that still held a secret. */
 #define ZB_SECRET_OMITTED_MESSAGE \

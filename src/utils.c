@@ -30,7 +30,7 @@ void string_vector_free(StringVector* vector) {
     if (!vector) return;
 
     for (size_t i = 0; i < vector->size; i++) {
-        free(vector->data[i]);
+        zb_secure_free(vector->data[i]);
     }
     free(vector->data);
     vector->data = NULL;

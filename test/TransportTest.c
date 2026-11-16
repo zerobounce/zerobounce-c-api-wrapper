@@ -1057,12 +1057,58 @@ void test_transport_a_base_url_with_a_query_fragment_backslash_or_blank_is_refus
     TEST_ASSERT_TRUE(zb_check_request_url("https://api.zerobounce.net/v2/getcredits?api_key=k", t_on_error));
 }
 
+/* X4 (audit C2): a base URL ending in a bare '?' or '?x' on calls where the
+   SDK adds no query of its own (the sendfile POST, Inbox Placement, Warmup)
+   puts the next path segment inside the query: refused before any request. */
+void test_transport_a_base_url_ending_in_a_question_mark_is_refused_where_the_sdk_adds_no_query(void) {
+    static const char *const bases[] = {"https://h.example/v2?", "https://h.example/v2?x"};
+    char message[96];
+    char built[256];
+    for (int i = 0; i < 2; i++) {
+        ZeroBounce *zb = new_zero_bounce_instance();
+        ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+        SendFileOptions send_options = new_send_file_options();
+        zero_bounce_initialize(zb, "transport-key");
+        zero_bounce_warmup_initialize(zbw, "transport-warmup-key");
+        snprintf(message, sizeof(message), "base %s", bases[i]);
+        /* The check itself, on the URL each call builds. */
+        snprintf(built, sizeof(built), "%s/sendfile", bases[i]);
+        t_errors = 0;
+        t_error_text[0] = '\0';
+        TEST_ASSERT_FALSE_MESSAGE(zb_check_request_url(built, t_on_error), message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+        /* And the calls. */
+        zero_bounce_set_bulk_api_base_url(zb, bases[i]);
+        zero_bounce_set_inbox_placement_base_url(zb, bases[i]);
+        zero_bounce_warmup_set_base_url(zbw, bases[i]);
+        t_errors = t_successes = 0;
+        t_error_text[0] = '\0';
+        send_file(zb, "email_file.csv", 1, send_options, t_on_send, t_on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+        t_errors = 0;
+        t_error_text[0] = '\0';
+        get_inbox_placement_providers(zb, t_on_raw, t_on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+        t_errors = 0;
+        t_error_text[0] = '\0';
+        warmup_get_seeds(zbw, t_on_raw, t_on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, t_errors, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(t_error_text, ZB_URL_TEXT_MESSAGE), message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, t_successes, message);
+        zero_bounce_warmup_free(zbw);
+    }
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_transport_default_timeouts_are_120_s_and_30_s);
+    RUN_TEST(test_transport_a_base_url_ending_in_a_question_mark_is_refused_where_the_sdk_adds_no_query);
     RUN_TEST(test_transport_a_downloaded_file_is_saved);
     RUN_TEST(test_transport_redirects_are_not_followed);
     RUN_TEST(test_transport_every_path_has_a_total_timeout);

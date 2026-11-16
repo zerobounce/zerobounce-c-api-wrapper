@@ -61,7 +61,7 @@ void zero_bounce_warmup_initialize(ZeroBounceWarmup *zbw, const char *api_key) {
     }
     /* A rejected key also drops the one set before it, and every call then
        reports the rejection. */
-    free(zbw->api_key);
+    zb_secure_free(zbw->api_key);
     zbw->api_key = NULL;
     if (!zb_api_key_is_clean(api_key)) {
         fprintf(stderr,
@@ -91,7 +91,7 @@ void zero_bounce_warmup_free(ZeroBounceWarmup *zbw) {
     if (!zbw) {
         return;
     }
-    free(zbw->api_key);
+    zb_secure_free(zbw->api_key);
     zb_free_owned_url(zbw->base_url);
     free(zbw);
 }
@@ -330,8 +330,8 @@ static void warmup_send(
     auth_len = snprintf(NULL, 0, "API-Key: %s", zbw->api_key);
     auth_header = malloc((size_t)auth_len + 1);
     if (!url_path || !auth_header) {
-        free(url_path);
-        free(auth_header);
+        zb_secure_free(url_path);
+        zb_secure_free(auth_header);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
@@ -346,8 +346,8 @@ static void warmup_send(
     if (!zb_make_request_with_extra_header_ct(
             url_path, method, body, "Content-Type: application/json", auth_header,
             &response_data, &http_code, &content_type, warmup_on_error)) {
-        free(auth_header);
-        free(url_path);
+        zb_secure_free(auth_header);
+        zb_secure_free(url_path);
         free(response_data.response);
         free(content_type);
         return;
@@ -398,8 +398,8 @@ static void warmup_send(
         success_callback(text);
     }
 
-    free(auth_header);
-    free(url_path);
+    zb_secure_free(auth_header);
+    zb_secure_free(url_path);
     free(response_data.response);
     free(content_type);
 }
@@ -956,6 +956,8 @@ void warmup_test_smtp_configuration(
     OnSuccessCallbackRawJson success_callback, OnErrorCallback error_callback
 ) {
     json_object *payload;
+    json_object *password_node;
+    char *serialized;
     const char *secrets[2];
 
     if (!warmup_ready(zbw, error_callback) ||
@@ -972,11 +974,29 @@ void warmup_test_smtp_configuration(
     payload = json_object_new_object();
     json_object_object_add(payload, "from_address", json_object_new_string(from_address));
     json_object_object_add(payload, "username", json_object_new_string(username));
-    json_object_object_add(payload, "password", json_object_new_string(password));
+    password_node = json_object_new_string(password);
+    json_object_object_add(payload, "password", password_node);
     json_object_object_add(payload, "server", json_object_new_string(server));
     json_object_object_add(payload, "port", json_object_new_int(port));
+    serialized = (char *)json_object_to_json_string(payload);
     warmup_send(zbw, "POST", "/test-smtp-configuration", NULL,
-                json_object_to_json_string(payload), secrets, 2, false, NULL,
+                serialized, secrets, 2, false, NULL,
                 success_callback, error_callback);
+    /* The SMTP password sits in the serialized body and in the string node:
+       zero both before json-c frees them. */
+    if (serialized) {
+        volatile char *q = serialized;
+        size_t n = strlen(serialized);
+        while (n--) {
+            *q++ = 0;
+        }
+    }
+    if (password_node) {
+        volatile char *q = (char *)json_object_get_string(password_node);
+        size_t n = (size_t)json_object_get_string_len(password_node);
+        while (q && n--) {
+            *q++ = 0;
+        }
+    }
     json_object_put(payload);
 }

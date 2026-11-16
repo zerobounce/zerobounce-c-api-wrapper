@@ -1,4 +1,4 @@
-# Dependabot: security updates only (no version-update PRs).
+# Dependabot: security updates only (no version-update PRs), except the Dockerfile base image digest.
 # Grouped security PRs open weekly on Tuesday morning (Europe/Bucharest).
 # Auto-merge: .github/workflows/dependabot-auto-merge.yml (on PR + Tuesday cron).
 # https://docs.github.com/en/code-security/dependabot/dependabot-security-updates

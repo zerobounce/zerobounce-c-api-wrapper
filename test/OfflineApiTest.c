@@ -4935,6 +4935,92 @@ void test_offline_a_null_success_beside_a_message_or_error_is_an_error_on_every_
     reset_offline();
 }
 
+/* X1 (audit C2): "success" decides only as a boolean, a JSON number 0 or 1, or
+   a string "true", "false", "0" or "1" (case and surrounding whitespace
+   ignored). Any other value is no flag and no result field, so a message beside
+   it is an error on every typed call; 0, "0" and "false" are failures too. */
+void test_offline_a_success_that_is_no_flag_beside_a_message_is_an_error_on_every_typed_call(void) {
+    static const NtCall extra[] = {
+        {"get_api_usage", nt_usage}, {"get_activity_data", nt_activity}, {"score_email", nt_score},
+        {"score_email_post", nt_score_post}, {"find_email_by_domain", nt_find}, {"find_email v1", nt_find_v1},
+        {"search_domain", nt_search}, {"domain_search_file_status", nt_domain_status},
+        {"domain_search_delete_file", nt_domain_delete},
+    };
+    static const char *const bodies[] = {
+        "{\"message\":\"m\",\"success\":0}", "{\"message\":\"m\",\"success\":\"maybe\"}",
+        "{\"message\":\"m\",\"success\":\"\"}", "{\"message\":\"m\",\"success\":[]}",
+        "{\"message\":\"m\",\"success\":{}}", "{\"message\":\"m\",\"success\":2}",
+        "{\"message\":\"m\",\"success\":\"0\"}", "{\"message\":\"m\",\"success\":\" False \"}",
+        "{\"error\":\"Invalid API key\",\"success\":\"maybe\"}",
+    };
+    static const long statuses[] = {200, 202};
+    char message[240];
+    ZeroBounce *zb = client_with("noflag-success-key");
+    g_leak_mode = 10;
+    for (size_t pass = 0; pass < 2; pass++) {
+        size_t count = pass == 0 ? sizeof(nt_five_calls) / sizeof(nt_five_calls[0]) : sizeof(extra) / sizeof(extra[0]);
+        const NtCall *calls = pass == 0 ? nt_five_calls : extra;
+        for (size_t c = 0; c < count; c++) {
+            for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+                for (size_t st = 0; st < 2; st++) {
+                    snprintf(message, sizeof(message), "%s %s HTTP %ld", calls[c].name, bodies[b], statuses[st]);
+                    nt_script(bodies[b], statuses[st], "application/json");
+                    calls[c].call(zb);
+                    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                    TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[st], (int)g_error_status, message);
+                }
+            }
+        }
+    }
+    /* A real boolean true still decides. */
+    nt_script("{\"success\":true,\"message\":\"ok\",\"file_id\":\"f\"}", 200, "application/json");
+    nt_delete_file(zb);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    g_leak_mode = 0;
+    reset_offline();
+}
+
+/* X2/X3 (audit C2): a NULL client is a no-op for both initializers, and a
+   rejected key with no error callback is quiet. */
+void test_offline_initialize_with_a_null_client_is_a_no_op_and_a_rejected_key_needs_no_callback(void) {
+    ZeroBounce *zb;
+    reset_offline();
+    zero_bounce_initialize(NULL, "k");
+    zero_bounce_initialize_with_base_url(NULL, "k", ZB_Api_URL_Default);
+    zero_bounce_initialize(NULL, NULL);
+    zb = new_zero_bounce_instance();
+    zero_bounce_initialize(zb, " padded ");
+    get_credits(zb, on_credits, NULL);
+    zero_bounce_initialize_with_base_url(zb, "\tpadded", ZB_Api_URL_Default);
+    get_credits(zb, on_credits, NULL);
+    TEST_ASSERT_EQUAL_INT(0, g_count);
+    TEST_ASSERT_FALSE(g_success_called);
+    reset_offline();
+}
+
+/* X5 (audit C2): the helpers that move or free a buffer holding the key keep
+   the text intact (the zeroing of the old block is what they add). */
+void test_offline_the_secure_realloc_and_free_helpers_keep_the_text(void) {
+    char *text = zb_secure_realloc(NULL, 16);
+    TEST_ASSERT_NOT_NULL(text);
+    text[0] = '\0';
+    snprintf(text, 16, "%s", "secret-key");
+    text = zb_secure_realloc(text, 4096);
+    TEST_ASSERT_NOT_NULL(text);
+    TEST_ASSERT_EQUAL_STRING("secret-key", text);
+    text = zb_secure_realloc(text, 2);
+    TEST_ASSERT_NOT_NULL(text);
+    TEST_ASSERT_EQUAL_STRING("secret-key", text);
+    zb_secure_free(text);
+    zb_secure_free(NULL);
+    zb_secure_curl_free(NULL);
+    text = curl_easy_escape(NULL, "a b", 0);
+    TEST_ASSERT_EQUAL_STRING("a%20b", text);
+    zb_secure_curl_free(text);
+}
+
 /* A3: an error object with no message text still has one. */
 void test_offline_an_error_object_with_no_message_text_gets_the_fixed_message(void) {
     static const char *const bodies[] = {"{\"message\":null}", "{\"message\":\"\"}", "{\"message\":\"  \"}",
@@ -5901,6 +5987,9 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_a_message_beside_a_null_is_an_error_and_a_null_alone_is_a_result);
     RUN_TEST(test_offline_find_email_and_search_domain_refuse_a_message_without_a_result);
     RUN_TEST(test_offline_a_null_success_beside_a_message_or_error_is_an_error_on_every_typed_call);
+    RUN_TEST(test_offline_a_success_that_is_no_flag_beside_a_message_is_an_error_on_every_typed_call);
+    RUN_TEST(test_offline_initialize_with_a_null_client_is_a_no_op_and_a_rejected_key_needs_no_callback);
+    RUN_TEST(test_offline_the_secure_realloc_and_free_helpers_keep_the_text);
     RUN_TEST(test_offline_an_error_object_with_no_message_text_gets_the_fixed_message);
     RUN_TEST(test_offline_the_message_without_result_guards_refuse_a_message_beside_an_unknown_key);
     RUN_TEST(test_offline_a_null_client_is_an_error_on_every_call);

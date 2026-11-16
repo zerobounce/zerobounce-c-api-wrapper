@@ -82,20 +82,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A NULL client passed to any public call used to crash (a NULL dereference); it now reaches the error callback with "ZeroBounce is not initialized. Please call zero_bounce_initialize(zb_instance, api_key); first". A NULL error callback is no longer called on the uninitialised-key path or when libcurl fails to initialise.
 - **Behaviour change:** a base URL that holds a query (or a bare `?`), a fragment, a backslash, whitespace, a control character or an invisible/Unicode-space character (set with `zero_bounce_set_bulk_api_base_url`, `..._root_url`, `..._scoring_base_url`, `zero_bounce_set_list_evaluator_base_url`, `zero_bounce_set_inbox_placement_base_url` or `zero_bounce_warmup_set_base_url`) is now refused when a request is sent, with the error "request URL must not contain a query, a fragment, a backslash, whitespace or control characters". Before, `https://host/v2?x=1` and `https://host/v2?` were sent, the SDK's own path and query ending up inside the caller's query. Affects all released versions.
 - Every libcurl handle now sets `CURLOPT_NOSIGNAL`, so a request timeout does not use SIGALRM and is safe in a multi-threaded program.
+- **Behaviour change:** a `success` field that is not a flag no longer counts as a result field. `success` decides only as a boolean, a JSON number 0 or 1, or a string "true", "false", "0" or "1" (any case, surrounding whitespace ignored); 0, "0", false and "false" are failures. Any other value (`""`, "maybe", `[]`, `{}`, 2, null) is not a flag. Before, `{"message":"m","success":0}` or `{"message":"m","success":"maybe"}` on HTTP 200 reached the success callback of get_api_usage, get_activity_data, score_email and the batch call as an empty result; now they report the message as an error with the HTTP status. Affects 2.2.0 to 3.0.1.
+- `zero_bounce_initialize(NULL, ...)` and `zero_bounce_initialize_with_base_url(NULL, ...)` crashed (NULL dereference); they are now no-ops.
 
 ### Security
 
 - `warmup_test_smtp_configuration` masked the SMTP username and password only in their raw form, so an error body that quoted them URL-encoded (`Pa%2Fss%22w%25rd`) or JSON-escaped, as a server or proxy echoing the request body would (`Pa\/ss\"w%rd`), reached the error callback with the password readable. Every form is now replaced with `***`, as is the Warmup key: raw, URL-encoded (a space as `%20` or `+`), JSON-escaped (`/` escaped or not), JSON-escaped twice (an echoed body quoted inside another JSON string, `Pa\\\/ss\\\"w%rd`), and URL-encoded after JSON escaping (`Pa%5C%2Fss%5C%22w%25rd`), as a server putting an echoed JSON body into a URL or form would.
 - An error built from a response body could carry the API key. Only an `api_key=` parameter's value was masked, so a body quoting the key itself reached the error callback whole: `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting it, or the key in its URL-encoded form. The Warmup client masked only the SMTP credentials of `warmup_test_smtp_configuration`, so a Warmup error quoting the key came through too. `parse_error_with_status`, which builds every error a callback gets, now replaces the calling client's key, raw, URL-encoded (a space as `%20` or `+`), JSON-escaped (`"` and `\` escaped, `/` escaped or not, as a request body echoed back), JSON-escaped twice and URL-encoded after JSON escaping, with `REDACTED` on every call of both clients, besides any `api_key=` value. `zb_set_redaction_key` (internal) records the key per thread at the check every call runs first.
 - Key and SMTP-credential redaction covered only the spellings it generated (raw, URL-encoded, JSON-escaped and a few compositions), so a body quoting a secret through another composition, such as URL-encoded three times or URL-encoded after two JSON escapes, reached the error callback decodable. After masking, every error message is now decoded up to four more times (the SDK's own request encoding plus three layers an echo may add: URL-decoding with upper- or lower-case hex, `+` as a space, JSON-unescaping including `\/`, `\uXXXX` and surrogate pairs, in any order), and a `%00` or `\u0000` in the body does not end the search; if any view still holds the API key, the Warmup key or the SMTP username or password, the body-derived text is dropped for `The response body was omitted because it contained a credential.`
-- A base URL with a username or password (`https://host@evil.example`) was sent. It is now rejected before the scheme check, and the error does not quote the URL. Affects 3.0.0 to 3.0.1.
-- An API key with a Unicode space or an invisible character was sent. It is now rejected. Affects 3.0.0 to 3.0.1.
-- An error that echoed a secret with a different letter case, or with a quote written as `\u{27}`, `\047`, `&APOS;`, `&#39;`, `\X27`, `\'` or `''`, still contained the secret. Such an error is now redacted. Affects 3.0.0 to 3.0.1.
-- The redaction of an error also undoes `\U{27}`, `\U0027` and `\U00000027` (a capital `\U`, with 4 or 8 hex digits, or braces), so an error that echoed the API key, the Warmup key or the SMTP password through these spellings no longer holds it. Affects 3.0.0 to 3.0.1.
-- Fixed a heap buffer overflow in the redaction of `api_key=` parameters in error messages: every `api_key=` grows by 8 bytes but the buffer only had 16 spare, so a server-controlled text with several (`api_key=&api_key=&...`) wrote past it. The buffer is now sized from the match count. Affects all released versions that redact (every error path, Warmup included). A new test runs under ASan (`-DZB_SANITIZE=ON`).
+- A base URL with a username or password (`https://host@evil.example`) was sent. It is now rejected before the scheme check, and the error does not quote the URL. Affects v2.2.0 to v3.0.1, whose URL check is an `https://` prefix test only (v2.1.4 and earlier have no check at all).
+- An API key with a Unicode space or an invisible character was sent. It is now rejected. Affects v2.2.0 to v3.0.1, whose key check is ASCII only (surrounding ASCII whitespace and control characters); v2.1.4 and earlier have no key check.
+- An error that echoed a secret with a different letter case, or with a quote written as `\u{27}`, `\047`, `&APOS;`, `&#39;`, `\X27`, `\'` or `''`, still contained the secret. Such an error is now redacted. Affects v2.2.0 to v3.0.1 for the Warmup key and SMTP credentials: their masking (`warmup_redact`, byte-identical in v2.2.0, v3.0.0 and v3.0.1) is a case-sensitive raw match. The API key itself was not masked at all before this release (see the entry above); only `api_key=` parameter values were.
+- The redaction of an error also undoes `\U{27}`, `\U0027` and `\U00000027` (a capital `\U`, with 4 or 8 hex digits, or braces), so an error that echoed the API key, the Warmup key or the SMTP password through these spellings no longer holds it. Affects v2.2.0 to v3.0.1 for the Warmup key and SMTP password, as in the entry above.
+- Fixed a heap buffer overflow in the redaction of `api_key=` parameters in error messages: every `api_key=` grows by 8 bytes but the buffer only had 16 spare, so a server-controlled text with several (`api_key=&api_key=&...`) wrote past it. The buffer is now sized from the match count. Affects v2.2.0 to v3.0.1 (every error path, Warmup included); v2.1.4 and earlier have no redaction. A new test runs under ASan (`-DZB_SANITIZE=ON`).
 - Redaction compares under Unicode full case folding, not ASCII only: `PÄSSWÖRD-SSETA` echoing `Pässwörd-ßeta` is now caught (table generated by `tools/gen_casefold.py`).
 - Redaction also decodes `&#00000039;` (any number of digits), `&#39` / `&#x27` without the semicolon, the HTML named references `&quot; &amp; &lt; &gt;` and the Latin-1 set (`&auml;`, `&szlig;`, ...), and `\xHH` / `\ooo` spelled as the UTF-8 bytes of a non-ASCII secret.
 - The API key copies are zeroed before they are freed.
+- Every buffer that held the API key (the key's URL-escaped copies, request URLs, form and POST bodies, the Warmup api_key, the Warmup and Inbox Placement auth headers, the redaction forms) is zeroed before it is freed, and URL buffers grown with realloc are moved to a new block with the old one zeroed. The SMTP password in warmup_test_smtp_configuration (serialized body and string node) is zeroed too. Memory hygiene only; no behaviour change.
 
 ## [3.0.1] - 2026-11-11
 
@@ -216,7 +219,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CI dependency bumps only: `actions/checkout` 6 to 7 and `github/codeql-action` 4.35.2 to 4.36.3. No library change.
 
-## [2.1.3] - 2026-06-18
+## [2.1.3] - 2026-06-17
 
 ### Fixed
 
@@ -227,6 +230,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `ZBValidateResponse.catchall_domain`, read from `catchall_domain`.
+
+## [2.1.1] - 2026-04-18
+
+### Changed
+
+- CI only: every `github/codeql-action/*@v4` reference in the workflows is pinned to `v4.35.2`. No library change.
 
 ## [2.1.0] - 2026-04-05
 
@@ -245,6 +254,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - License the project under MIT.
+
+## [2.0.9] - 2026-03-03
+
+### Changed
+
+- README note on the CI tag check ("verify commit and tag workflow"). No library change.
+
+## [2.0.8] - 2026-03-03
+
+### Changed
+
+- Publish documentation updates and a version bump in `CMakeLists.txt`. No library change.
+
+## [2.0.7] - 2026-03-03
+
+### Changed
+
+- Publish documentation updates and a version bump in `CMakeLists.txt`. No library change.
+
+## [2.0.6] - 2026-03-03
+
+### Added
+
+- README "Publish" section and registry-submission documentation. No library change.
+
+## [2.0.5] - 2026-03-03
+
+### Changed
+
+- Version bump in `CMakeLists.txt` only, after the workflow changes in 2.0.4. No library change.
+
+## [2.0.4] - 2026-03-03
+
+### Changed
+
+- GitHub workflows: explicit permissions, `actions/checkout` v6, `sdk_ci.yml` synced. No library change.
+
+## [2.0.3] - 2026-03-03
+
+### Changed
+
+- Version bump in `CMakeLists.txt` only (GitHub workflow update). No library change.
+
+## [2.0.2] - 2026-03-03
+
+### Changed
+
+- Version bump in `CMakeLists.txt` only (GitHub workflow update). No library change.
+
+## [2.0.1] - 2026-03-03
+
+### Added
+
+- GitHub workflows: auto-assign and `sdk_ci.yml`. No library change.
 
 ## [2.0.0] - 2026-03-03
 
@@ -280,9 +343,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [2.2.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.4...v2.2.0
 [2.1.4]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.2...v2.1.3
-[2.1.2]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.0...v2.1.2
+[2.1.2]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.1...v2.1.2
+[2.1.1]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.10...v2.1.0
-[2.0.10]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.0...v2.0.10
+[2.0.10]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.9...v2.0.10
+[2.0.9]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.8...v2.0.9
+[2.0.8]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.7...v2.0.8
+[2.0.7]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.6...v2.0.7
+[2.0.6]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.5...v2.0.6
+[2.0.5]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.4...v2.0.5
+[2.0.4]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.3...v2.0.4
+[2.0.3]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.2...v2.0.3
+[2.0.2]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/releases/tag/v1.0.0

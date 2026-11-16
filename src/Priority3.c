@@ -83,8 +83,8 @@ static bool p3_append_form_field(char **body, size_t *cap, const char *key, cons
     char *ek = zb_url_escape(key);
     char *ev = zb_url_escape(value);
     if (!ek || !ev) {
-        free(ek);
-        free(ev);
+        zb_secure_free(ek);
+        zb_secure_free(ev);
         return false;
     }
     size_t need = strlen(ek) + strlen(ev) + 2 + (*body ? strlen(*body) + 1 : 0);
@@ -98,10 +98,10 @@ static bool p3_append_form_field(char **body, size_t *cap, const char *key, cons
         while (new_cap < need) {
             new_cap *= 2;
         }
-        n = realloc(*body, new_cap);
+        n = zb_secure_realloc(*body, new_cap);
         if (!n) {
-            free(ek);
-            free(ev);
+            zb_secure_free(ek);
+            zb_secure_free(ev);
             return false;
         }
         /* realloc(NULL, n) is malloc: the block is uninitialized, so the
@@ -116,8 +116,8 @@ static bool p3_append_form_field(char **body, size_t *cap, const char *key, cons
     if (!*body) {
         *body = calloc(1, *cap);
         if (!*body) {
-            free(ek);
-            free(ev);
+            zb_secure_free(ek);
+            zb_secure_free(ev);
             return false;
         }
     }
@@ -128,8 +128,8 @@ static bool p3_append_form_field(char **body, size_t *cap, const char *key, cons
     strcat(*body, ek);
     strcat(*body, "=");
     strcat(*body, ev);
-    free(ek);
-    free(ev);
+    zb_secure_free(ek);
+    zb_secure_free(ev);
     return true;
 }
 
@@ -204,12 +204,12 @@ static void p3_raw_json_get_ex(
     long http_code = 0;
     if (!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)) {
         free(response_data.response);
-        free(url_path);
+        zb_secure_free(url_path);
         return;
     }
     p3_send_json_success_ex(&response_data, http_code, message_only_is_error, success_callback, error_callback);
     free(response_data.response);
-    free(url_path);
+    zb_secure_free(url_path);
 }
 
 static void p3_raw_json_get(
@@ -232,14 +232,14 @@ static void p3_raw_json_form_post(
     long http_code = 0;
     if (!zb_make_request_with_post_body(url_path, body, &response_data, &http_code, error_callback)) {
         free(response_data.response);
-        free(url_path);
-        free(body);
+        zb_secure_free(url_path);
+        zb_secure_free(body);
         return;
     }
     p3_send_json_success(&response_data, http_code, success_callback, error_callback);
     free(response_data.response);
-    free(url_path);
-    free(body);
+    zb_secure_free(url_path);
+    zb_secure_free(body);
 }
 
 static void p3_send_file_json_success(
@@ -276,7 +276,7 @@ static void p3_post_send_file_form(
 ) {
     char *url_path = strdup(url);
     if (!url_path) {
-        free(body);
+        zb_secure_free(body);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
@@ -284,12 +284,12 @@ static void p3_post_send_file_form(
     long http_code = 0;
     if (!zb_make_request_with_post_body(url_path, body, &response_data, &http_code, error_callback)) {
         free(response_data.response);
-        free(url_path);
+        zb_secure_free(url_path);
         return;
     }
     p3_send_file_json_success(&response_data, http_code, success_callback, error_callback);
     free(response_data.response);
-    free(url_path);
+    zb_secure_free(url_path);
 }
 
 static void p3_mime_add_int(curl_mime *multipart, const char *name, int value) {
@@ -404,7 +404,7 @@ static void p3_bulk_root_multipart(
     p3_send_file_json_success(&response_data, http_code, success_callback, error_callback);
 
 cleanup:
-    free(url_path);
+    zb_secure_free(url_path);
     free(response_data.response);
 }
 
@@ -426,13 +426,13 @@ static void p3_bulk_root_get_file(
     int url_path_len = snprintf(NULL, 0, url_pattern, base_url, api_key_esc, file_id_esc);
     char *url_path = malloc((size_t)url_path_len + 1);
     if (!url_path) {
-        free(api_key_esc);
+        zb_secure_free(api_key_esc);
         free(file_id_esc);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
     snprintf(url_path, (size_t)url_path_len + 1, url_pattern, base_url, api_key_esc, file_id_esc);
-    free(api_key_esc);
+    zb_secure_free(api_key_esc);
     free(file_id_esc);
 
     memory response_data = {0};
@@ -508,7 +508,7 @@ static void p3_bulk_root_get_file(
     }
 
 cleanup:
-    free(url_path);
+    zb_secure_free(url_path);
     free(response_data.response);
     free(content_type);
 }
@@ -529,14 +529,14 @@ static void p3_bulk_root_file_status(
     int url_path_len = snprintf(NULL, 0, url_pattern, base_url, api_key_esc, file_id_esc);
     char *url_path = malloc((size_t)url_path_len + 1);
     snprintf(url_path, (size_t)url_path_len + 1, url_pattern, base_url, api_key_esc, file_id_esc);
-    free(api_key_esc);
+    zb_secure_free(api_key_esc);
     free(file_id_esc);
 
     memory response_data = {0};
     long http_code = 0;
     if (!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)) {
         free(response_data.response);
-        free(url_path);
+        zb_secure_free(url_path);
         return;
     }
     {
@@ -550,7 +550,7 @@ static void p3_bulk_root_file_status(
         }
     }
     free(response_data.response);
-    free(url_path);
+    zb_secure_free(url_path);
 }
 
 static void p3_bulk_root_delete_file(
@@ -569,14 +569,14 @@ static void p3_bulk_root_delete_file(
     int url_path_len = snprintf(NULL, 0, url_pattern, base_url, api_key_esc, file_id_esc);
     char *url_path = malloc((size_t)url_path_len + 1);
     snprintf(url_path, (size_t)url_path_len + 1, url_pattern, base_url, api_key_esc, file_id_esc);
-    free(api_key_esc);
+    zb_secure_free(api_key_esc);
     free(file_id_esc);
 
     memory response_data = {0};
     long http_code = 0;
     if (!zb_make_request(url_path, "GET", "Accept: application/json", &response_data, &http_code, error_callback)) {
         free(response_data.response);
-        free(url_path);
+        zb_secure_free(url_path);
         return;
     }
     {
@@ -590,7 +590,7 @@ static void p3_bulk_root_delete_file(
         }
     }
     free(response_data.response);
-    free(url_path);
+    zb_secure_free(url_path);
 }
 
 typedef struct {
@@ -855,7 +855,7 @@ void get_list_evaluator_result(
     url_path_len = snprintf(NULL, 0, url_pattern, zb->list_evaluator_base_url, file_id_esc, api_key_esc);
     url_path = malloc((size_t)url_path_len + 1);
     snprintf(url_path, (size_t)url_path_len + 1, url_pattern, zb->list_evaluator_base_url, file_id_esc, api_key_esc);
-    free(api_key_esc);
+    zb_secure_free(api_key_esc);
     free(file_id_esc);
     p3_raw_json_get(zb, url_path, success_callback, error_callback);
 }
@@ -934,7 +934,7 @@ void list_filters(
         int url_path_len = snprintf(NULL, 0, url_pattern, zb->api_base_url, api_key_esc);
         char *url_path = malloc((size_t)url_path_len + 1);
         snprintf(url_path, (size_t)url_path_len + 1, url_pattern, zb->api_base_url, api_key_esc);
-        free(api_key_esc);
+        zb_secure_free(api_key_esc);
         p3_raw_json_get(zb, url_path, success_callback, error_callback);
     }
 }
@@ -1065,7 +1065,7 @@ void list_s3_files(
     );
     char *url_path = malloc((size_t)url_path_len + 1);
     if (!url_path) {
-        free(api_key_esc);
+        zb_secure_free(api_key_esc);
         free(bucket_esc);
         free(search_esc);
         if (error_callback) {
@@ -1084,7 +1084,7 @@ void list_s3_files(
         search_part,
         search_esc ? search_esc : ""
     );
-    free(api_key_esc);
+    zb_secure_free(api_key_esc);
     free(bucket_esc);
     free(search_esc);
     p3_raw_json_get_ex(zb, url_path, true, success_callback, error_callback);
@@ -1405,7 +1405,7 @@ static void p3_inbox_placement_request(
     auth_len = snprintf(NULL, 0, "Authorization: Bearer %s", zb->api_key);
     auth_header = malloc((size_t)auth_len + 1);
     if (!auth_header) {
-        free(url_path);
+        zb_secure_free(url_path);
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
@@ -1414,9 +1414,9 @@ static void p3_inbox_placement_request(
     if (!zb_make_request_with_extra_header(
             url_path, method, body, "Content-Type: application/json", auth_header,
             &response_data, &http_code, error_callback)) {
-        free(auth_header);
+        zb_secure_free(auth_header);
         free(response_data.response);
-        free(url_path);
+        zb_secure_free(url_path);
         return;
     }
 
@@ -1430,9 +1430,9 @@ static void p3_inbox_placement_request(
     } else {
         p3_send_json_success(&response_data, http_code, success_callback, error_callback);
     }
-    free(auth_header);
+    zb_secure_free(auth_header);
     free(response_data.response);
-    free(url_path);
+    zb_secure_free(url_path);
 }
 
 /*
@@ -1492,7 +1492,7 @@ static void p3_str_append(char **body, size_t *cap, const char *fragment) {
     size_t needed = (*body ? strlen(*body) : 0) + strlen(fragment) + 1;
     if (needed > *cap) {
         size_t new_cap = needed * 2;
-        char *grown = realloc(*body, new_cap);
+        char *grown = zb_secure_realloc(*body, new_cap);
         if (!grown) {
             fprintf(stderr, "Memory allocation failed.\n");
             exit(EXIT_FAILURE);
@@ -1743,7 +1743,7 @@ void create_inbox_placement_test(
     p3_str_append(&body, &cap, "}");
 
     p3_inbox_placement_request(zb, "POST", "/test", NULL, body, success_callback, error_callback);
-    free(body);
+    zb_secure_free(body);
 }
 
 void get_inbox_placement_test(
@@ -1845,5 +1845,5 @@ void set_inbox_placement_webhook(
     p3_json_append_string_field(&body, &cap, "webhookUrl", webhook_url);
     p3_str_append(&body, &cap, "}");
     p3_inbox_placement_request(zb, "PUT", "/webhook", NULL, body, success_callback, error_callback);
-    free(body);
+    zb_secure_free(body);
 }

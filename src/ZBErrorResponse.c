@@ -58,6 +58,34 @@ void zb_secure_free(char *secret) {
     }
 }
 
+char *zb_secure_realloc(char *old, size_t new_size) {
+    char *fresh;
+    size_t used = old ? strlen(old) + 1 : 0;
+    if (new_size < used) {
+        new_size = used;
+    }
+    fresh = malloc(new_size ? new_size : 1);
+    if (!fresh) {
+        return NULL;
+    }
+    if (old) {
+        memcpy(fresh, old, used);
+        zb_secure_free(old);
+    }
+    return fresh;
+}
+
+void zb_secure_curl_free(char *secret) {
+    if (secret) {
+        volatile char *p = secret;
+        size_t n = strlen(secret);
+        while (n--) {
+            *p++ = 0;
+        }
+        curl_free(secret);
+    }
+}
+
 void zb_set_redaction_key(const char *api_key) {
     if (zb_tls_api_key && api_key && strcmp(zb_tls_api_key, api_key) == 0) {
         return;
@@ -656,7 +684,7 @@ static char *zb_mask_known_spellings(char *text, const char *secret, const char 
     for (i = 0; i < FORMS; i++) {
         if (forms[i]) {
             text = zb_replace_secret(text, forms[i], mask);
-            free(forms[i]);
+            zb_secure_free(forms[i]);
         }
     }
     return zb_replace_secret(text, secret, mask);
@@ -1017,6 +1045,41 @@ void zb_report_body_error(const char *body, long status_code, OnErrorCallback er
     free(message);
 }
 
+/* What a "success" field says: 1 true, 0 false, -1 not a flag. It decides when
+   it is a boolean, a JSON number 0 or 1, or a string "true", "false", "0" or
+   "1" (any case, whitespace around it ignored); any other value (null, "",
+   "maybe", a list, an object, 2) is no flag and no result field either. */
+static int zb_success_flag(json_object *success) {
+    if (!success) {
+        return -1;
+    }
+    if (json_object_is_type(success, json_type_boolean)) {
+        return json_object_get_boolean(success) ? 1 : 0;
+    }
+    if (json_object_is_type(success, json_type_int)) {
+        int64_t number = json_object_get_int64(success);
+        return number == 0 ? 0 : (number == 1 ? 1 : -1);
+    }
+    if (json_object_is_type(success, json_type_double)) {
+        double number = json_object_get_double(success);
+        return number == 0.0 ? 0 : (number == 1.0 ? 1 : -1);
+    }
+    if (json_object_is_type(success, json_type_string)) {
+        const char *value = zb_skip_ws(json_object_get_string(success));
+        size_t length = strlen(value);
+        while (length > 0 && isspace((unsigned char)value[length - 1])) {
+            length--;
+        }
+        if ((length == 5 && strncasecmp(value, "false", 5) == 0) || (length == 1 && value[0] == '0')) {
+            return 0;
+        }
+        if ((length == 4 && strncasecmp(value, "true", 4) == 0) || (length == 1 && value[0] == '1')) {
+            return 1;
+        }
+    }
+    return -1;
+}
+
 bool zb_success_means_failure(const char *body) {
     const char *text = zb_skip_ws(body ? body : "");
     json_object *parsed;
@@ -1031,12 +1094,7 @@ bool zb_success_means_failure(const char *body) {
         return false;
     }
     if (json_object_object_get_ex(parsed, "success", &success)) {
-        if (json_object_is_type(success, json_type_boolean)) {
-            failed = !json_object_get_boolean(success);
-        } else if (json_object_is_type(success, json_type_string)) {
-            const char *value = json_object_get_string(success);
-            failed = value && (strcasecmp(value, "false") == 0);
-        }
+        failed = zb_success_flag(success) == 0;
     }
     json_object_put(parsed);
     return failed;
@@ -1070,12 +1128,7 @@ static json_object *zb_parse_object_without_success(const char *body) {
            message-only and dead-key rules still apply. */
         json_object *success = NULL;
         if (json_object_object_get_ex(parsed, "success", &success) && success) {
-            bool decides = json_object_is_type(success, json_type_boolean);
-            if (json_object_is_type(success, json_type_string)) {
-                const char *value = json_object_get_string(success);
-                decides = value && (strcasecmp(value, "false") == 0 || strcasecmp(value, "true") == 0);
-            }
-            if (decides) {
+            if (zb_success_flag(success) >= 0) {
                 json_object_put(parsed);
                 return NULL;
             }
@@ -1125,6 +1178,9 @@ static bool zb_message_only_body(const char *body) {
         }
         if (known) {
             has_message = true;
+        } else if (strcmp(key, "success") == 0) {
+            /* Only a "success" that is no flag gets here: not a result field. */
+            continue;
         } else if (value != NULL && !json_object_is_type(value, json_type_null)) {
             only_messages = false;
             break;
