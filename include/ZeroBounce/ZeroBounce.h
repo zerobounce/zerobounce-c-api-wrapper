@@ -25,6 +25,16 @@
 #include "ZeroBounce/ZBApiURL.h"
 #include "ZeroBounce/ZBPriority3Options.h"
 
+/* The deprecation of find_email, as an attribute on the function: including this
+   header does not warn, only a call to find_email does. */
+#if defined(_MSC_VER)
+#define ZB_FIND_EMAIL_DEPRECATED __declspec(deprecated("Use find_email... methods for Email Finder API, or search_domain... methods for Domain Search API"))
+#elif defined(__GNUC__) || defined(__clang__)
+#define ZB_FIND_EMAIL_DEPRECATED __attribute__((deprecated("Use find_email... methods for Email Finder API, or search_domain... methods for Domain Search API")))
+#else
+#define ZB_FIND_EMAIL_DEPRECATED
+#endif
+
 typedef void (*OnErrorCallback)(ZBErrorResponse error_response);
 typedef void (*OnSuccessCallbackCredits)(ZBCreditsResponse response);
 typedef void (*OnSuccessCallbackApiUsage)(ZBGetApiUsageResponse response);
@@ -151,12 +161,6 @@ typedef struct {
 
 
 /**
- * @brief Internal function used to write the response data of a request.
- *
- */
-static size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp);
-
-/**
  * @brief Internal function used to set the write callback for a request.
  *
  */
@@ -199,8 +203,6 @@ typedef struct {
      */
     bool api_key_rejected;
 } ZeroBounce;
-
-static ZeroBounce* zero_bounce_instance = NULL;
 
 /**
  * @brief Initializes new ZeroBounce instance.
@@ -245,144 +247,6 @@ void zero_bounce_initialize_with_base_url(ZeroBounce* zb, const char* api_key, Z
  * @param error_callback error callback
  * @return **true** if the [api_key] is null or **false** otherwise
  */
-
-/**
- * @brief Internal function used to make libcurl requests.
- *
- * @param url_path url to make request to
- * @param request_type type of the request (e.g. "GET")
- * @param header header for the request
- * @param response_data response of the request
- * @param http_code response code
- * @param error_callback error callback
- * @return int 1 if the request is successful, 0 otherwise
- */
-static int make_request(
-    char* url_path,
-    char* request_type,
-    char* header,
-    memory* response_data,
-    long* http_code,
-    OnErrorCallback error_callback
-);
-
-/**
- * @brief Internal function to send a file for bulk email validation. This function implements the actual
- * request logic.
- *
- * @param zb                            ZeroBounce pointer
- * @param scoring                       *true* if the AI scoring should be used, or *false* otherwise
- * @param file_path                     the path of the file to send
- * @param email_address_column_index    the column index of the email address in the file. Index starts from 1
- * @param options                       the send file options
- * @param success_callback              success callback
- * @param error_callback                error callback
- */
-static void send_file_internal(
-    ZeroBounce *zb,
-    bool scoring,
-    char* file_path,
-    int email_address_column_index,
-    SendFileOptions options,
-    OnSuccessCallbackSendFile success_callback,
-    OnErrorCallback error_callback
-);
-
-/**
- * @brief Internal function to get the status of a file submitted for email validation. This method implements
- * the actual request logic.
- *
- * @param zb                ZeroBounce pointer
- * @param scoring           *true* if the AI scoring should be used, or *false* otherwise
- * @param file_id           the returned file ID when calling either the send file or scoring send file APIs
- * @param success_callback  success callback
- * @param error_callback    error callback
- */
-static void file_status_internal(
-    ZeroBounce *zb,
-    bool scoring,
-    char* file_id,
-    OnSuccessCallbackFileStatus success_callback,
-    OnErrorCallback error_callback
-);
-
-/**
- * @brief Internal function to get the validation results file for the file that has been submitted.
- * This method implements the actual request logic.
- *
- * @param zb                    ZeroBounce pointer
- * @param scoring               *true* if the AI scoring should be used, or *false* otherwise
- * @param file_id               the returned file ID when calling either the send file or scoring send file APIs
- * @param local_download_path   the path to which to download the file
- * @param success_callback      success callback
- * @param error_callback        error callback
- */
-static void get_file_internal(
-    ZeroBounce *zb,
-    bool scoring,
-    char* file_id,
-    char* local_download_path,
-    const GetFileOptions *get_file_options,
-    OnSuccessCallbackGetFile success_callback,
-    OnErrorCallback error_callback
-);
-
-/**
- * @brief Internal function to elete a file. This method implements the actual request logic.
- *
- * @param zb                ZeroBounce pointer
- * @param scoring           *true* if the AI scoring should be used, or *false* otherwise
- * @param file_id           the returned file ID when calling either the send file or scoring send file APIs
- * @param success_callback  success callback
- * @param error_callback    error callback
- */
-static void delete_file_internal(
-    ZeroBounce *zb,
-    bool scoring,
-    char* file_id,
-    OnSuccessCallbackDeleteFile success_callback,
-    OnErrorCallback error_callback
-);
-
-/**
- * @brief Email Address Search - Identifies and validates a person’s primary email address
- *
- * @param zb                ZeroBounce pointer
- * @param domain            The email domain for which to find the email format
- * @param company_name      The company name for which to find the email format
- * @param first_name        The first name of the person whose email format is being searched
- * @param middle_name       The middle name of the person whose email format is being searched
- * @param last_name         The last name of the person whose email format is being searched
- * @param success_callback  success callback
- * @param error_callback    error callback
- */
-static void find_email_internal(
-    ZeroBounce* zb,
-    char* domain,
-    char* company_name,
-    char* first_name,
-    char* middle_name,
-    char* last_name,
-    OnSuccessCallbackFindEmail success_callback,
-    OnErrorCallback error_callback
-);
-
-/**
- * @brief Domain Search - Identifies an email domain
- *
- * @param zb                ZeroBounce pointer
- * @param domain            The email domain for which to find the email format
- * @param company_name      The company name for which to identify the domain
- * @param success_callback  success callback
- * @param error_callback    error callback
- */
-static void search_domain_internal(
-    ZeroBounce* zb,
-    char* domain,
-    char* company_name,
-    OnSuccessCallbackDomainSearch success_callback,
-    OnErrorCallback error_callback
-);
 
 /**
  * @brief This API will tell you how many credits you have left on your account.
@@ -1225,7 +1089,7 @@ void set_inbox_placement_webhook(
  * @param success_callback  success callback
  * @param error_callback    error callback
  */
-#warning "Use find_email... methods for Email Finder API, or search_domain... methods for Domain Search API"
+ZB_FIND_EMAIL_DEPRECATED
 void find_email(
     ZeroBounce* zb,
     char* domain,

@@ -79,7 +79,7 @@ zero_bounce_initialize_with_base_url(zb, "<YOUR_API_KEY>", ZB_Api_URL_EU);
 
 #### Examples
 Then you can use any of the wrapper functions, for example:
-* ####### Check how many credits you have left on your account
+##### Check how many credits you have left on your account
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -92,7 +92,7 @@ void on_success_credits(ZBCreditsResponse response) {
 get_credits(zb, on_success_credits, on_error);
 ```
 
-* ####### Check your API usage for a given period of time
+##### Check your API usage for a given period of time
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -115,7 +115,7 @@ end_date.tm_mday = 12;
 get_api_usage(zb, start_date, end_date, on_success_api_usage, on_error);
 ```
 
-* ####### Validate an email address
+##### Validate an email address
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -131,7 +131,7 @@ char* ip_address = "127.0.0.1";     // The IP Address the email signed up from (
 validate_email(zb, email, ip_address, on_success_validate, on_error);
 ```
 
-* ####### Validate email batch
+##### Validate email batch
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -154,7 +154,7 @@ validate_email_batch(zb, vector, on_success_validate_batch, on_error);
 email_to_validate_vector_free(&vector);
 ```
 
-* ####### Use the Activity API endpoint to gather insights into your subscribers'overall email engagement
+##### Use the Activity API endpoint to gather insights into your subscribers'overall email engagement
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -169,7 +169,7 @@ char* email = "valid@example.com";    // Subscriber email address
 get_activity_data(zb, email, on_success_activity_data, on_error);
 ```
 
-* ####### The sendfile API allows user to send a file for bulk email validation
+##### The sendfile API allows user to send a file for bulk email validation
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -194,7 +194,7 @@ options.remove_duplicate = false;	// Always sent: `true` (the default) removes d
 send_file(zb, file_path, email_address_column, options, on_success_send_file, on_error);
 ```
 
-* ####### The getfile API allows users to get the validation results file for the file been submitted using sendfile API
+##### The getfile API allows users to get the validation results file for the file been submitted using sendfile API
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -231,7 +231,7 @@ If the HTTP status is an error, the body is JSON (any JSON object, whatever its 
 
 `ZBFileStatusResponse` includes `file_phase_2_status` when the API returns it.
 
-* ####### Check the status of a file uploaded via "sendFile" method
+##### Check the status of a file uploaded via "sendFile" method
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -246,7 +246,7 @@ char* file_id = "<FILE_ID>";		// The returned file ID when calling sendfile API
 file_status(zb, file_id, on_success_file_status, on_error);
 ```
 
-* ####### Deletes the file that was submitted using sendfile API. File can be deleted only when its status is _`Complete`_
+##### Deletes the file that was submitted using sendfile API. File can be deleted only when its status is _`Complete`_
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -261,7 +261,7 @@ char* file_id = "<FILE_ID>";		// The returned file ID when calling sendfile API
 delete_file(zb, file_id, on_success_delete_file, on_error);
 ```
 
-* ####### The scoringSendfile API allows user to send a file for bulk email validation
+##### The scoringSendfile API allows user to send a file for bulk email validation
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -281,7 +281,7 @@ options.has_header_row = true;            // If this is `true` the first row is 
 scoring_send_file(zb, file_path, email_address_column, options, on_success_send_file, on_error);
 ```
 
-* ####### The scoringGetFile API allows users to get the validation results file for the file been submitted using scoringSendfile API
+##### The scoringGetFile API allows users to get the validation results file for the file been submitted using scoringSendfile API
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -297,7 +297,7 @@ char* local_download_path = "<FILE_DOWNLOAD_PATH>";  	// The location where the 
 scoring_get_file(zb, file_id, local_download_path, on_success_get_file, on_error);
 ```
 
-* ####### Check the status of a file uploaded via "scoringSendFile" method
+##### Check the status of a file uploaded via "scoringSendFile" method
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));
@@ -312,7 +312,7 @@ char* file_id = "<FILE_ID>";                    // The returned file ID when cal
 scoring_file_status(zb, file_id, on_success_file_status, on_error);
 ```
 
-* ####### Deletes the file that was submitted using scoring scoringSendfile API. File can be deleted only when its status is _`Complete`_
+##### Deletes the file that was submitted using scoring scoringSendfile API. File can be deleted only when its status is _`Complete`_
 ```c
 void on_error(ZBErrorResponse error_response) {
     printf("%s\n\n", zb_error_response_to_string(&error_response));

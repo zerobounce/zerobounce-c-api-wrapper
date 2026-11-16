@@ -8,7 +8,14 @@
 #include "ZeroBounce/ZeroBounceWarmup.h"
 #include "ZeroBounce/zb_internal.h"
 
-#define ZB_WARMUP_DEFAULT_BASE_URL "https://warmup-api.zerobounce.net"
+/* An array, not a macro: the setter tells the default from a copy it owns by
+   address. */
+static const char zb_warmup_default_base_url[] = "https://warmup-api.zerobounce.net";
+#define ZB_WARMUP_DEFAULT_BASE_URL zb_warmup_default_base_url
+
+/* ZeroBounce.c: a download body with nothing in it but whitespace, byte order
+   marks and no-break spaces. */
+bool zb_download_body_is_blank(const char *body);
 #define ZB_WARMUP_BASE_PATH "/api/v1/warmup"
 /* team_id is required by the schema but always replaced with the key's team. */
 #define ZB_WARMUP_ANY_TEAM_ID 1
@@ -66,7 +73,15 @@ void zero_bounce_warmup_initialize(ZeroBounceWarmup *zbw, const char *api_key) {
 
 void zero_bounce_warmup_set_base_url(ZeroBounceWarmup *zbw, const char *url) {
     if (zbw && url && url[0]) {
-        zbw->base_url = url;
+        /* A copy, so the caller's buffer may go; the one it replaces goes. */
+        char *copy = strdup(url);
+        if (!copy) {
+            return;
+        }
+        if (zbw->base_url != zb_warmup_default_base_url) {
+            free((char *)zbw->base_url);
+        }
+        zbw->base_url = copy;
     }
 }
 
@@ -75,6 +90,9 @@ void zero_bounce_warmup_free(ZeroBounceWarmup *zbw) {
         return;
     }
     free(zbw->api_key);
+    if (zbw->base_url != zb_warmup_default_base_url) {
+        free((char *)zbw->base_url);
+    }
     free(zbw);
 }
 
@@ -338,18 +356,16 @@ static void warmup_send(
         /* An error comes back labelled as JSON or HTML, so it is not a file:
            an empty body, a JSON or HTML content type, or a JSON object or
            array, leading whitespace or not. */
-        const char *start = text;
-        while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') {
-            start++;
-        }
-        if (!start[0] || start[0] == '[' || zb_download_body_is_json(start, content_type)) {
+        if (zb_download_body_is_blank(text)) {
+            zb_report_body_error("", http_code, warmup_on_error);
+        } else if (zb_download_body_is_json(text, content_type)) {
             zb_report_body_error(text, http_code, warmup_on_error);
         } else {
             bool saved = true;
             if (download_path && download_path[0]) {
                 /* Moved into place only when complete: a failed write leaves
                    no partial file and keeps a file already at the path. */
-                int write_result = zb_write_file_replacing(download_path, text, strlen(text));
+                int write_result = zb_write_file_replacing(download_path, text, response_data.size);
                 if (write_result == ZB_WRITE_OPEN_FAILED) {
                     saved = false;
                     if (error_callback) {

@@ -12,6 +12,9 @@
 #include "unity.h"
 #include "ZeroBounce/ZeroBounce.h"
 #include "ZeroBounce/zb_internal.h"
+
+/* ZeroBounceTest.c: an absolute path in the downloads directory. */
+char *zb_test_dl(const char *name);
 #include <json.h>
 
 #define OFFLINE_MAX 64
@@ -784,7 +787,7 @@ void test_offline_get_file_options(void) {
     GetFileOptions options = new_get_file_options();
     options.download_type = ZB_DOWNLOAD_TYPE_PHASE_2;
     options.activity_data = 1;
-    get_file_with_options(zb, "file-9", "test/downloads/offline-get.csv", &options, on_get, on_error);
+    get_file_with_options(zb, "file-9", zb_test_dl("offline-get.csv"), &options, on_get, on_error);
     TEST_ASSERT_TRUE(g_success_called);
     OfflineRequest request = only_request();
     TEST_ASSERT_EQUAL_STRING("/v2/getfile", request.path);
@@ -797,7 +800,7 @@ void test_offline_get_file_options(void) {
     GetFileOptions scoring = new_get_file_options();
     scoring.download_type = ZB_DOWNLOAD_TYPE_PHASE_1;
     scoring.activity_data = 1;
-    scoring_get_file_with_options(zb, "file-8", "test/downloads/offline-score.csv", &scoring, on_get, on_error);
+    scoring_get_file_with_options(zb, "file-8", zb_test_dl("offline-score.csv"), &scoring, on_get, on_error);
     request = only_request();
     TEST_ASSERT_EQUAL_STRING("/v2/scoring/getfile", request.path);
     TEST_ASSERT_TRUE(query_value(request.query, "download_type", value, sizeof(value)));
@@ -881,7 +884,7 @@ void test_offline_priority3(void) {
     email_finder_file_status(zb, "fid", on_status, on_error);
     TEST_ASSERT_EQUAL_STRING("/email-finder/filestatus", only_request().path);
     reset_offline();
-    email_finder_get_file(zb, "fid", "test/downloads/finder.csv", on_get, on_error);
+    email_finder_get_file(zb, "fid", zb_test_dl("finder.csv"), on_get, on_error);
     TEST_ASSERT_EQUAL_STRING("/email-finder/getfile", only_request().path);
     reset_offline();
     email_finder_delete_file(zb, "fid", on_delete, on_error);
@@ -898,7 +901,7 @@ void test_offline_priority3(void) {
     domain_search_file_status(zb, "fid", on_status, on_error);
     TEST_ASSERT_EQUAL_STRING("/domain-search/filestatus", only_request().path);
     reset_offline();
-    domain_search_get_file(zb, "fid", "test/downloads/domain.csv", on_get, on_error);
+    domain_search_get_file(zb, "fid", zb_test_dl("domain.csv"), on_get, on_error);
     TEST_ASSERT_EQUAL_STRING("/domain-search/getfile", only_request().path);
     reset_offline();
     domain_search_delete_file(zb, "fid", on_delete, on_error);
@@ -1687,7 +1690,7 @@ void test_offline_redirect_is_not_followed(void) {
 }
 
 void test_offline_streaming_download(void) {
-    const char *path = "test/downloads/offline-stream.csv";
+    const char *path = zb_test_dl("offline-stream.csv");
     reset_offline();
     /* The body goes straight to disk instead of being buffered first. */
     ZeroBounce *zb = client_with("stream-key");
@@ -1820,7 +1823,7 @@ void test_offline_html_200_validate(void) {
 void test_offline_html_200_get_file(void) {
     reset_offline();
     ZeroBounce *zb = client_with("html-200-file");
-    const char *path = "test/downloads/offline-html.csv";
+    const char *path = zb_test_dl("offline-html.csv");
     remove(path);
     get_file(zb, "fid", (char *)path, on_get, on_error);
     TEST_ASSERT_FALSE(g_success_called);
@@ -2051,8 +2054,8 @@ static int file_has(const char *path, const char *expected) {
 
 void test_offline_get_file_writes_without_a_success_callback(void) {
     const char *paths[] = {
-        "test/downloads/nocb-get.csv", "test/downloads/nocb-score.csv",
-        "test/downloads/nocb-finder.csv", "test/downloads/nocb-domain.csv",
+        zb_test_dl("nocb-get.csv"), zb_test_dl("nocb-score.csv"),
+        zb_test_dl("nocb-finder.csv"), zb_test_dl("nocb-domain.csv"),
     };
     ZeroBounce *zb = client_with("nocb");
     for (int i = 0; i < 4; i++) {
@@ -2074,7 +2077,7 @@ void test_offline_get_file_writes_without_a_success_callback(void) {
 void test_offline_get_file_that_cannot_be_written_is_an_error(void) {
     /* A regular file used as a directory: nothing can be created under it,
        whoever runs the test (root included). */
-    const char *blocker = "test/downloads/not-a-directory";
+    const char *blocker = zb_test_dl("not-a-directory");
     char path[128];
     FILE *handle = fopen(blocker, "wb");
     TEST_ASSERT_NOT_NULL(handle);
@@ -2107,11 +2110,11 @@ void test_offline_get_file_json_error_keeps_the_http_status(void) {
     ZeroBounce *zb = client_with("success-false");
     reset_offline();
     g_error_status = -1;
-    get_file(zb, "fid", "test/downloads/json-error.csv", on_get, on_error);
+    get_file(zb, "fid", zb_test_dl("json-error.csv"), on_get, on_error);
     TEST_ASSERT_TRUE(g_error_called);
     TEST_ASSERT_NOT_NULL(strstr(g_error_text, "File cannot be found"));
     TEST_ASSERT_EQUAL_INT(200, (int)g_error_status);
-    TEST_ASSERT_NULL(fopen("test/downloads/json-error.csv", "rb"));
+    TEST_ASSERT_NULL(fopen(zb_test_dl("json-error.csv"), "rb"));
 }
 
 /* A getfile JSON error whose message is a list carries every line of it, joined
@@ -2129,15 +2132,15 @@ void test_offline_get_file_json_error_joins_a_message_list(void) {
     g_mode_body = body;
     g_mode_body_len = strlen(body);
     g_leak_mode = 10;
-    get_file(zb, "fid", "test/downloads/json-list-error.csv", on_get, on_error);
+    get_file(zb, "fid", zb_test_dl("json-list-error.csv"), on_get, on_error);
     g_leak_mode = 0;
     TEST_ASSERT_FALSE(g_success_called);
     TEST_ASSERT_TRUE(g_error_called);
     TEST_ASSERT_EQUAL_INT(200, (int)g_error_status);
     TEST_ASSERT_EQUAL_STRING("File cannot be found.\nCheck the file id.", g_error_text);
-    TEST_ASSERT_NULL(fopen("test/downloads/json-list-error.csv", "rb"));
+    TEST_ASSERT_NULL(fopen(zb_test_dl("json-list-error.csv"), "rb"));
     for (int kind = 0; kind < 6; kind++) {
-        char *path = "test/downloads/json-list-error-kind.csv";
+        char *path = zb_test_dl("json-list-error-kind.csv");
         reset_offline();
         g_mode_body = body;
         g_mode_body_len = strlen(body);
@@ -2222,7 +2225,7 @@ void test_offline_a_json_object_in_place_of_a_file_is_an_error(void) {
                             "{\"Message\":\"File not found\"}", " {\"Error\":\"Invalid API key\"}",
                             "{\"file_id\":\"x\"}"};
     const char *types[] = {"application/json", "text/csv", NULL};
-    const char *path = "test/downloads/offline-json-object.csv";
+    const char *path = zb_test_dl("offline-json-object.csv");
     char message[160];
     ZeroBounce *zb = client_with("json-object-key");
 
@@ -2269,7 +2272,7 @@ void test_offline_an_html_page_in_place_of_a_file_is_an_error(void) {
        nothing is written. A short page without <html> used to be saved. */
     const char *bodies[] = {"<p>Access denied by proxy</p>", "Access denied", "<html><body>x</body></html>"};
     const char *types[] = {"text/html", "TEXT/HTML; charset=UTF-8", "text/csv"};
-    const char *path = "test/downloads/offline-html.csv";
+    const char *path = zb_test_dl("offline-html.csv");
     char message[200];
     ZeroBounce *zb = client_with("html-ct-key");
 
@@ -2317,7 +2320,7 @@ void test_offline_each_html_sniff_marker_rejects_a_download(void) {
         "<HEAD>x@example.com</HEAD>",
         "<Body>x@example.com</Body>",
     };
-    const char *path = "test/downloads/offline-marker.csv";
+    const char *path = zb_test_dl("offline-marker.csv");
     char message[200];
     ZeroBounce *zb = client_with("html-marker-key");
 
@@ -2444,8 +2447,8 @@ void test_offline_a_failed_write_keeps_the_file_already_at_the_path(void) {
        the file into place only when complete. */
     static char long_body[6001];
     const char *bodies[2] = {"email\nkeep-existing@example.com\n", long_body};
-    const char *dir = "test/downloads/keep-existing";
-    const char *path = "test/downloads/keep-existing/result.csv";
+    const char *dir = zb_test_dl("keep-existing");
+    const char *path = zb_test_dl("keep-existing/result.csv");
     int errors[2][DOWNLOAD_KINDS];
     int successes[2][DOWNLOAD_KINDS];
     int entries[2][DOWNLOAD_KINDS];
@@ -2459,7 +2462,7 @@ void test_offline_a_failed_write_keeps_the_file_already_at_the_path(void) {
     memset(long_body, 'a', sizeof(long_body) - 1);
     memcpy(long_body, "email\n", 6);
     long_body[sizeof(long_body) - 1] = '\0';
-    mkdir("test/downloads", 0777);
+    mkdir(zb_test_dl(""), 0777);
     mkdir(dir, 0777);
     empty_dir(dir);
     zero_bounce_set_http_perform_for_test(scripted_perform);
@@ -2556,7 +2559,7 @@ void test_offline_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
        probe (4096 bytes) take its two write paths. */
     static char long_body[6001];
     const char *bodies[2] = {"email\nshort-write@example.com\n", long_body};
-    const char *path = "test/downloads/offline-short-write.csv";
+    const char *path = zb_test_dl("offline-short-write.csv");
     int errors[2][DOWNLOAD_KINDS];
     int successes[2][DOWNLOAD_KINDS];
     int left[2][DOWNLOAD_KINDS];
@@ -2682,7 +2685,7 @@ static const char *g_sweep_expected;
 
 /* Runs every public request function once, then g_sweep_check. */
 static void run_every_call(ZeroBounce *zb) {
-    const char *path = "test/downloads/refused.csv";
+    const char *path = zb_test_dl("refused.csv");
     struct tm day = {0};
     EmailToValidateVector emails = email_to_validate_vector_init();
     ZBEmailToValidate email = {"a@example.com", ""};
@@ -3224,17 +3227,50 @@ static int corpus_body_is_object(const CorpusEntry *entry) {
     return i < entry->len && entry->body[i] == '{';
 }
 
+/* Whether body is an object with nothing in it ({}, { }, {\n}). */
+static int corpus_body_is_empty_object(const CorpusEntry *entry) {
+    size_t i = 0;
+    while (i < entry->len && strchr(" \t\r\n", entry->body[i]) && entry->body[i]) {
+        i++;
+    }
+    if (i >= entry->len || entry->body[i] != '{') {
+        return 0;
+    }
+    for (i++; i < entry->len && strchr(" \t\r\n", entry->body[i]) && entry->body[i]; i++) {
+    }
+    return i < entry->len && entry->body[i] == '}';
+}
+
 /* A typed call hands the caller a parsed struct; a raw-JSON call (on_raw)
    hands over the body as it is. */
 static int is_typed_call(const char *call) {
     return strstr(call, "on_raw") == NULL && !is_download_call(call);
 }
 
+/* The four file status calls: one non-null field a status has is required. */
+static int is_file_status_call(const char *call) {
+    return strstr(call, "file_status(") != NULL;
+}
+
 /* E7: the typed calls that cannot answer without named fields: getcredits
-   (Credits) and validate (address and status). */
+   (Credits), validate (address and status) and a file status (one of the
+   status fields). */
 static int needs_named_fields(const char *call) {
     return strncmp(call, "get_credits(", 12) == 0 || strncmp(call, "validate_email(", 15) == 0 ||
-        strncmp(call, "validate_email_with_options(", 28) == 0;
+        strncmp(call, "validate_email_with_options(", 28) == 0 || is_file_status_call(call);
+}
+
+/* The calls that read a body through zb_read_non_message_json: an empty
+   object is not their result. */
+static int empty_object_is_error(const char *call) {
+    return strncmp(call, "validate_email_batch", 20) == 0 || strstr(call, "send_file(") != NULL ||
+        strstr(call, "delete_file(") != NULL || strncmp(call, "find_email", 10) == 0 ||
+        strncmp(call, "search_domain", 13) == 0 || strncmp(call, "list_s3_files(", 14) == 0 ||
+        strstr(call, "s3_file(") != NULL || strstr(call, "sftp_file(") != NULL ||
+        strncmp(call, "send_list_evaluator_file(", 25) == 0 ||
+        strncmp(call, "send_evaluated_file(", 20) == 0 ||
+        strncmp(call, "send_email_finder_file(", 23) == 0 ||
+        strncmp(call, "send_domain_search_file(", 24) == 0;
 }
 
 static void check_corpus_body(const char *call) {
@@ -3244,7 +3280,8 @@ static void check_corpus_body(const char *call) {
     if ((!g_corpus_entry->accept &&
          !(g_corpus_entry->len == 0 && strncmp(call, "delete_inbox_placement_test(", 28) == 0)) ||
         (g_corpus_entry->accept && is_typed_call(call) && !corpus_body_is_object(g_corpus_entry)) ||
-        (g_corpus_entry->accept && needs_named_fields(call))) {
+        (g_corpus_entry->accept && needs_named_fields(call)) ||
+        (g_corpus_entry->accept && empty_object_is_error(call) && corpus_body_is_empty_object(g_corpus_entry))) {
         /* A REJECT body, or (E7) valid JSON of the wrong shape for a typed
            call (0, "x", [], or an object without the fields getcredits and
            validate need): an API error with status 200, never a result
@@ -3922,6 +3959,13 @@ static void check_null_is_accepted(const char *call) {
     char message[2400];
     if (!is_typed_call(call)) return;
     snprintf(message, sizeof message, "%s with %s: %s", call, g_mode_body, g_error_text);
+    if (is_file_status_call(call)) {
+        /* Every status field is null here: not a status (a file status needs
+           one non-null field), so an error and no result. */
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+        return;
+    }
     TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
     TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
 }
@@ -4572,7 +4616,533 @@ void test_offline_missing_validate_fields_read_as_empty_values(void) {
     reset_offline();
 }
 
+/* ---- depth-first audit 1 (2026-11-16): the behaviour fixes ------------- */
+
+/* One scripted answer to every request: body (len bytes), status and content
+   type. nt_calls counts the requests that reached the transport. */
+static const char *nt_body;
+static size_t nt_len;
+static long nt_status;
+static const char *nt_type;
+static int nt_calls;
+
+static int nt_perform(memory *response_data, long *http_code, char **content_type_out) {
+    nt_calls++;
+    response_data->response = malloc(nt_len + 1);
+    memcpy(response_data->response, nt_body, nt_len);
+    response_data->response[nt_len] = '\0';
+    response_data->size = nt_len;
+    *http_code = nt_status;
+    if (content_type_out) {
+        *content_type_out = nt_type ? strdup(nt_type) : NULL;
+    }
+    return 1;
+}
+
+static void nt_script_n(const char *body, size_t len, long status, const char *type) {
+    reset_offline();
+    zero_bounce_set_http_perform_for_test(nt_perform);
+    nt_body = body;
+    nt_len = len;
+    nt_status = status;
+    nt_type = type;
+    nt_calls = 0;
+}
+
+static void nt_script(const char *body, long status, const char *type) {
+    nt_script_n(body, strlen(body), status, type);
+}
+
+static int nt_contains_ci(const char *text, const char *needle) {
+    size_t n = strlen(needle);
+    for (; *text; text++) {
+        size_t i = 0;
+        while (i < n && text[i] && tolower((unsigned char)text[i]) == tolower((unsigned char)needle[i])) {
+            i++;
+        }
+        if (i == n) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+typedef void (*nt_call_fn)(ZeroBounce *zb);
+
+static void nt_send_file(ZeroBounce *zb) {
+    send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error);
+}
+static void nt_scoring_send_file(ZeroBounce *zb) {
+    scoring_send_file(zb, "email_file.csv", 1, new_send_file_options(), on_send, on_error);
+}
+static void nt_file_status(ZeroBounce *zb) { file_status(zb, "fid", on_status, on_error); }
+static void nt_scoring_file_status(ZeroBounce *zb) { scoring_file_status(zb, "fid", on_status, on_error); }
+static void nt_delete_file(ZeroBounce *zb) { delete_file(zb, "fid", on_delete, on_error); }
+static void nt_scoring_delete_file(ZeroBounce *zb) { scoring_delete_file(zb, "fid", on_delete, on_error); }
+static void nt_batch(ZeroBounce *zb) {
+    EmailToValidateVector emails = email_to_validate_vector_init();
+    ZBEmailToValidate a = {"a@example.com", ""};
+    ZBValidateOptions options = new_validate_options();
+    email_to_validate_vector_append(&emails, a);
+    validate_email_batch_with_options(zb, emails, &options, on_batch, on_error);
+}
+static void nt_list_s3(ZeroBounce *zb) { list_s3_files(zb, NULL, NULL, on_raw, on_error); }
+static void nt_finder_status(ZeroBounce *zb) { email_finder_file_status(zb, "fid", on_status, on_error); }
+static void nt_finder_delete(ZeroBounce *zb) { email_finder_delete_file(zb, "fid", on_delete, on_error); }
+static void nt_validate_s3(ZeroBounce *zb) {
+    ValidateS3FileOptions s3 = new_validate_s3_file_options();
+    s3.file_name = "inbox.csv";
+    s3.return_url = "https://example.com/done";
+    validate_s3_file(zb, &s3, on_send, on_error);
+}
+
+typedef struct {
+    const char *name;
+    nt_call_fn call;
+} NtCall;
+
+/* E3: the five calls (and the scoring forms of the three file ones). */
+static const NtCall nt_five_calls[] = {
+    {"send_file", nt_send_file}, {"scoring_send_file", nt_scoring_send_file},
+    {"file_status", nt_file_status}, {"scoring_file_status", nt_scoring_file_status},
+    {"delete_file", nt_delete_file}, {"scoring_delete_file", nt_scoring_delete_file},
+    {"validate_email_batch_with_options", nt_batch}, {"list_s3_files", nt_list_s3},
+    {"email_finder_file_status", nt_finder_status}, {"email_finder_delete_file", nt_finder_delete},
+    {"validate_s3_file", nt_validate_s3},
+};
+
+void test_offline_an_empty_or_message_only_200_is_an_error_on_the_five_calls(void) {
+    /* HTTP 200 {} / { } / {\n} / {\t} / {"message":..} / {"Message":..} /
+       {"detail":..} is not a result; 202 reports 202. */
+    static const char *const bodies[] = {
+        "{}", "{ }", "{\n}", "{\t}", "{\"message\":\"m\"}", "{\"Message\":\"m\"}", "{\"detail\":\"m\"}"};
+    static const long statuses[] = {200, 202};
+    char message[200];
+    ZeroBounce *zb = client_with("five-calls-key");
+    for (size_t c = 0; c < sizeof(nt_five_calls) / sizeof(nt_five_calls[0]); c++) {
+        for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+            for (size_t s = 0; s < 2; s++) {
+                snprintf(message, sizeof(message), "%s %s HTTP %ld", nt_five_calls[c].name, bodies[b], statuses[s]);
+                nt_script(bodies[b], statuses[s], "application/json");
+                nt_five_calls[c].call(zb);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(1, nt_calls, message);
+                TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[s], (int)g_error_status, message);
+            }
+        }
+    }
+    /* A real answer is still a result. */
+    nt_script("{\"success\":true,\"message\":\"ok\",\"file_id\":\"f\",\"file_status\":\"Complete\"}", 200,
+              "application/json");
+    for (size_t c = 0; c < 6; c++) {
+        nt_script("{\"success\":true,\"message\":\"ok\",\"file_id\":\"f\",\"file_status\":\"Complete\"}", 200,
+                  "application/json");
+        nt_five_calls[c].call(zb);
+        TEST_ASSERT_TRUE_MESSAGE(g_success_called, nt_five_calls[c].name);
+        TEST_ASSERT_FALSE_MESSAGE(g_error_called, nt_five_calls[c].name);
+    }
+    nt_script("{\"email_batch\":[],\"errors\":[]}", 200, "application/json");
+    nt_batch(zb);
+    TEST_ASSERT_TRUE(g_success_called);
+    nt_script("[{\"name\":\"a.csv\"}]", 200, "application/json");
+    nt_list_s3(zb);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    reset_offline();
+}
+
+void test_offline_a_greylist_message_on_validate_stays_a_result(void) {
+    ZeroBounce *zb = client_with("greylist-nt");
+    nt_script("{\"Message\":\"Greylist validation still in progress.\"}", 200, "application/json");
+    validate_email(zb, "a@example.com", "", on_validate_message, on_error);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    reset_offline();
+}
+
+void test_offline_find_email_and_search_domain_refuse_a_message_without_a_result(void) {
+    static const char *const refused[] = {"{}", "{\"message\":\"Invalid domain\",\"domain\":null}",
+                                          "{\"Message\":\"Invalid domain\",\"email\":null,\"domain\":null}"};
+    static const long statuses[] = {200, 202};
+    char message[200];
+    ZeroBounce *zb = client_with("find-nt-key");
+    for (size_t b = 0; b < sizeof(refused) / sizeof(refused[0]); b++) {
+        for (size_t s = 0; s < 2; s++) {
+            snprintf(message, sizeof(message), "find_email %s HTTP %ld", refused[b], statuses[s]);
+            nt_script(refused[b], statuses[s], "application/json");
+            find_email_by_domain_first_name(zb, "example.com", "Ada", on_find, on_error);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[s], (int)g_error_status, message);
+            snprintf(message, sizeof(message), "search_domain %s HTTP %ld", refused[b], statuses[s]);
+            nt_script(refused[b], statuses[s], "application/json");
+            search_domain_by_domain(zb, "example.com", on_domain, on_error);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[s], (int)g_error_status, message);
+        }
+    }
+    /* No message: still a result. A real field beside a message: a result. */
+    nt_script("{\"domain\":null}", 200, "application/json");
+    find_email_by_domain_first_name(zb, "example.com", "Ada", on_find, on_error);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    nt_script("{\"domain\":null}", 200, "application/json");
+    search_domain_by_domain(zb, "example.com", on_domain, on_error);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    nt_script("{\"message\":\"x\",\"email\":\"a@example.com\"}", 200, "application/json");
+    find_email_by_domain_first_name(zb, "example.com", "Ada", on_find, on_error);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    nt_script("{\"message\":\"x\",\"domain\":\"example.com\"}", 200, "application/json");
+    search_domain_by_domain(zb, "example.com", on_domain, on_error);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    reset_offline();
+}
+
+void test_offline_file_status_needs_one_non_null_field_it_has(void) {
+    static const char *const refused[] = {"{\"foo\":1}", "{\"\":\"\"}", "{\"message\":\"m\",\"file_id\":null}"};
+    static const long statuses[] = {200, 202};
+    char message[200];
+    ZeroBounce *zb = client_with("status-nt-key");
+    for (size_t b = 0; b < sizeof(refused) / sizeof(refused[0]); b++) {
+        for (size_t s = 0; s < 2; s++) {
+            snprintf(message, sizeof(message), "file_status %s HTTP %ld", refused[b], statuses[s]);
+            nt_script(refused[b], statuses[s], "application/json");
+            nt_file_status(zb);
+            TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+            TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+            TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[s], (int)g_error_status, message);
+        }
+    }
+    nt_script("{\"file_status\":\"Processing\"}", 200, "application/json");
+    nt_file_status(zb);
+    TEST_ASSERT_TRUE(g_success_called);
+    TEST_ASSERT_FALSE(g_error_called);
+    reset_offline();
+}
+
+void test_offline_a_batch_account_error_carries_the_http_status(void) {
+    static const long statuses[] = {200, 202};
+    ZeroBounce *zb = client_with("batch-status-key");
+    for (size_t s = 0; s < 2; s++) {
+        nt_script("{\"email_batch\":[],\"errors\":[{\"email_address\":\"all\",\"error\":\"Invalid API Key\"}]}",
+                  statuses[s], "application/json");
+        nt_batch(zb);
+        TEST_ASSERT_TRUE(g_error_called);
+        TEST_ASSERT_FALSE(g_success_called);
+        TEST_ASSERT_EQUAL_INT((int)statuses[s], (int)g_error_status);
+        TEST_ASSERT_NOT_NULL(strstr(g_error_text, "Invalid API Key"));
+    }
+    reset_offline();
+}
+
+/* D1/D3: every download refuses a body that is not a file. */
+typedef struct {
+    const char *name;
+    const char *body;
+    size_t len;
+    const char *type;
+    int is_file;
+} NtDownloadCase;
+
+#define NT_B(text) (text), sizeof(text) - 1
+
+static const NtDownloadCase nt_download_cases[] = {
+    {"BOM then {", NT_B("\xEF\xBB\xBF" "{\"a\":1}"), "text/csv", 0},
+    {"BOM then { (not JSON)", NT_B("\xEF\xBB\xBF" "{not json"), "text/csv", 0},
+    {"two BOMs then {", NT_B("\xEF\xBB\xBF\xEF\xBB\xBF" "{\"a\":1}"), "text/csv", 0},
+    {"NBSP then {", NT_B("\xC2\xA0" "{\"a\":1}"), "text/csv", 0},
+    {"NBSP and spaces then {", NT_B(" \xC2\xA0 \t{\"a\":1}"), "text/csv", 0},
+    {"BOM then [", NT_B("\xEF\xBB\xBF" "[1]"), "text/csv", 0},
+    {"bare [", NT_B("[\"error\"]"), "text/csv", 0},
+    {"[ that is not JSON", NT_B("[nope"), "application/octet-stream", 0},
+    {"only BOMs", NT_B("\xEF\xBB\xBF\xEF\xBB\xBF"), "text/csv", 0},
+    {"one BOM", NT_B("\xEF\xBB\xBF"), "application/octet-stream", 0},
+    {"only whitespace", NT_B(" \t\r\n  "), "text/csv", 0},
+    {"only whitespace, BOM and NBSP", NT_B(" \xEF\xBB\xBF\xC2\xA0\n"), "text/csv", 0},
+    {"+json content type", NT_B("email\na@b.c\n"), "application/problem+json", 0},
+    {"vnd +json, upper case", NT_B("email\na@b.c\n"), "Application/VND.API+JSON; charset=utf-8", 0},
+    {"application/json", NT_B("email\na@b.c\n"), "application/json", 0},
+    {"a csv", NT_B("email\na@b.c\n"), "text/csv", 1},
+    {"a csv with a BOM", NT_B("\xEF\xBB\xBF" "email\na@b.c\n"), "text/csv", 1},
+    {"a csv starting with a quote", NT_B("\"email\"\n\"a@b.c\"\n"), "application/octet-stream", 1},
+};
+
+static const char *nt_download_name(int kind) {
+    static const char *names[] = {"get_file", "scoring_get_file", "get_file_streaming",
+                                  "scoring_get_file_streaming", "email_finder_get_file",
+                                  "domain_search_get_file"};
+    return names[kind];
+}
+
+#define NT_OLD_CONTENT "OLD-CONTENT\n"
+
+static void nt_download(int kind, ZeroBounce *zb, char *path) {
+    switch (kind) {
+    case 0: get_file(zb, "fid", path, on_get, on_error); break;
+    case 1: scoring_get_file(zb, "fid", path, on_get, on_error); break;
+    case 2: get_file_streaming(zb, "fid", path, NULL, on_get, on_error); break;
+    case 3: scoring_get_file_streaming(zb, "fid", path, NULL, on_get, on_error); break;
+    case 4: email_finder_get_file(zb, "fid", path, on_get, on_error); break;
+    default: domain_search_get_file(zb, "fid", path, on_get, on_error); break;
+    }
+}
+
+static char *nt_read_file(const char *path, size_t *size) {
+    FILE *handle = fopen(path, "rb");
+    char *data;
+    if (!handle) {
+        return NULL;
+    }
+    data = malloc(65536);
+    *size = fread(data, 1, 65535, handle);
+    fclose(handle);
+    return data;
+}
+
+void test_offline_a_download_that_is_not_a_file_is_an_error_and_writes_nothing(void) {
+    char message[200];
+    char *path = zb_test_dl("audit-download.csv");
+    ZeroBounce *zb = client_with("download-audit-key");
+    for (size_t k = 0; k < sizeof(nt_download_cases) / sizeof(nt_download_cases[0]); k++) {
+        const NtDownloadCase *test_case = &nt_download_cases[k];
+        for (int kind = 0; kind < 6; kind++) {
+            size_t size = 0;
+            char *content;
+            FILE *seed;
+            snprintf(message, sizeof(message), "%s: %s (%s)", nt_download_name(kind),
+                     test_case->name, test_case->type);
+            remove(path);
+            /* A file already there, to be left byte for byte on an error. */
+            seed = fopen(path, "wb");
+            fwrite(NT_OLD_CONTENT, 1, sizeof(NT_OLD_CONTENT) - 1, seed);
+            fclose(seed);
+            nt_script_n(test_case->body, test_case->len, 200, test_case->type);
+            nt_download(kind, zb, path);
+            content = nt_read_file(path, &size);
+            TEST_ASSERT_NOT_NULL_MESSAGE(content, message);
+            if (test_case->is_file) {
+                TEST_ASSERT_FALSE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_TRUE_MESSAGE(g_success_called, message);
+                TEST_ASSERT_EQUAL_UINT_MESSAGE(test_case->len, size, message);
+                TEST_ASSERT_EQUAL_MEMORY_MESSAGE(test_case->body, content, size, message);
+            } else {
+                TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+                TEST_ASSERT_EQUAL_UINT_MESSAGE(sizeof(NT_OLD_CONTENT) - 1, size, message);
+                TEST_ASSERT_EQUAL_MEMORY_MESSAGE(NT_OLD_CONTENT, content, size, message);
+            }
+            free(content);
+            remove(path);
+        }
+    }
+    reset_offline();
+}
+
+/* S1: a URL with a username or password is refused before anything is sent. */
+static const char *const nt_userinfo_urls[] = {
+    "https://api.zerobounce.net@evil.example/v2", "https://@evil.example", "https://:@evil.example",
+    "https://user:pass@evil.example/v2", "https://api.zerobounce.net\\@evil.example/v2",
+};
+
+static void nt_check_userinfo_refused(const char *name, const char *url) {
+    char message[300];
+    snprintf(message, sizeof(message), "%s %s: %s", name, url, g_error_text);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, nt_calls, message);
+    TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+    TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "username or password"), message);
+    TEST_ASSERT_NULL_MESSAGE(strstr(g_error_text, "https:// URL"), message);
+    TEST_ASSERT_NULL_MESSAGE(strstr(g_error_text, "evil.example"), message);
+}
+
+void test_offline_a_url_with_a_username_or_password_is_refused_by_every_setter(void) {
+    ZeroBounce *zb;
+    for (size_t u = 0; u < sizeof(nt_userinfo_urls) / sizeof(nt_userinfo_urls[0]); u++) {
+        const char *url = nt_userinfo_urls[u];
+        zb = client_with("userinfo-key");
+        zero_bounce_set_bulk_api_base_url(zb, url);
+        nt_script("{\"file_status\":\"x\"}", 200, "application/json");
+        nt_file_status(zb);
+        nt_check_userinfo_refused("bulk_api_base_url", url);
+
+        zb = client_with("userinfo-key");
+        zero_bounce_set_bulk_api_scoring_base_url(zb, url);
+        nt_script("{\"file_status\":\"x\"}", 200, "application/json");
+        nt_scoring_file_status(zb);
+        nt_check_userinfo_refused("bulk_api_scoring_base_url", url);
+
+        zb = client_with("userinfo-key");
+        zero_bounce_set_bulk_api_root_url(zb, url);
+        nt_script("[]", 200, "application/json");
+        nt_list_s3(zb);
+        nt_check_userinfo_refused("bulk_api_root_url", url);
+
+        zb = client_with("userinfo-key");
+        zero_bounce_set_list_evaluator_base_url(zb, url);
+        nt_script("{\"file_id\":\"x\"}", 200, "application/json");
+        send_list_evaluator_file(zb, "email_file.csv", 1, on_send, on_error);
+        nt_check_userinfo_refused("list_evaluator_base_url", url);
+
+        zb = client_with("userinfo-key");
+        zero_bounce_set_inbox_placement_base_url(zb, url);
+        nt_script("[]", 200, "application/json");
+        get_inbox_placement_providers(zb, on_raw, on_error);
+        nt_check_userinfo_refused("inbox_placement_base_url", url);
+
+        zb = client_with("userinfo-key");
+        zb->api_base_url = (char *)url;
+        nt_script("{\"Credits\":\"7\"}", 200, "application/json");
+        get_credits(zb, on_credits, on_error);
+        nt_check_userinfo_refused("api_base_url", url);
+        zb->api_base_url = "https://api.zerobounce.net/v2";
+    }
+    /* The loopback exception does not make credentials safe. */
+    zero_bounce_set_transport_for_test(0, 0, true);
+    zb = client_with("userinfo-key");
+    zb->api_base_url = "http://localhost:@evil.example/v2";
+    nt_script("{\"Credits\":\"7\"}", 200, "application/json");
+    get_credits(zb, on_credits, on_error);
+    nt_check_userinfo_refused("api_base_url", "http://localhost:@evil.example/v2");
+    zb->api_base_url = "http://127.0.0.1:@evil.example/v2";
+    nt_script("{\"Credits\":\"7\"}", 200, "application/json");
+    get_credits(zb, on_credits, on_error);
+    nt_check_userinfo_refused("api_base_url", "http://127.0.0.1:@evil.example/v2");
+    zb->api_base_url = "http://localhost:8080/v2";
+    nt_script("{\"Credits\":\"7\"}", 200, "application/json");
+    get_credits(zb, on_credits, on_error);
+    TEST_ASSERT_EQUAL_INT(1, nt_calls);
+    TEST_ASSERT_TRUE(g_success_called);
+    zero_bounce_set_transport_for_test(0, 0, false);
+    zb->api_base_url = "https://api.zerobounce.net/v2";
+    /* An '@' in the path or query is not a username. */
+    zb = client_with("userinfo-key");
+    zero_bounce_set_bulk_api_base_url(zb, "https://bulk.example.test/v2?x=a@b");
+    nt_script("{\"file_status\":\"x\"}", 200, "application/json");
+    nt_file_status(zb);
+    TEST_ASSERT_EQUAL_INT(1, nt_calls);
+    TEST_ASSERT_TRUE(g_success_called);
+    reset_offline();
+}
+
+/* S2: Unicode spaces and invisible characters in a key. */
+static const char *const nt_bad_key_characters[] = {
+    "\xC2\xA0", "\xE2\x80\xA8", "\xE3\x80\x80", "\xE2\x80\x8B", "\xEF\xBB\xBF", "\xE2\x80\xAE", "\xE2\x81\xA6",
+    "\xD8\x80", "\xE0\xA2\x90", "\xE0\xA2\x91", "\xC2\xAD", "\xEF\xBF\xB9", "\xF0\x9D\x85\xB3", "\xE1\xA0\x8B",
+};
+
+void test_offline_a_key_with_a_unicode_space_or_invisible_character_is_refused(void) {
+    char key[64];
+    for (size_t i = 0; i < sizeof(nt_bad_key_characters) / sizeof(nt_bad_key_characters[0]); i++) {
+        ZeroBounce *zb;
+        snprintf(key, sizeof(key), "ab%scd", nt_bad_key_characters[i]);
+        TEST_ASSERT_FALSE_MESSAGE(zb_api_key_is_clean(key), key);
+        zb = new_zero_bounce_instance();
+        zero_bounce_initialize(zb, key);
+        TEST_ASSERT_NULL_MESSAGE(zb->api_key, key);
+        nt_script("{\"Credits\":\"7\"}", 200, "application/json");
+        get_credits(zb, on_credits, on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, nt_calls, key);
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, key);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(g_error_text, "surrounding whitespace or control characters"), key);
+    }
+    /* An ASCII space in the middle, and ordinary non-ASCII text, stay allowed. */
+    TEST_ASSERT_TRUE(zb_api_key_is_clean("ab cd"));
+    TEST_ASSERT_TRUE(zb_api_key_is_clean("ab\xC3\xA9" "cd"));
+    reset_offline();
+}
+
+/* S4/S7: the quote spellings and the case a text body can quote a secret in. */
+static const char *const nt_quote_spellings[] = {
+    "\\u{27}", "\\047", "&APOS;", "&apos;", "&#39;", "\\X27", "\\x27", "\\'", "''",
+};
+
+void test_offline_redaction_decodes_every_quote_spelling_and_ignores_case(void) {
+    const char *secret = "pa'ss-w0rd";
+    char text[200];
+    char *masked;
+    char message[300];
+    for (size_t i = 0; i < sizeof(nt_quote_spellings) / sizeof(nt_quote_spellings[0]); i++) {
+        snprintf(text, sizeof(text), "SMTP login failed for pa%sss-w0rd at host", nt_quote_spellings[i]);
+        masked = zb_mask_secret(strdup(text), secret, "***");
+        snprintf(message, sizeof(message), "%s -> %s", text, masked);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(ZB_SECRET_OMITTED_MESSAGE, masked, message);
+        free(masked);
+    }
+    masked = zb_mask_secret(strdup("login failed: PA'SS-W0RD"), secret, "***");
+    TEST_ASSERT_EQUAL_STRING(ZB_SECRET_OMITTED_MESSAGE, masked);
+    free(masked);
+    masked = zb_mask_secret(strdup("login failed: Pa&#x27;Ss-W0rD"), secret, "***");
+    TEST_ASSERT_EQUAL_STRING(ZB_SECRET_OMITTED_MESSAGE, masked);
+    free(masked);
+    /* Text without the secret is left alone. */
+    masked = zb_mask_secret(strdup("it''s fine: pa&apos;tch"), secret, "***");
+    TEST_ASSERT_EQUAL_STRING("it''s fine: pa&apos;tch", masked);
+    free(masked);
+
+    /* End to end: a text error body on a 400 quoting the client's key. */
+    for (size_t i = 0; i < sizeof(nt_quote_spellings) / sizeof(nt_quote_spellings[0]); i++) {
+        ZeroBounce *zb = client_with("k3y'abc-tail");
+        snprintf(text, sizeof(text), "Bad request, key k3y%sabc-tail rejected", nt_quote_spellings[i]);
+        nt_script(text, 400, "text/plain");
+        get_credits(zb, on_credits, on_error);
+        snprintf(message, sizeof(message), "%s -> %s", text, g_error_text);
+        TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(400, (int)g_error_status, message);
+        TEST_ASSERT_FALSE_MESSAGE(nt_contains_ci(g_error_text, "abc-tail"), message);
+    }
+    {
+        ZeroBounce *zb = client_with("Upper-Key-9x");
+        nt_script("Bad request, key UPPER-KEY-9X rejected", 400, "text/plain");
+        get_credits(zb, on_credits, on_error);
+        TEST_ASSERT_TRUE(g_error_called);
+        TEST_ASSERT_FALSE_MESSAGE(nt_contains_ci(g_error_text, "KEY-9X"), g_error_text);
+    }
+    reset_offline();
+}
+
+/* The setters keep their own copies and free the ones they replace. */
+void test_offline_replacing_a_base_url_twice_uses_the_last_one(void) {
+    ZeroBounce *zb = client_with("setter-key");
+    char url[80];
+    for (int i = 0; i < 3; i++) {
+        snprintf(url, sizeof(url), "https://bulk%d.example.test/v2/", i);
+        zero_bounce_set_bulk_api_base_url(zb, url);
+        snprintf(url, sizeof(url), "https://root%d.example.test/", i);
+        zero_bounce_set_bulk_api_root_url(zb, url);
+        snprintf(url, sizeof(url), "https://score%d.example.test/", i);
+        zero_bounce_set_bulk_api_scoring_base_url(zb, url);
+        snprintf(url, sizeof(url), "https://eval%d.example.test/", i);
+        zero_bounce_set_list_evaluator_base_url(zb, url);
+        snprintf(url, sizeof(url), "https://ipt%d.example.test/", i);
+        zero_bounce_set_inbox_placement_base_url(zb, url);
+    }
+    memset(url, 'X', sizeof(url) - 1);
+    url[sizeof(url) - 1] = '\0';
+    TEST_ASSERT_EQUAL_STRING("https://bulk2.example.test/v2", zb->bulk_api_base_url);
+    TEST_ASSERT_EQUAL_STRING("https://root2.example.test", zb->bulk_api_root_url);
+    TEST_ASSERT_EQUAL_STRING("https://score2.example.test", zb->bulk_api_scoring_base_url);
+    TEST_ASSERT_EQUAL_STRING("https://eval2.example.test", zb->list_evaluator_base_url);
+    TEST_ASSERT_EQUAL_STRING("https://ipt2.example.test", zb->inbox_placement_base_url);
+}
+
 void offline_run_tests(void) {
+    RUN_TEST(test_offline_an_empty_or_message_only_200_is_an_error_on_the_five_calls);
+    RUN_TEST(test_offline_a_greylist_message_on_validate_stays_a_result);
+    RUN_TEST(test_offline_find_email_and_search_domain_refuse_a_message_without_a_result);
+    RUN_TEST(test_offline_file_status_needs_one_non_null_field_it_has);
+    RUN_TEST(test_offline_a_batch_account_error_carries_the_http_status);
+    RUN_TEST(test_offline_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
+    RUN_TEST(test_offline_a_url_with_a_username_or_password_is_refused_by_every_setter);
+    RUN_TEST(test_offline_a_key_with_a_unicode_space_or_invisible_character_is_refused);
+    RUN_TEST(test_offline_redaction_decodes_every_quote_spelling_and_ignores_case);
+    RUN_TEST(test_offline_replacing_a_base_url_twice_uses_the_last_one);
+
     RUN_TEST(test_offline_get_credits);
     RUN_TEST(test_offline_validate_options);
     RUN_TEST(test_offline_validate_post);

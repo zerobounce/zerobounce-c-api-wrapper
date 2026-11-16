@@ -1,5 +1,7 @@
 #include <curl/curl.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "unity.h"
 #include "fff.h"
 
@@ -9,6 +11,26 @@ void offline_run_tests(void);
 void warmup_run_tests(void);
 
 DEFINE_FFF_GLOBALS;
+
+/*
+ * Where the download tests write, as an absolute path derived from this
+ * source file, so the suite passes from any working directory. The directory
+ * is made when missing; the result ends in name and is valid until the sixteen
+ * calls after it.
+ */
+char *zb_test_dl(const char *name) {
+    static char ring[16][1024];
+    static unsigned next;
+    char *out = ring[next++ % 16];
+    const char *file = __FILE__;
+    const char *slash = strrchr(file, '/');
+    size_t dir_len = slash ? (size_t)(slash - file) : 0;
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%.*s%sdownloads", (int)dir_len, slash ? file : "", slash ? "/" : "");
+    mkdir(dir, 0777);
+    snprintf(out, sizeof(ring[0]), "%s/%s", dir, name);
+    return out;
+}
 
 static ZeroBounce* zb;
 static ZBErrorResponse expected_error_response;
@@ -824,7 +846,7 @@ void test_get_file_invalid(void)
 
     expected_error_response = parse_error(response_json);
 
-    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/file.csv", on_success_get_file_invalid, on_error_invalid);
+    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", zb_test_dl("file.csv"), on_success_get_file_invalid, on_error_invalid);
 }
 
 void test_get_file_valid(void)
@@ -838,9 +860,9 @@ void test_get_file_valid(void)
 
     expected_get_file_response = new_zb_get_file_response();
     expected_get_file_response.success = true;
-    expected_get_file_response.local_file_path = "test/downloads/file.csv";
+    expected_get_file_response.local_file_path = zb_test_dl("file.csv");
 
-    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/file.csv", on_success_get_file_valid, on_error_valid);
+    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", zb_test_dl("file.csv"), on_success_get_file_valid, on_error_valid);
 }
 
 void test_get_file_json_error_http_200(void)
@@ -852,7 +874,7 @@ void test_get_file_json_error_http_200(void)
 
     expected_error_response = parse_error("not ready");
 
-    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/file.csv", on_success_get_file_invalid, on_error_invalid);
+    get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", zb_test_dl("file.csv"), on_success_get_file_invalid, on_error_invalid);
 }
 
 void test_get_file_json_indicates_helper(void)
@@ -872,7 +894,7 @@ void test_get_file_with_options_validation(void)
 
     expected_get_file_response = new_zb_get_file_response();
     expected_get_file_response.success = true;
-    expected_get_file_response.local_file_path = "test/downloads/file.csv";
+    expected_get_file_response.local_file_path = zb_test_dl("file.csv");
 
     GetFileOptions opts = new_get_file_options();
     opts.download_type = ZB_DOWNLOAD_TYPE_COMBINED;
@@ -881,7 +903,7 @@ void test_get_file_with_options_validation(void)
     get_file_with_options(
         zb,
         "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
-        "test/downloads/file.csv",
+        zb_test_dl("file.csv"),
         &opts,
         on_success_get_file_valid,
         on_error_valid
@@ -986,7 +1008,7 @@ void test_scoring_get_file_invalid(void)
 
     expected_error_response = parse_error(response_json);
 
-    scoring_get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/scoring_file.csv", on_success_get_file_invalid, on_error_invalid);
+    scoring_get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", zb_test_dl("scoring_file.csv"), on_success_get_file_invalid, on_error_invalid);
 }
 
 void test_scoring_get_file_valid(void)
@@ -1000,9 +1022,9 @@ void test_scoring_get_file_valid(void)
 
     expected_get_file_response = new_zb_get_file_response();
     expected_get_file_response.success = true;
-    expected_get_file_response.local_file_path = "test/downloads/scoring_file.csv";
+    expected_get_file_response.local_file_path = zb_test_dl("scoring_file.csv");
 
-    scoring_get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", "test/downloads/scoring_file.csv", on_success_get_file_valid, on_error_valid);
+    scoring_get_file(zb, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff", zb_test_dl("scoring_file.csv"), on_success_get_file_valid, on_error_valid);
 }
 
 void test_scoring_delete_file_invalid(void)

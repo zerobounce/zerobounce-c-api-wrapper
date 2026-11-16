@@ -22,9 +22,9 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
-          re='^v?[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$'
+          re='^v[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$'
           if [[ ! "$TAG" =~ $re ]]; then
-            echo "Error: the tag input must be a release tag such as v1.2.3."
+            echo "Error: the tag input must be a release tag such as v1.2.3 (with the leading v)."
             exit 1
           fi
 
@@ -36,8 +36,9 @@ jobs:
 
           persist-credentials: false
       - name: Verify tag and project version
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then
             echo "Error: Tag is required."
             exit 1
@@ -70,13 +71,25 @@ jobs:
     needs: [validate-tag]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
-    environment: release
     steps:
-      - name: Checkout tag
+      - name: Checkout validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ github.event.inputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.tag_sha }}
           persist-credentials: false
+
+      - name: Verify checked-out commit
+        env:
+          EXPECTED_SHA: ${{ needs.validate-tag.outputs.tag_sha }}
+        run: |
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "Error: the validated tag commit SHA is empty."
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+            echo "Error: checked-out commit does not match the validated tag commit."
+            exit 1
+          fi
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -109,13 +122,20 @@ jobs:
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+          EXPECTED_SHA: ${{ needs.validate-tag.outputs.tag_sha }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "Error: the validated tag commit SHA is empty."
+            exit 1
+          fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping."
           else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
+              --verify-tag \
+              --target "$EXPECTED_SHA" \
               --generate-notes
           fi

@@ -9,6 +9,13 @@
 #include "ZeroBounce/ZeroBounce.h"
 #include "ZeroBounce/zb_internal.h"
 
+/* ZeroBounce.c: a download body with nothing in it but whitespace, byte order
+   marks and no-break spaces. */
+bool zb_download_body_is_blank(const char *body);
+
+/* ZeroBounce.c: stores a copy of url in the slot and frees the one it replaces. */
+void zb_replace_base_url(const char **slot, const char *url);
+
 static bool p3_is_blank(const char *value);
 static char *p3_escape_path_segment(const char *value);
 
@@ -133,9 +140,10 @@ static void p3_append_optional_bool_form(char **body, size_t *cap, const char *k
     p3_append_form_field(body, cap, key, tri_state ? "true" : "false");
 }
 
-static void p3_send_json_success(
+static void p3_send_json_success_ex(
     memory *response_data,
     long http_code,
+    bool message_only_is_error,
     OnSuccessCallbackRawJson success_callback,
     OnErrorCallback error_callback
 ) {
@@ -155,14 +163,40 @@ static void p3_send_json_success(
             return;
         }
     }
+    if (message_only_is_error) {
+        /* An empty object or one holding nothing but a message key is not a
+           result (HTTP 200 and {} or {"message": ...}). Another kind of JSON
+           value is left to the raw callback, as on the other raw calls. */
+        const char *start = body;
+        while (*start && isspace((unsigned char)*start)) {
+            start++;
+        }
+        if (*start == '{') {
+            json_object *parsed = NULL;
+            if (!zb_read_non_message_json(body, http_code, &parsed, error_callback)) {
+                return;
+            }
+            json_object_put(parsed);
+        }
+    }
     if (success_callback) {
         success_callback(body);
     }
 }
 
-static void p3_raw_json_get(
+static void p3_send_json_success(
+    memory *response_data,
+    long http_code,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_send_json_success_ex(response_data, http_code, false, success_callback, error_callback);
+}
+
+static void p3_raw_json_get_ex(
     ZeroBounce *zb,
     char *url_path,
+    bool message_only_is_error,
     OnSuccessCallbackRawJson success_callback,
     OnErrorCallback error_callback
 ) {
@@ -173,9 +207,18 @@ static void p3_raw_json_get(
         free(url_path);
         return;
     }
-    p3_send_json_success(&response_data, http_code, success_callback, error_callback);
+    p3_send_json_success_ex(&response_data, http_code, message_only_is_error, success_callback, error_callback);
     free(response_data.response);
     free(url_path);
+}
+
+static void p3_raw_json_get(
+    ZeroBounce *zb,
+    char *url_path,
+    OnSuccessCallbackRawJson success_callback,
+    OnErrorCallback error_callback
+) {
+    p3_raw_json_get_ex(zb, url_path, false, success_callback, error_callback);
 }
 
 static void p3_raw_json_form_post(
@@ -206,7 +249,7 @@ static void p3_send_file_json_success(
     OnErrorCallback error_callback
 ) {
     json_object *j_obj = NULL;
-    if (!zb_read_success_json(response_data->response, http_code, &j_obj, error_callback)) {
+    if (!zb_read_non_message_json(response_data->response, http_code, &j_obj, error_callback)) {
         return;
     }
     if (success_callback) {
@@ -433,10 +476,10 @@ static void p3_bulk_root_get_file(
 
     const char *body = response_data.response ? response_data.response : "";
     /* A JSON body, whatever its keys or content type, is the API saying why
-       there is no file. */
+       there is no file; so is a body with nothing in it but whitespace. */
     if (http_code > 299 || zb_body_looks_like_html(body) || zb_content_type_is_html(content_type) ||
-        body[0] == '\0' || zb_download_body_is_json(body, content_type)) {
-        zb_report_body_error(body, http_code, error_callback);
+        zb_download_body_is_blank(body) || zb_download_body_is_json(body, content_type)) {
+        zb_report_body_error(zb_download_body_is_blank(body) ? "" : body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
         /* Moved into place only when complete: a failed write leaves no
@@ -495,7 +538,7 @@ static void p3_bulk_root_file_status(
     }
     {
         json_object *j_obj = NULL;
-        if (zb_read_success_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
+        if (zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
             ZBFileStatusResponse typed_response = zb_file_status_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
@@ -535,7 +578,7 @@ static void p3_bulk_root_delete_file(
     }
     {
         json_object *j_obj = NULL;
-        if (zb_read_success_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
+        if (zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback) && success_callback) {
             ZBDeleteFileResponse typed_response = zb_delete_file_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
@@ -1005,7 +1048,7 @@ void list_s3_files(
     free(api_key_esc);
     free(bucket_esc);
     free(search_esc);
-    p3_raw_json_get(zb, url_path, success_callback, error_callback);
+    p3_raw_json_get_ex(zb, url_path, true, success_callback, error_callback);
 }
 
 void export_s3_file(
@@ -1030,13 +1073,13 @@ void export_s3_file(
 
 void zero_bounce_set_list_evaluator_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->list_evaluator_base_url = zb_normalized_base_url(url);
+        zb_replace_base_url(&zb->list_evaluator_base_url, url);
     }
 }
 
 void zero_bounce_set_inbox_placement_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->inbox_placement_base_url = zb_normalized_base_url(url);
+        zb_replace_base_url(&zb->inbox_placement_base_url, url);
     }
 }
 

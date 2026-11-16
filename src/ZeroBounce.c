@@ -493,18 +493,43 @@ static bool zb_check_validate_batch_timeout(int timeout, OnErrorCallback error_c
 }
 
 
+/* Whether the content type names JSON: application/json, or a structured
+   suffix such as application/problem+json. */
 static bool zb_ct_includes_application_json(const char *content_type) {
     if (!content_type) {
         return false;
     }
     for (const char *p = content_type; *p; p++) {
-        if (zb_strncasecmp(p, "application/json", 16) == 0) {
+        if (zb_strncasecmp(p, "application/json", 16) == 0 || zb_strncasecmp(p, "+json", 5) == 0) {
             return true;
         }
     }
     return false;
 }
 
+/* The start of body past every leading ASCII whitespace byte, UTF-8 byte order
+   mark (EF BB BF) and no-break space (C2 A0), in any order. */
+static const char *zb_download_skip_blank(const char *body) {
+    while (body) {
+        unsigned char c = (unsigned char)body[0];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') {
+            body++;
+        } else if (c == 0xEF && (unsigned char)body[1] == 0xBB && (unsigned char)body[2] == 0xBF) {
+            body += 3;
+        } else if (c == 0xC2 && (unsigned char)body[1] == 0xA0) {
+            body += 2;
+        } else {
+            break;
+        }
+    }
+    return body ? body : "";
+}
+
+/* Whether a download body is nothing but whitespace, byte order marks and
+   no-break spaces: not a file, whatever its content type. */
+bool zb_download_body_is_blank(const char *body) {
+    return zb_download_skip_blank(body)[0] == '\0';
+}
 
 bool zb_get_file_json_indicates_error(const char *body) {
     if (!body) {
@@ -571,10 +596,8 @@ bool zb_download_body_is_json(const char *body, const char *content_type) {
     if (!body) {
         return false;
     }
-    while (*body == ' ' || *body == '\t' || *body == '\n' || *body == '\r') {
-        body++;
-    }
-    return *body == '{';
+    body = zb_download_skip_blank(body);
+    return *body == '{' || *body == '[';
 }
 
 
@@ -716,17 +739,27 @@ static char *zb_build_getfile_url(
 }
 
 
+/* The base URLs a client starts with, as arrays: a setter tells one of these
+   from a copy it made (and must free) by address. */
+static const char zb_default_bulk_api_root_url[] = "https://bulkapi.zerobounce.net";
+static const char zb_default_list_evaluator_base_url[] = "https://bulkapi.zerobounce.net/v2/listevaluator";
+static const char zb_default_inbox_placement_base_url[] = "https://bulkapi.zerobounce.net/api/ipt";
+static const char zb_default_bulk_api_base_url[] = "https://bulkapi.zerobounce.net/v2";
+static const char zb_default_bulk_api_scoring_base_url[] = "https://bulkapi.zerobounce.net/v2/scoring";
+
+static ZeroBounce *zero_bounce_instance = NULL;
+
 ZeroBounce* new_zero_bounce_instance() {
     ZeroBounce* zb = (ZeroBounce*) malloc(sizeof(ZeroBounce));
 
     zb->api_key = NULL;
     zb->api_key_rejected = false;
     zb->api_base_url = "https://api.zerobounce.net/v2";
-    zb->bulk_api_root_url = "https://bulkapi.zerobounce.net";
-    zb->list_evaluator_base_url = "https://bulkapi.zerobounce.net/v2/listevaluator";
-    zb->inbox_placement_base_url = "https://bulkapi.zerobounce.net/api/ipt";
-    zb->bulk_api_base_url = "https://bulkapi.zerobounce.net/v2";
-    zb->bulk_api_scoring_base_url = "https://bulkapi.zerobounce.net/v2/scoring";
+    zb->bulk_api_root_url = zb_default_bulk_api_root_url;
+    zb->list_evaluator_base_url = zb_default_list_evaluator_base_url;
+    zb->inbox_placement_base_url = zb_default_inbox_placement_base_url;
+    zb->bulk_api_base_url = zb_default_bulk_api_base_url;
+    zb->bulk_api_scoring_base_url = zb_default_bulk_api_scoring_base_url;
 
     curl_global_init(CURL_GLOBAL_ALL);
     return zb;
@@ -747,6 +780,26 @@ ZeroBounce* zero_bounce_get_instance() {
  * key stays deferred to zero_bounce_invalid_api_key, which names the call
  * that initializes the client.
  */
+/* Unicode space separators and the invisible format characters: none of them
+   belongs in an API key, and a reader cannot see them in a quoted one. */
+static bool zb_codepoint_is_blank_or_invisible(unsigned long cp) {
+    return (cp >= 0x80 && cp <= 0xA0) ||                 /* C1 controls, no-break space */
+        cp == 0x00AD ||                                   /* soft hyphen */
+        (cp >= 0x0600 && cp <= 0x0605) || cp == 0x061C || cp == 0x06DD || cp == 0x070F ||
+        (cp >= 0x0890 && cp <= 0x0891) || cp == 0x08E2 ||
+        cp == 0x1680 ||                                   /* ogham space mark */
+        (cp >= 0x180B && cp <= 0x180F) ||                 /* Mongolian selectors, vowel separator */
+        (cp >= 0x2000 && cp <= 0x200F) ||                 /* en/em spaces ... zero width, marks */
+        (cp >= 0x2028 && cp <= 0x202F) ||                 /* separators, bidi embeddings, nnbsp */
+        (cp >= 0x205F && cp <= 0x206F) ||                 /* math space, word joiner, isolates */
+        cp == 0x3000 ||                                   /* ideographic space */
+        (cp >= 0xFE00 && cp <= 0xFE0F) ||                 /* variation selectors */
+        cp == 0xFEFF ||                                   /* zero width no-break space, BOM */
+        (cp >= 0xFFF9 && cp <= 0xFFFB) ||                 /* interlinear annotation */
+        (cp >= 0x1D173 && cp <= 0x1D17A) ||               /* musical formatting */
+        cp == 0xE0001 || (cp >= 0xE0020 && cp <= 0xE007F);/* tags */
+}
+
 bool zb_api_key_is_clean(const char *api_key) {
     const char *p;
     if (!api_key || !api_key[0]) {
@@ -756,8 +809,51 @@ bool zb_api_key_is_clean(const char *api_key) {
         isspace((unsigned char)api_key[strlen(api_key) - 1])) {
         return false;
     }
-    for (p = api_key; *p; p++) {
-        if ((unsigned char)*p < 32 || (unsigned char)*p == 127) {
+    for (p = api_key; *p;) {
+        unsigned char c = (unsigned char)*p;
+        unsigned long cp;
+        int extra;
+        int i;
+        if (c < 32 || c == 127) {
+            return false;
+        }
+        if (c < 0x80) {
+            p++;
+            continue;
+        }
+        /* A multi-byte character: decoded, so a Unicode space or an invisible
+           character in the middle of a key is refused as an ASCII control
+           character is. A byte that is not valid UTF-8 is skipped, as the key
+           is sent as it is. */
+        if (c >= 0xF0 && c < 0xF8) {
+            cp = c & 0x07;
+            extra = 3;
+        } else if (c >= 0xE0) {
+            cp = c & 0x0F;
+            extra = 2;
+        } else if (c >= 0xC2) {
+            cp = c & 0x1F;
+            extra = 1;
+        } else {
+            p++;
+            continue;
+        }
+        if (c >= 0xF8) {
+            p++;
+            continue;
+        }
+        for (i = 1; i <= extra; i++) {
+            if (((unsigned char)p[i] & 0xC0) != 0x80) {
+                break;
+            }
+            cp = (cp << 6) | ((unsigned char)p[i] & 0x3F);
+        }
+        if (i <= extra) {
+            p++;
+            continue;
+        }
+        p += extra + 1;
+        if (zb_codepoint_is_blank_or_invisible(cp)) {
             return false;
         }
     }
@@ -819,21 +915,33 @@ char *zb_normalized_base_url(const char *url) {
     return copy;
 }
 
+/* Stores a normalized copy of url in *slot and frees the copy it replaces; a
+   starting default is a literal and is left alone. */
+void zb_replace_base_url(const char **slot, const char *url) {
+    char *copy = zb_normalized_base_url(url);
+    if (*slot != zb_default_bulk_api_root_url && *slot != zb_default_list_evaluator_base_url &&
+        *slot != zb_default_inbox_placement_base_url && *slot != zb_default_bulk_api_base_url &&
+        *slot != zb_default_bulk_api_scoring_base_url) {
+        free((char *)*slot);
+    }
+    *slot = copy;
+}
+
 void zero_bounce_set_bulk_api_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->bulk_api_base_url = zb_normalized_base_url(url);
+        zb_replace_base_url(&zb->bulk_api_base_url, url);
     }
 }
 
 void zero_bounce_set_bulk_api_root_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->bulk_api_root_url = zb_normalized_base_url(url);
+        zb_replace_base_url(&zb->bulk_api_root_url, url);
     }
 }
 
 void zero_bounce_set_bulk_api_scoring_base_url(ZeroBounce *zb, const char *url) {
     if (zb && url) {
-        zb->bulk_api_scoring_base_url = zb_normalized_base_url(url);
+        zb_replace_base_url(&zb->bulk_api_scoring_base_url, url);
     }
 }
 
@@ -853,9 +961,38 @@ static void zb_host_of(const char *url, char *out, size_t out_len) {
     out[i] = '\0';
 }
 
+/* Whether the authority of url (between "://" and the first '/', '?' or '#')
+   holds an '@': a username or password, even an empty one (https://@host,
+   https://:@host). The part before the '@' is what the request would send as
+   credentials while the part after it, not the one a reader sees first, is
+   the host that is contacted. A backslash is not a separator here, so
+   https://host\@evil is refused as well. */
+static bool zb_url_has_userinfo(const char *url) {
+    const char *p = url ? strstr(url, "://") : NULL;
+    if (!p) {
+        return false;
+    }
+    for (p += 3; *p && *p != '/' && *p != '?' && *p != '#'; p++) {
+        if (*p == '@') {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool zb_check_request_url(const char *url, OnErrorCallback error_callback) {
     static int warned_about_region = 0;
     char host[256];
+
+    /* Before the scheme check and the loopback exception: neither makes a
+       URL with credentials in it safe to send to. The text does not quote the
+       URL. */
+    if (zb_url_has_userinfo(url)) {
+        if (error_callback) {
+            error_callback(parse_error("url must not contain a username or password"));
+        }
+        return false;
+    }
 
     bool loopback = s_allow_loopback_http && url &&
         (strncmp(url, "http://127.0.0.1:", 17) == 0 || strncmp(url, "http://localhost:", 17) == 0);
@@ -1194,7 +1331,7 @@ static void send_file_internal(
             zb_report_body_error(response_data.response, http_code, error_callback);
         } else if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             } else {
                 ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
@@ -1317,7 +1454,7 @@ static void send_file_internal(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1379,7 +1516,7 @@ static void file_status_internal(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1482,15 +1619,17 @@ static void get_file_internal(
     /* An HTML page, by its body or its content type, is a proxy or portal
        answering, not the file. */
     if (http_code > 299 || zb_body_looks_like_html(body) || zb_content_type_is_html(content_type) ||
-        body[0] == '\0') {
-        zb_report_body_error(body, http_code, error_callback);
+        zb_download_body_is_blank(body)) {
+        /* A body of nothing but whitespace or byte order marks is an empty
+           one: nothing is written. */
+        zb_report_body_error(zb_download_body_is_blank(body) ? "" : body, http_code, error_callback);
     } else {
         /* The file is written whether or not a success callback was passed. */
         /* A JSON body, whatever its keys or content type, is the API saying
            why there is no file. */
         if (zb_download_body_is_json(body, content_type)) {
             if (error_callback) {
-                char *msg = zb_format_get_file_error_message(body);
+                char *msg = zb_format_get_file_error_message(zb_download_skip_blank(body));
                 /* The API did answer: the status goes with the error. */
                 error_callback(parse_error_with_status(msg ? msg : "", http_code));
                 free(msg);
@@ -1598,7 +1737,7 @@ static void delete_file_internal(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
@@ -1614,6 +1753,59 @@ static void delete_file_internal(
     free(url_path);
     free(response_data.response);
 }
+
+/*
+ * A guessformat answer that carries a (non-null) message key and none of the fields a
+ * result has (each missing or null), such as {"message":"Invalid domain",
+ * "domain":null}, is the API refusing the call, not a result. Reports the
+ * unexpected-shape error with the real status and returns true. A real field
+ * beside the message, or no message at all, is a result.
+ */
+static bool zb_report_message_without_result(
+    json_object *j_obj,
+    const char *const *fields,
+    size_t field_count,
+    long http_code,
+    OnErrorCallback error_callback
+) {
+    static const char *const message_keys[] = {
+        "error", "message", "error_message", "Message", "Error", "detail"
+    };
+    bool has_message = false;
+    size_t i;
+    for (i = 0; i < sizeof(message_keys) / sizeof(message_keys[0]); i++) {
+        json_object *message = NULL;
+        /* A null message is no message: null is never an error on its own. */
+        if (json_object_object_get_ex(j_obj, message_keys[i], &message) && message &&
+            !json_object_is_type(message, json_type_null)) {
+            has_message = true;
+            break;
+        }
+    }
+    if (!has_message) {
+        return false;
+    }
+    for (i = 0; i < field_count; i++) {
+        json_object *value = NULL;
+        if (json_object_object_get_ex(j_obj, fields[i], &value) && value &&
+            !json_object_is_type(value, json_type_null)) {
+            return false;
+        }
+    }
+    if (error_callback) {
+        error_callback(parse_error_with_status(
+            "Unexpected JSON response: a message and none of the result fields.", http_code));
+    }
+    return true;
+}
+
+static const char *const zb_find_email_fields[] = {
+    "email", "email_confidence", "domain", "company_name", "did_you_mean", "failure_reason"
+};
+static const char *const zb_search_domain_fields[] = {
+    "domain", "company_name", "format", "confidence", "did_you_mean", "failure_reason",
+    "other_domain_formats"
+};
 
 static void find_email_internal(
     ZeroBounce* zb,
@@ -1657,6 +1849,13 @@ static void find_email_internal(
         if (success_callback) {
             json_object *j_obj = NULL;
             if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
+                goto cleanup;
+            }
+            if (zb_report_message_without_result(
+                    j_obj, zb_find_email_fields,
+                    sizeof(zb_find_email_fields) / sizeof(zb_find_email_fields[0]),
+                    http_code, error_callback)) {
+                json_object_put(j_obj);
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);
@@ -1710,6 +1909,13 @@ static void search_domain_internal(
         if (success_callback) {
             json_object *j_obj = NULL;
             if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
+                goto cleanup;
+            }
+            if (zb_report_message_without_result(
+                    j_obj, zb_search_domain_fields,
+                    sizeof(zb_search_domain_fields) / sizeof(zb_search_domain_fields[0]),
+                    http_code, error_callback)) {
+                json_object_put(j_obj);
                 goto cleanup;
             }
             ZBDomainSearchResponse response_obj = zb_domain_search_response_from_json(j_obj);
@@ -2249,14 +2455,14 @@ void validate_email_batch_with_options(
     } else {
         if (success_callback) {
             json_object *j_obj = NULL;
-            if (!zb_read_success_json(response_data.response, http_code, &j_obj, error_callback)) {
+            if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
                 goto cleanup;
             }
 
             char *account_error = NULL;
             if (zb_batch_has_account_error(j_obj, &account_error)) {
                 if (error_callback) {
-                    error_callback(parse_error(account_error));
+                    error_callback(parse_error_with_status(account_error, http_code));
                 }
                 free(account_error);
             } else {
@@ -2430,7 +2636,14 @@ static void zb_stream_finish(ZbDownloadStream *stream) {
         return;
     }
     stream->decided = true;
-    if (stream->probe_size == 0 || zb_stream_probe_is_error(stream)) {
+    if (zb_download_body_is_blank(stream->probe)) {
+        /* Nothing, or nothing but whitespace and byte order marks: no file. */
+        stream->probe[0] = '\0';
+        stream->probe_size = 0;
+        stream->rejected = true;
+        return;
+    }
+    if (zb_stream_probe_is_error(stream)) {
         stream->rejected = true;
         return;
     }
@@ -3056,6 +3269,13 @@ void find_email(
         if (success_callback) {
             json_object *j_obj = NULL;
             if (!zb_read_non_message_json(response_data.response, http_code, &j_obj, error_callback)) {
+                goto cleanup;
+            }
+            if (zb_report_message_without_result(
+                    j_obj, zb_find_email_fields,
+                    sizeof(zb_find_email_fields) / sizeof(zb_find_email_fields[0]),
+                    http_code, error_callback)) {
+                json_object_put(j_obj);
                 goto cleanup;
             }
             ZBFindEmailResponse response_obj = zb_find_email_response_from_json(j_obj);

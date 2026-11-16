@@ -18,11 +18,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include(FetchContent)
 
-# Download and build json-c
+# Download and build json-c, pinned to the commit the json-c-0.17-20230812 tag
+# points at.
 FetchContent_Declare(
   json-c
   GIT_REPOSITORY https://github.com/json-c/json-c.git
-  GIT_TAG json-c-0.17-20230812
+  GIT_TAG b4c371fa0cbc4dcbaccc359ce9e957a22988fb34 # json-c-0.17-20230812
 )
 # Download and build libcurl 8.23.0, pinned to the commit the curl-8_23_0 tag
 # points at. NTLM stays off to avoid weak DES crypto in CodeQL/security scans:
@@ -74,20 +75,28 @@ endforeach()
 if(APPLE)
   set(USE_APPLE_SECTRUST ON CACHE BOOL "Use Apple OS-native certificate verification")
 endif()
-# Download and build unity
-FetchContent_Declare(
-  unity
-  GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-  GIT_TAG        v2.5.2
-)
-# Download and build fff
-FetchContent_Declare(
-  fff
-  GIT_REPOSITORY https://github.com/meekrosoft/fff.git
-  GIT_TAG        v1.1
-)
+# The test dependencies, enable_testing() and the test executables are only for
+# this repository's own build: a project that pulls the SDK in with FetchContent
+# does not fetch or build them.
+if(PROJECT_IS_TOP_LEVEL)
+  # Download and build unity
+  FetchContent_Declare(
+    unity
+    GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
+    GIT_TAG        v2.5.2
+  )
+  # Download and build fff
+  FetchContent_Declare(
+    fff
+    GIT_REPOSITORY https://github.com/meekrosoft/fff.git
+    GIT_TAG        v1.1
+  )
+endif()
 
-FetchContent_MakeAvailable(json-c libcurl unity fff)
+FetchContent_MakeAvailable(json-c libcurl)
+if(PROJECT_IS_TOP_LEVEL)
+  FetchContent_MakeAvailable(unity fff)
+endif()
 
 file(GLOB_RECURSE SOURCES "src/*.c")
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
@@ -95,23 +104,25 @@ target_include_directories(${PROJECT_NAME} PUBLIC include ${json-c_SOURCE_DIR})
 
 target_link_libraries(${PROJECT_NAME} PUBLIC json-c libcurl)
 
-enable_testing()
-add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
-target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
-target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
-# The sweep's completeness test reads the public header to list the request
-# functions.
-target_compile_definitions(ZeroBounceTests PRIVATE
-  ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
-  ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
-  ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(PROJECT_IS_TOP_LEVEL)
+  enable_testing()
+  add_executable(ZeroBounceTests test/ZeroBounceTest.c test/OfflineApiTest.c test/OfflineWarmupTest.c)
+  target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} unity)
+  target_include_directories(ZeroBounceTests PRIVATE ${fff_SOURCE_DIR})
+  # The sweep's completeness test reads the public header to list the request
+  # functions.
+  target_compile_definitions(ZeroBounceTests PRIVATE
+    ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
+    ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
+    ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-# The real-transport tests (local socket server: redirects, timeouts) are a
-# separate binary: ZeroBounceTests replaces curl_easy_perform and friends with
-# fff fakes, and on Linux those fakes also replace the library's own calls.
-if(NOT WIN32)
-  add_executable(ZeroBounceTransportTests test/TransportTest.c)
-  target_link_libraries(ZeroBounceTransportTests PRIVATE ${PROJECT_NAME} unity)
+  # The real-transport tests (local socket server: redirects, timeouts) are a
+  # separate binary: ZeroBounceTests replaces curl_easy_perform and friends with
+  # fff fakes, and on Linux those fakes also replace the library's own calls.
+  if(NOT WIN32)
+    add_executable(ZeroBounceTransportTests test/TransportTest.c)
+    target_link_libraries(ZeroBounceTransportTests PRIVATE ${PROJECT_NAME} unity)
+  endif()
 endif()
 
 # The live suite calls the real API and spends credits, so it is opt-in and

@@ -21,6 +21,9 @@
 #include "ZeroBounce/ZeroBounceWarmup.h"
 #include "ZeroBounce/zb_internal.h"
 
+/* ZeroBounceTest.c: an absolute path in the downloads directory. */
+char *zb_test_dl(const char *name);
+
 #define WARMUP_ROOT "https://warmup-api.zerobounce.net/api/v1/warmup"
 
 static char w_url[2048];
@@ -643,7 +646,7 @@ void test_warmup_base_url_trailing_slashes_are_dropped(void) {
 }
 
 void test_warmup_a_download_that_cannot_be_saved_is_not_a_success(void) {
-    const char *blocker = "test/downloads/warmup-not-a-directory";
+    const char *blocker = zb_test_dl("warmup-not-a-directory");
     FILE *handle = fopen(blocker, "wb");
     TEST_ASSERT_NOT_NULL(handle);
     fputs("x", handle);
@@ -653,7 +656,7 @@ void test_warmup_a_download_that_cannot_be_saved_is_not_a_success(void) {
     w_next_type = "text/csv";
     w_next_body = "seed,provider\nseed@example.com,gmail\n";
     ZeroBounceWarmup *zbw = w_client("warm-key");
-    warmup_download_seeds(zbw, "test/downloads/warmup-not-a-directory/seeds.csv", w_on_raw, w_on_error);
+    warmup_download_seeds(zbw, zb_test_dl("warmup-not-a-directory/seeds.csv"), w_on_raw, w_on_error);
     TEST_ASSERT_TRUE(w_error_called);
     TEST_ASSERT_FALSE(w_success_called);
     zero_bounce_warmup_free(zbw);
@@ -664,7 +667,7 @@ void test_warmup_a_failed_write_keeps_the_file_already_at_the_path(void) {
     /* D4: the CSV downloads opened download_path with "wb", so a write that
        failed (a file size limit, a full disk) destroyed a file already there.
        They now write beside it and move the file into place when complete. */
-    const char *path = "test/downloads/warmup-keep-existing.csv";
+    const char *path = zb_test_dl("warmup-keep-existing.csv");
     const char *part_prefix = "warmup-keep-existing.csv.";
     struct rlimit saved;
     struct rlimit tight;
@@ -673,16 +676,16 @@ void test_warmup_a_failed_write_keeps_the_file_already_at_the_path(void) {
     int parts = 0;
     FILE *handle;
 
-    mkdir("test/downloads", 0777);
+    mkdir(zb_test_dl(""), 0777);
     ZeroBounceWarmup *zbw = w_client("warm-key");
     /* Partial files left by an earlier run do not count. */
-    DIR *stale = opendir("test/downloads");
+    DIR *stale = opendir(zb_test_dl(""));
     TEST_ASSERT_NOT_NULL(stale);
     struct dirent *old_entry;
     while ((old_entry = readdir(stale)) != NULL) {
         if (strncmp(old_entry->d_name, part_prefix, strlen(part_prefix)) == 0) {
             char old_path[512];
-            snprintf(old_path, sizeof(old_path), "test/downloads/%s", old_entry->d_name);
+            snprintf(old_path, sizeof(old_path), "%s%s", zb_test_dl(""), old_entry->d_name);
             remove(old_path);
         }
     }
@@ -717,7 +720,7 @@ void test_warmup_a_failed_write_keeps_the_file_already_at_the_path(void) {
             fclose(handle);
         }
         TEST_ASSERT_EQUAL_STRING("OLD", kept[call]);
-        DIR *dir = opendir("test/downloads");
+        DIR *dir = opendir(zb_test_dl(""));
         TEST_ASSERT_NOT_NULL(dir);
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
@@ -748,7 +751,7 @@ void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
     /* A file size limit stops the write part-way, as a full disk would. The
        error was reported, but the first 8 bytes were left on disk looking
        like a result. */
-    const char *path = "test/downloads/warmup-short-write.csv";
+    const char *path = zb_test_dl("warmup-short-write.csv");
     struct rlimit saved;
     struct rlimit tight;
     void (*previous)(int);
@@ -759,7 +762,7 @@ void test_warmup_a_short_write_is_an_error_and_leaves_no_partial_file(void) {
     w_next_type = "text/csv";
     w_next_body = "seed,provider\nseed@example.com,gmail\n";
     ZeroBounceWarmup *zbw = w_client("warm-key");
-    mkdir("test/downloads", 0777);
+    mkdir(zb_test_dl(""), 0777);
     remove(path);
     TEST_ASSERT_EQUAL_INT(0, getrlimit(RLIMIT_FSIZE, &saved));
     tight = saved;
@@ -929,12 +932,12 @@ void test_warmup_csv_downloads_reject_every_non_file_answer(void) {
         "text/csv", "text/csv", "text/csv", "text/csv", "text/csv", "text/html; charset=utf-8",
         "application/json",
     };
-    const char *path = "test/downloads/warmup-nonfile.csv";
+    const char *path = zb_test_dl("warmup-nonfile.csv");
     ZeroBounceWarmup *zbw;
     size_t i;
     int call;
     char message[200];
-    mkdir("test/downloads", 0777);
+    mkdir(zb_test_dl(""), 0777);
     zbw = w_client("warm-key");
     for (i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
         for (call = 0; call < 2; call++) {
@@ -1069,7 +1072,7 @@ void test_warmup_no_error_carries_the_key(void) {
         "Rejected key " W_LEAK_KEY,
         "Bad Request: {\"key\":\"" W_LEAK_KEY_JSON "\",\"k\":\"" W_LEAK_KEY_JSON_PLAIN "\"}",
     };
-    const char *path = "test/downloads/warmup-leak.csv";
+    const char *path = zb_test_dl("warmup-leak.csv");
     size_t i;
     ZeroBounceWarmup *zbw;
     w_reset();
@@ -1107,7 +1110,7 @@ static void w_check_secret_omitted(const char *call) {
    percent-encoded, does not end the decode check. */
 void test_warmup_a_nul_in_the_body_does_not_end_the_redaction_check(void) {
     const char *password = "a b\"c/d+e%f&g=h<i>j'k\\l";
-    const char *path = "test/downloads/warmup-nul.csv";
+    const char *path = zb_test_dl("warmup-nul.csv");
     char encoded[512];
     char body[700];
     ZeroBounceWarmup *zbw;
@@ -1164,7 +1167,7 @@ void test_warmup_no_error_on_a_200_carries_the_key(void) {
         "{\"message\":\"Invalid API-Key " W_LEAK_KEY_JSON_PLAIN " " W_LEAK_KEY_ESCAPED " sekrit\"}",
         "{\"detail\":\"Invalid API-Key " W_LEAK_KEY_JSON " " W_LEAK_KEY_ESCAPED " sekrit\"}",
     };
-    const char *path = "test/downloads/warmup-leak200.csv";
+    const char *path = zb_test_dl("warmup-leak200.csv");
     size_t i;
     ZeroBounceWarmup *zbw;
     w_reset();
@@ -1194,7 +1197,7 @@ static void w_check_error_200(const char *call) {
    answer, even when its body parses as JSON: every call reports an error with
    the status, and the CSV downloads write nothing. */
 void test_warmup_a_text_html_200_is_an_error_on_every_call(void) {
-    const char *path = "test/downloads/warmup-html-ct.csv";
+    const char *path = zb_test_dl("warmup-html-ct.csv");
     ZeroBounceWarmup *zbw;
     w_reset();
     zbw = w_client("warm-key");
@@ -1230,7 +1233,7 @@ void test_warmup_a_non_json_200_is_an_error_on_every_json_call(void) {
         "not json", "hello", "email,status\na@example.com,valid\n", "{\"a\":1", "[1,2", "{\"a\":1} trailing",
     };
     static const char *const types[] = {"application/json", "text/plain", "text/csv"};
-    const char *path = "test/downloads/warmup-non-json.csv";
+    const char *path = zb_test_dl("warmup-non-json.csv");
     size_t i;
     size_t t;
     ZeroBounceWarmup *zbw;
@@ -1303,8 +1306,8 @@ void test_warmup_every_request_function_is_in_the_sweep(void) {
     zbw = w_client("warm-key");
     w_sweep_check = w_check_sent;
     w_swept_count = 0;
-    w_run_every_call(zbw, "test/downloads/warmup-sweep.csv");
-    remove("test/downloads/warmup-sweep.csv");
+    w_run_every_call(zbw, zb_test_dl("warmup-sweep.csv"));
+    remove(zb_test_dl("warmup-sweep.csv"));
     zero_bounce_warmup_free(zbw);
 
     declared = offline_count_swept_request_functions(header, w_was_swept);
@@ -1344,7 +1347,7 @@ static void w_check_corpus_body(const char *call) {
 }
 
 void test_warmup_every_json_call_takes_only_strict_json(void) {
-    const char *path = "test/downloads/warmup-corpus.csv";
+    const char *path = zb_test_dl("warmup-corpus.csv");
     int count = offline_corpus_count();
     int i;
     ZeroBounceWarmup *zbw;
@@ -1399,7 +1402,7 @@ static void w_fuzz_body(char *body, size_t size, const char *spelling, int round
 }
 
 void test_warmup_redaction_is_closed_under_encoding(void) {
-    const char *path = "test/downloads/warmup-fuzz.csv";
+    const char *path = zb_test_dl("warmup-fuzz.csv");
     unsigned seed = 20261113u;
     static char body[4096];
     int round;
@@ -1435,7 +1438,197 @@ void test_warmup_redaction_is_closed_under_encoding(void) {
     zero_bounce_warmup_free(zbw);
 }
 
+/* ---- depth-first audit 1 (2026-11-16): the behaviour fixes ------------- */
+
+typedef struct {
+    const char *name;
+    const char *body;
+    size_t len;
+    const char *type;
+    int is_file;
+} WAuditCase;
+
+#define W_B(text) (text), sizeof(text) - 1
+
+static const WAuditCase w_audit_cases[] = {
+    {"BOM then {", W_B("\xEF\xBB\xBF" "{\"a\":1}"), "text/csv", 0},
+    {"BOM then { (not JSON)", W_B("\xEF\xBB\xBF" "{not json"), "text/csv", 0},
+    {"NBSP then {", W_B("\xC2\xA0" "{\"a\":1}"), "text/csv", 0},
+    {"BOM then [", W_B("\xEF\xBB\xBF" "[1]"), "text/csv", 0},
+    {"bare [", W_B("[\"error\"]"), "text/csv", 0},
+    {"only BOMs", W_B("\xEF\xBB\xBF\xEF\xBB\xBF"), "text/csv", 0},
+    {"only whitespace", W_B(" \t\r\n  "), "text/csv", 0},
+    {"+json content type", W_B("email\na@b.c\n"), "application/problem+json", 0},
+    {"a csv", W_B("email\na@b.c\n"), "text/csv", 1},
+    {"a csv with a BOM", W_B("\xEF\xBB\xBF" "email\na@b.c\n"), "text/csv", 1},
+    {"a csv with a NUL", W_B("a,b\0c,d\n"), "text/csv", 1},
+};
+
+#define W_OLD_CONTENT "OLD-CONTENT\n"
+
+void test_warmup_a_download_that_is_not_a_file_is_an_error_and_writes_nothing(void) {
+    char *path = zb_test_dl("warmup-audit.csv");
+    char message[200];
+    ZeroBounceWarmup *zbw = w_client("warm-audit-key");
+    for (size_t k = 0; k < sizeof(w_audit_cases) / sizeof(w_audit_cases[0]); k++) {
+        const WAuditCase *test_case = &w_audit_cases[k];
+        for (int which = 0; which < 2; which++) {
+            FILE *handle;
+            char content[256];
+            size_t size;
+            snprintf(message, sizeof(message), "%s: %s (%s)", which ? "statistics" : "seeds", test_case->name,
+                     test_case->type);
+            remove(path);
+            handle = fopen(path, "wb");
+            fwrite(W_OLD_CONTENT, 1, sizeof(W_OLD_CONTENT) - 1, handle);
+            fclose(handle);
+            w_reset();
+            w_next_body = test_case->body;
+            w_next_len = test_case->len;
+            w_next_type = test_case->type;
+            if (which) {
+                warmup_download_statistics(zbw, "sender@example.com", path, w_on_raw, w_on_error);
+            } else {
+                warmup_download_seeds(zbw, path, w_on_raw, w_on_error);
+            }
+            handle = fopen(path, "rb");
+            TEST_ASSERT_NOT_NULL_MESSAGE(handle, message);
+            size = fread(content, 1, sizeof(content), handle);
+            fclose(handle);
+            if (test_case->is_file) {
+                TEST_ASSERT_FALSE_MESSAGE(w_error_called, message);
+                TEST_ASSERT_TRUE_MESSAGE(w_success_called, message);
+                /* The whole body, a NUL byte included. */
+                TEST_ASSERT_EQUAL_UINT_MESSAGE(test_case->len, size, message);
+                TEST_ASSERT_EQUAL_MEMORY_MESSAGE(test_case->body, content, size, message);
+            } else {
+                TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+                TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)w_status, message);
+                TEST_ASSERT_EQUAL_UINT_MESSAGE(sizeof(W_OLD_CONTENT) - 1, size, message);
+                TEST_ASSERT_EQUAL_MEMORY_MESSAGE(W_OLD_CONTENT, content, size, message);
+            }
+            remove(path);
+        }
+    }
+    w_reset();
+    zero_bounce_warmup_free(zbw);
+}
+
+void test_warmup_a_url_with_a_username_or_password_is_refused(void) {
+    static const char *const urls[] = {
+        "https://warmup-api.zerobounce.net@evil.example", "https://@evil.example", "https://:@evil.example",
+        "https://user:pass@evil.example/", "http://localhost:@evil.example/",
+    };
+    char message[300];
+    for (size_t u = 0; u < sizeof(urls) / sizeof(urls[0]); u++) {
+        ZeroBounceWarmup *zbw = w_client("warm-userinfo-key");
+        /* The loopback exception must not pass a URL that has credentials. */
+        zero_bounce_set_transport_for_test(0, 0, true);
+        w_reset();
+        zero_bounce_warmup_set_base_url(zbw, urls[u]);
+        warmup_list_sending_accounts(zbw, w_on_raw, w_on_error);
+        zero_bounce_set_transport_for_test(0, 0, false);
+        snprintf(message, sizeof(message), "%s: %s", urls[u], w_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, w_requests, message);
+        TEST_ASSERT_TRUE_MESSAGE(w_error_called, message);
+        TEST_ASSERT_FALSE_MESSAGE(w_success_called, message);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "username or password"), message);
+        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, "https:// URL"), message);
+        TEST_ASSERT_NULL_MESSAGE(strstr(w_error, "evil.example"), message);
+        zero_bounce_warmup_free(zbw);
+    }
+    w_reset();
+}
+
+void test_warmup_the_base_url_is_copied(void) {
+    char url[] = "https://warmup.example.test";
+    ZeroBounceWarmup *zbw = w_client("warm-copy-key");
+    w_reset();
+    zero_bounce_warmup_set_base_url(zbw, url);
+    /* The caller's buffer is reused: the client must not read it again. */
+    memset(url, 'X', sizeof(url) - 1);
+    warmup_list_sending_accounts(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_EQUAL_STRING("https://warmup.example.test/api/v1/warmup/sending-accounts", w_url);
+    /* Replacing it twice keeps the last one. */
+    zero_bounce_warmup_set_base_url(zbw, "https://second.example.test/");
+    zero_bounce_warmup_set_base_url(zbw, "https://third.example.test/");
+    warmup_list_sending_accounts(zbw, w_on_raw, w_on_error);
+    TEST_ASSERT_EQUAL_STRING("https://third.example.test/api/v1/warmup/sending-accounts", w_url);
+    zero_bounce_warmup_free(zbw);
+}
+
+void test_warmup_a_key_with_a_unicode_space_or_invisible_character_is_refused(void) {
+    static const char *const characters[] = {
+        "\xC2\xA0", "\xE2\x80\xA8", "\xE3\x80\x80", "\xE2\x80\x8B", "\xEF\xBB\xBF", "\xE2\x80\xAE", "\xE2\x81\xA6",
+        "\xD8\x80", "\xE0\xA2\x90", "\xE0\xA2\x91", "\xC2\xAD", "\xEF\xBF\xB9", "\xF0\x9D\x85\xB3", "\xE1\xA0\x8B",
+    };
+    char key[64];
+    for (size_t i = 0; i < sizeof(characters) / sizeof(characters[0]); i++) {
+        ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+        snprintf(key, sizeof(key), "ab%scd", characters[i]);
+        w_reset();
+        zero_bounce_warmup_initialize(zbw, key);
+        TEST_ASSERT_NULL_MESSAGE(zbw->api_key, key);
+        warmup_list_sending_accounts(zbw, w_on_raw, w_on_error);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, w_requests, key);
+        TEST_ASSERT_TRUE_MESSAGE(w_error_called, key);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "surrounding whitespace or control characters"), key);
+        zero_bounce_warmup_free(zbw);
+    }
+    {
+        ZeroBounceWarmup *zbw = new_zero_bounce_warmup_instance();
+        zero_bounce_warmup_initialize(zbw, "ab cd");
+        TEST_ASSERT_NOT_NULL(zbw->api_key);
+        zero_bounce_warmup_free(zbw);
+    }
+}
+
+void test_warmup_redaction_decodes_every_quote_spelling_and_ignores_case(void) {
+    static const char *const spellings[] = {
+        "\\u{27}", "\\047", "&APOS;", "&apos;", "&#39;", "\\X27", "\\x27", "\\'", "''",
+    };
+    char body[400];
+    ZeroBounceWarmup *zbw = w_client("Warm-Key-77a");
+    for (size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); i++) {
+        w_reset();
+        snprintf(body, sizeof(body), "SMTP login failed: user smtp%suser password pa%sss-w0rd", spellings[i],
+                 spellings[i]);
+        w_next_status = 500;
+        w_next_type = "text/plain";
+        w_next_body = body;
+        warmup_test_smtp_configuration(zbw, "sender@example.com", "smtp'user", "pa'ss-w0rd",
+                                       "smtp.example.com", 587, w_on_raw, w_on_error);
+        TEST_ASSERT_TRUE_MESSAGE(w_error_called, body);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(500, (int)w_status, body);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "omitted because it contained a credential"), w_error);
+    }
+    /* An upper-cased echo of the key, the SMTP user name and the password. */
+    {
+        static const char *const echoes[] = {
+            "Rejected key WARM-KEY-77A", "SMTP login failed for SMTP-USER@EXAMPLE.TEST",
+            "SMTP login failed: PASS-W0RD-ZZ"};
+        for (size_t i = 0; i < 3; i++) {
+            w_reset();
+            w_next_status = 500;
+            w_next_type = "text/plain";
+            w_next_body = echoes[i];
+            warmup_test_smtp_configuration(zbw, "sender@example.com", "smtp-user@example.test", "pass-w0rd-zz",
+                                           "smtp.example.com", 587, w_on_raw, w_on_error);
+            TEST_ASSERT_TRUE_MESSAGE(w_error_called, echoes[i]);
+            TEST_ASSERT_NOT_NULL_MESSAGE(strstr(w_error, "omitted because it contained a credential"), w_error);
+        }
+    }
+    zero_bounce_warmup_free(zbw);
+}
+
 void warmup_run_tests(void) {
+    RUN_TEST(test_warmup_a_download_that_is_not_a_file_is_an_error_and_writes_nothing);
+    RUN_TEST(test_warmup_a_url_with_a_username_or_password_is_refused);
+    RUN_TEST(test_warmup_the_base_url_is_copied);
+    RUN_TEST(test_warmup_a_key_with_a_unicode_space_or_invisible_character_is_refused);
+    RUN_TEST(test_warmup_redaction_decodes_every_quote_spelling_and_ignores_case);
+
     RUN_TEST(test_warmup_api_key_header_and_own_host);
     RUN_TEST(test_warmup_uninitialized_sends_nothing);
     RUN_TEST(test_warmup_reads_use_the_documented_paths);

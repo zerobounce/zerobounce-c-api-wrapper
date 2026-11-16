@@ -287,16 +287,112 @@ static char *zb_json_unescape_view(const char *text, size_t length, size_t *out_
     return out;
 }
 
+/* The value of the hex digits at text (at most max_digits, their count in
+   *digits), or -1 when there are none. */
+static long zb_hex_run(const char *text, const char *end, int max_digits, int *digits) {
+    long value = 0;
+    int n = 0;
+    while (text + n < end && n < max_digits && zb_hex_value(text[n]) >= 0) {
+        value = value * 16 + zb_hex_value(text[n]);
+        n++;
+    }
+    *digits = n;
+    return n ? value : -1;
+}
+
+/* text (length bytes) with the character spellings a body can quote a secret
+   in undone: \u{27}, \x27, \X27, a backslash and exactly three octal digits
+   (\047), \' , &#39; and &#x27; (any digits), &apos; in any case, and a
+   doubled '' for a single quote. Anything else is kept. A decoded NUL stays a
+   byte, so the view's length is in *out_length. The caller owns it. */
+static char *zb_spelling_decode_view(const char *text, size_t length, size_t *out_length) {
+    char *out = malloc(length + 1);
+    char *dst = out;
+    const char *end = text + length;
+    if (!out) {
+        return NULL;
+    }
+    while (text < end) {
+        long cp = -1;
+        size_t used = 0;
+        int digits;
+        if (text[0] == '\\' && end - text >= 2) {
+            if (text[1] == 'u' && end - text >= 3 && text[2] == '{') {
+                cp = zb_hex_run(text + 3, end, 6, &digits);
+                if (cp >= 0 && cp <= 0x10FFFF && text + 3 + digits < end && text[3 + digits] == '}') {
+                    used = 4 + (size_t)digits;
+                } else {
+                    cp = -1;
+                }
+            } else if ((text[1] == 'x' || text[1] == 'X') && end - text >= 4 &&
+                       zb_hex_value(text[2]) >= 0 && zb_hex_value(text[3]) >= 0) {
+                cp = zb_hex_value(text[2]) * 16 + zb_hex_value(text[3]);
+                used = 4;
+            } else if (end - text >= 4 && text[1] >= '0' && text[1] <= '3' &&
+                       text[2] >= '0' && text[2] <= '7' && text[3] >= '0' && text[3] <= '7') {
+                cp = (text[1] - '0') * 64 + (text[2] - '0') * 8 + (text[3] - '0');
+                used = 4;
+            } else if (text[1] == '\'') {
+                cp = '\'';
+                used = 2;
+            }
+        } else if (text[0] == '&' && end - text >= 4 && text[1] == '#') {
+            const char *q = text + 2;
+            long value = -1;
+            int n = 0;
+            if (*q == 'x' || *q == 'X') {
+                q++;
+                value = zb_hex_run(q, end, 6, &n);
+            } else {
+                value = 0;
+                while (q + n < end && n < 7 && q[n] >= '0' && q[n] <= '9') {
+                    value = value * 10 + (q[n] - '0');
+                    n++;
+                }
+                if (!n) {
+                    value = -1;
+                }
+            }
+            if (value >= 0 && value <= 0x10FFFF && q + n < end && q[n] == ';') {
+                cp = value;
+                used = (size_t)(q + n + 1 - text);
+            }
+        } else if (text[0] == '&' && end - text >= 6 && strncasecmp(text + 1, "apos;", 5) == 0) {
+            cp = '\'';
+            used = 6;
+        } else if (text[0] == '\'' && end - text >= 2 && text[1] == '\'') {
+            cp = '\'';
+            used = 2;
+        }
+        if (cp >= 0 && used) {
+            dst = zb_put_utf8(dst, (unsigned long)cp);
+            text += used;
+        } else {
+            *dst++ = *text++;
+        }
+    }
+    *dst = '\0';
+    *out_length = (size_t)(dst - out);
+    return out;
+}
+
 /* Whether needle (a C string) occurs in the length bytes at text, NUL bytes
-   in text included. */
+   in text included, ignoring ASCII case: an upper-cased echo of a secret is
+   still the secret. */
 static bool zb_bytes_contain(const char *text, size_t length, const char *needle) {
     size_t needle_length = strlen(needle);
     size_t i;
+    size_t k;
     if (needle_length == 0) {
         return true;
     }
     for (i = 0; i + needle_length <= length; i++) {
-        if (text[i] == needle[0] && memcmp(text + i, needle, needle_length) == 0) {
+        for (k = 0; k < needle_length; k++) {
+            if (tolower((unsigned char)text[i + k]) != tolower((unsigned char)needle[k])) {
+                break;
+            }
+        }
+        if (k == needle_length) {
             return true;
         }
     }
@@ -311,8 +407,8 @@ static bool zb_bytes_contain(const char *text, size_t length, const char *needle
  * search.
  */
 static bool zb_secret_in_decoded_views(const char *text, size_t length, const char *secret, int layers) {
-    char *views[3];
-    size_t lengths[3] = {0, 0, 0};
+    char *views[4];
+    size_t lengths[4] = {0, 0, 0, 0};
     bool found = false;
     int i;
     if (zb_bytes_contain(text, length, secret)) {
@@ -324,7 +420,8 @@ static bool zb_secret_in_decoded_views(const char *text, size_t length, const ch
     views[0] = zb_url_decode_view(text, length, false, &lengths[0]);
     views[1] = zb_url_decode_view(text, length, true, &lengths[1]);
     views[2] = zb_json_unescape_view(text, length, &lengths[2]);
-    for (i = 0; i < 3; i++) {
+    views[3] = zb_spelling_decode_view(text, length, &lengths[3]);
+    for (i = 0; i < 4; i++) {
         if (!views[i]) {
             /* Out of memory: assume the worst. */
             found = true;
@@ -787,17 +884,14 @@ bool zb_error_only_body(const char *body) {
     return found;
 }
 
-/* An object with no "success" field, at least one key, and only message keys.
-   The values do not matter: a string, a blank, null or a list is a message. */
+/* An object with no "success" field and only message keys; an empty object
+   has none, so it is message-only too. The values do not matter: a string, a
+   blank, null or a list is a message. */
 static bool zb_message_only_body(const char *body) {
     static const char *const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
     json_object *parsed = zb_parse_object_without_success(body);
     bool only_messages = true;
     if (!parsed) {
-        return false;
-    }
-    if (json_object_object_length(parsed) == 0) {
-        json_object_put(parsed);
         return false;
     }
     json_object_object_foreach(parsed, key, value) {
@@ -1189,7 +1283,20 @@ bool zb_read_non_message_json(const char *body, long status_code, json_object **
         if (out) {
             *out = NULL;
         }
-        zb_report_body_error(body, status_code, error_callback);
+        json_object *parsed = zb_parse_object_without_success(body);
+        bool empty = parsed && json_object_object_length(parsed) == 0;
+        if (parsed) {
+            json_object_put(parsed);
+        }
+        if (empty) {
+            /* {} has no message to report. */
+            if (error_callback) {
+                error_callback(parse_error_with_status(
+                    "Unexpected JSON response: an empty object.", status_code));
+            }
+        } else {
+            zb_report_body_error(body, status_code, error_callback);
+        }
         return false;
     }
     return zb_read_success_json(body, status_code, out, error_callback);

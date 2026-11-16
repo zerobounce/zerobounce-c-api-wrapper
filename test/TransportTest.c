@@ -28,6 +28,22 @@
 #include "ZeroBounce/ZeroBounceWarmup.h"
 #include "ZeroBounce/zb_internal.h"
 
+/* The downloads directory as an absolute path derived from this file, so the
+   suite passes from any working directory. */
+static char *zb_test_dl(const char *name) {
+    static char ring[16][1024];
+    static unsigned next;
+    char *out = ring[next++ % 16];
+    const char *file = __FILE__;
+    const char *slash = strrchr(file, '/');
+    size_t dir_len = slash ? (size_t)(slash - file) : 0;
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%.*s%sdownloads", (int)dir_len, slash ? file : "", slash ? "/" : "");
+    mkdir(dir, 0777);
+    snprintf(out, sizeof(ring[0]), "%s/%s", dir, name);
+    return out;
+}
+
 /* A stalled connection is closed by the server itself after this long, so a
    request without a timeout still comes back (late) instead of hanging. */
 #define T_STALL_MS 4000
@@ -321,7 +337,7 @@ static void t_call_path(int index, ZeroBounce *zb, ZeroBounceWarmup *zbw) {
     EmailFinderSendFileOptions finder = new_email_finder_send_file_options();
     EmailToValidateVector emails;
     ZBEmailToValidate email = {"a@example.com", ""};
-    const char *path = "test/downloads/transport.csv";
+    const char *path = zb_test_dl("transport.csv");
 
     finder.first_name_column = 2;
     switch (index) {
@@ -420,7 +436,7 @@ void test_transport_every_path_has_a_connect_timeout(void) {
 void test_transport_a_downloaded_file_is_saved(void) {
     /* Each getfile, over the real transport, with a Content-Type header and
        no success callback. */
-    const char *path = "test/downloads/transport-saved.csv";
+    const char *path = zb_test_dl("transport-saved.csv");
     TServer server;
     char message[32];
     zero_bounce_set_http_perform_for_test(NULL);
@@ -464,7 +480,7 @@ static void t_download(int kind, ZeroBounce *zb, const char *path) {
 }
 
 static void t_expect_no_download(int mode, long status) {
-    const char *path = "test/downloads/transport-not-saved.csv";
+    const char *path = zb_test_dl("transport-not-saved.csv");
     TServer server;
     char message[48];
     zero_bounce_set_http_perform_for_test(NULL);
@@ -626,13 +642,13 @@ void test_transport_a_failed_download_keeps_the_file_already_there(void) {
        streaming download starts writing -- leaves it as it was and leaves no
        other file behind. The streaming download used to delete it. With no
        earlier file, nothing is left at all. */
-    const char *dir = "test/downloads/transport-keep";
-    const char *path = "test/downloads/transport-keep/result.csv";
+    const char *dir = zb_test_dl("transport-keep");
+    const char *path = zb_test_dl("transport-keep/result.csv");
     const char *previous = "email\nprevious@example.com\n";
     const int modes[] = {-1, 3, 5, 8, 9};
     char message[384];
     char listing[256];
-    mkdir("test/downloads", 0777);
+    mkdir(zb_test_dl(""), 0777);
     mkdir(dir, 0777);
     t_clear_dir(dir);
     for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
@@ -690,12 +706,12 @@ void test_transport_a_failed_download_keeps_the_file_already_there(void) {
 }
 
 void test_transport_a_download_replaces_the_file_already_there(void) {
-    const char *dir = "test/downloads/transport-replace";
-    const char *path = "test/downloads/transport-replace/result.csv";
+    const char *dir = zb_test_dl("transport-replace");
+    const char *path = zb_test_dl("transport-replace/result.csv");
     char message[320];
     char listing[256];
     TServer server;
-    mkdir("test/downloads", 0777);
+    mkdir(zb_test_dl(""), 0777);
     mkdir(dir, 0777);
     t_clear_dir(dir);
     zero_bounce_set_http_perform_for_test(NULL);

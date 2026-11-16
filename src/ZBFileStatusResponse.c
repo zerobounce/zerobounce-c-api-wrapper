@@ -1,8 +1,10 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "ZeroBounce/ZBFileStatusResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 ZBFileStatusResponse new_zb_file_status_response() {
     ZBFileStatusResponse response;
@@ -74,8 +76,31 @@ char* zb_file_status_response_to_string(ZBFileStatusResponse* response) {
     return buffer;
 }
 
+/* Whether the object holds at least one non-null field a file status has. */
+static bool zb_file_status_has_known_field(const json_object *j) {
+    static const char *const keys[] = {
+        "success", "file_id", "file_name", "file_status", "error_reason",
+        "file_phase_2_status", "return_url", "upload_date", "complete_percentage"
+    };
+    size_t i;
+    for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        json_object *value = NULL;
+        if (json_object_object_get_ex(j, keys[i], &value) && value &&
+            !json_object_is_type(value, json_type_null)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j) {
     ZBFileStatusResponse r = new_zb_file_status_response();
+
+    /* An object with none of the fields a status has ({"foo":1}, {"":""},
+       a message beside a null file_id) is not the API's answer. */
+    if (!zb_file_status_has_known_field(j)) {
+        zb_shape_mismatch("file_status");
+    }
 
     r.success = *(bool*)get_json_value(j, json_type_boolean, "success", &(bool){false});
     r.message = zb_file_job_message(j);
