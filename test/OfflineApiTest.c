@@ -2523,9 +2523,9 @@ void test_offline_a_failed_write_keeps_the_file_already_at_the_path(void) {
     }
 }
 
-/* SendFileOptions keeps the 3.0.1 shape: remove_duplicate is a bool (a
+/* SendFileOptions keeps the 3.0.x shape: remove_duplicate is a bool (a
    bool pointer to it compiles), and remove_duplicate_set comes last, so a
-   positional initialiser written for 3.0.1 compiles and leaves it unset. */
+   positional initialiser written for 3.0.x compiles and leaves it unset. */
 void test_offline_send_file_options_stay_source_compatible(void) {
     SendFileOptions options = new_send_file_options();
     bool *p = &options.remove_duplicate;
