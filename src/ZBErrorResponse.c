@@ -1045,11 +1045,11 @@ void zb_report_body_error(const char *body, long status_code, OnErrorCallback er
     free(message);
 }
 
-/* What a "success" field says: 1 true, 0 false, -1 not a flag. It decides when
+/* What a "success" field says (also used by the typed file parsers): 1 true, 0 false, -1 not a flag. It decides when
    it is a boolean, a JSON number 0 or 1, or a string "true", "false", "0" or
    "1" (any case, whitespace around it ignored); any other value (null, "",
    "maybe", a list, an object, 2) is no flag and no result field either. */
-static int zb_success_flag(json_object *success) {
+int zb_success_flag_value(json_object *success) {
     if (!success) {
         return -1;
     }
@@ -1080,6 +1080,20 @@ static int zb_success_flag(json_object *success) {
     return -1;
 }
 
+bool zb_success_field(const json_object *object) {
+    json_object *success = NULL;
+    int flag;
+    if (!json_object_object_get_ex((json_object *)object, "success", &success) || !success) {
+        return false;
+    }
+    flag = zb_success_flag_value(success);
+    if (flag < 0) {
+        zb_shape_mismatch("success");
+        return false;
+    }
+    return flag == 1;
+}
+
 bool zb_success_means_failure(const char *body) {
     const char *text = zb_skip_ws(body ? body : "");
     json_object *parsed;
@@ -1094,7 +1108,7 @@ bool zb_success_means_failure(const char *body) {
         return false;
     }
     if (json_object_object_get_ex(parsed, "success", &success)) {
-        failed = zb_success_flag(success) == 0;
+        failed = zb_success_flag_value(success) == 0;
     }
     json_object_put(parsed);
     return failed;
@@ -1123,12 +1137,13 @@ static json_object *zb_parse_object_without_success(const char *body) {
         return NULL;
     }
     {
-        /* "success" only decides when it holds a real boolean or a "true" /
-           "false" spelling; a null (or any other type) is no flag, so the
-           message-only and dead-key rules still apply. */
+        /* "success" only decides when it is a flag: a boolean, the number 0 or
+           1, or a "true", "false", "0" or "1" string (see zb_success_flag_value).
+           A null (or any other value) is no flag, so the message-only and
+           dead-key rules still apply. */
         json_object *success = NULL;
         if (json_object_object_get_ex(parsed, "success", &success) && success) {
-            if (zb_success_flag(success) >= 0) {
+            if (zb_success_flag_value(success) >= 0) {
                 json_object_put(parsed);
                 return NULL;
             }
@@ -1169,7 +1184,9 @@ static bool zb_message_only_body(const char *body) {
     json_object_object_foreach(parsed, key, value) {
         bool known = false;
         size_t i;
-        has_key = true;
+        if (strcmp(key, "success") != 0) {
+            has_key = true;
+        }
         for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(key, keys[i]) == 0) {
                 known = true;

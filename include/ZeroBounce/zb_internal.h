@@ -33,6 +33,12 @@ void zb_secure_free(char *secret);
    freed, so no copy of the key is left behind in the heap. NULL on failure
    (the old block is untouched). */
 char *zb_secure_realloc(char *old, size_t new_size);
+/* What a "success" value says: 1 true, 0 false, -1 not a flag (a boolean, the
+   number 0 or 1, or a "true"/"false"/"0"/"1" string, any case, trimmed). */
+int zb_success_flag_value(json_object *success);
+/* The "success" member of a response object for the typed parsers: absent or
+   null is false; a flag decides; anything else is the usual shape error. */
+bool zb_success_field(const json_object *object);
 /* Zero a curl_easy_escape result, then curl_free it. */
 void zb_secure_curl_free(char *secret);
 

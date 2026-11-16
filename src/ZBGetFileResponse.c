@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "ZeroBounce/ZBGetFileResponse.h"
+#include "ZeroBounce/zb_internal.h"
 #include "ZeroBounce/utils.h"
 
 ZBGetFileResponse new_zb_get_file_response(void) {
@@ -49,7 +50,7 @@ char* zb_get_file_response_to_string(ZBGetFileResponse* response) {
 ZBGetFileResponse zb_get_file_response_from_json(const json_object* j) {
     ZBGetFileResponse r = new_zb_get_file_response();
 
-    r.success = *(bool*)get_json_value(j, json_type_boolean, "success", &(bool){false});
+    r.success = zb_success_field(j);
     r.message = zb_file_job_message(j);
 
     return r;

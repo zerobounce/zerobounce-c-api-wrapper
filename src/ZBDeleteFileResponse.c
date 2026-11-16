@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "ZeroBounce/ZBDeleteFileResponse.h"
+#include "ZeroBounce/zb_internal.h"
 #include "ZeroBounce/utils.h"
 
 ZBDeleteFileResponse new_zb_delete_file_response(void) {
@@ -53,7 +54,7 @@ char* zb_delete_file_response_to_string(ZBDeleteFileResponse* response) {
 ZBDeleteFileResponse zb_delete_file_response_from_json(const json_object* j) {
     ZBDeleteFileResponse r = new_zb_delete_file_response();
 
-    r.success = *(bool*)get_json_value(j, json_type_boolean, "success", &(bool){false});
+    r.success = zb_success_field(j);
     r.message = zb_file_job_message(j);
     r.file_name = *(char**)get_json_value(j, json_type_string, "file_name", &(char*){""});
     r.file_id = *(char**)get_json_value(j, json_type_string, "file_id", &(char*){""});

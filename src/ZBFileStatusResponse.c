@@ -102,7 +102,7 @@ ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j) {
         zb_shape_mismatch("file_status");
     }
 
-    r.success = *(bool*)get_json_value(j, json_type_boolean, "success", &(bool){false});
+    r.success = zb_success_field(j);
     r.message = zb_file_job_message(j);
     r.error_reason = *(char**)get_json_value(j, json_type_string, "error_reason", &(char*){""});
     r.file_id = *(char**)get_json_value(j, json_type_string, "file_id", &(char*){""});

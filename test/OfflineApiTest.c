@@ -4982,6 +4982,156 @@ void test_offline_a_success_that_is_no_flag_beside_a_message_is_an_error_on_ever
     reset_offline();
 }
 
+/* Z1 (audit C3): every spelling zb_success_flag_value reads is told apart by a
+   typed call that would otherwise answer the other way: 0, 0.0, "0", "false"
+   in any case and padded with whitespace fail; 1, 1.0, "1", "TRUE " succeed. */
+static void z1_expect(const char *call, nt_call_fn fn, ZeroBounce *zb, const char *success, const char *rest,
+                      int want_success) {
+    char body[256];
+    char message[400];
+    snprintf(body, sizeof(body), "{\"success\":%s,%s}", success, rest);
+    snprintf(message, sizeof(message), "%s %s", call, body);
+    nt_script(body, 200, "application/json");
+    fn(zb);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(want_success, g_success_called, message);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(!want_success, g_error_called, message);
+    if (!want_success) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(200, (int)g_error_status, message);
+    }
+}
+
+void test_offline_every_success_flag_spelling_decides_on_typed_calls(void) {
+    static const struct {
+        const char *call;
+        nt_call_fn fn;
+        const char *rest;
+    } calls[] = {
+        {"get_api_usage", nt_usage, "\"total\":3"},
+        {"get_activity_data", nt_activity, "\"found\":true"},
+        {"score_email", nt_score, "\"email\":\"a@example.com\""},
+        {"file_status", nt_file_status, "\"file_id\":\"f\""},
+        {"delete_file", nt_delete_file, "\"file_id\":\"f\""},
+        {"send_file", nt_send_file, "\"file_id\":\"f\""},
+    };
+    static const char *const failing[] = {"0", "0.0", "\"0\"", "\" false \\n\"", "\"False\"", "\"FALSE\"", "false", "\"0 \""};
+    static const char *const passing[] = {"1", "1.0", "\"1\"", "\"TRUE \"", "\" true\"", "\"True\"", "true", "\"\\t1\\n\""};
+    ZeroBounce *zb = client_with("success-spelling-key");
+    g_leak_mode = 10;
+    for (size_t c = 0; c < sizeof(calls) / sizeof(calls[0]); c++) {
+        for (size_t i = 0; i < sizeof(failing) / sizeof(failing[0]); i++) {
+            z1_expect(calls[c].call, calls[c].fn, zb, failing[i], calls[c].rest, 0);
+        }
+        for (size_t i = 0; i < sizeof(passing) / sizeof(passing[0]); i++) {
+            z1_expect(calls[c].call, calls[c].fn, zb, passing[i], calls[c].rest, 1);
+        }
+    }
+    g_leak_mode = 0;
+    reset_offline();
+}
+
+/* Z3 (audit C3): the typed file parsers read "success" by the same rule. */
+void test_offline_typed_file_parsers_read_success_like_the_error_path(void) {
+    static const char *const truthy[] = {"true", "\"True\"", "1", "\"1\"", "\" true \""};
+    static const char *const falsy[] = {"false", "\"false\"", "0", "\"0\"", "\" FALSE\""};
+    static const char *const nonflag[] = {"\"maybe\"", "2", "[]", "{}", "\"\""};
+    char body[128];
+    for (size_t pass = 0; pass < 3; pass++) {
+        size_t count = 5;
+        const char *const *values = pass == 0 ? truthy : (pass == 1 ? falsy : nonflag);
+        for (size_t i = 0; i < count; i++) {
+            json_object *j;
+            ZBSendFileResponse sent;
+            ZBDeleteFileResponse deleted;
+            ZBFileStatusResponse status;
+            ZBGetFileResponse got;
+            snprintf(body, sizeof(body), "{\"success\":%s,\"message\":\"m\",\"file_id\":\"f\"}", values[i]);
+            j = json_tokener_parse(body);
+            TEST_ASSERT_NOT_NULL_MESSAGE(j, body);
+#define Z3_CHECK(response, parse)                                                                  \
+    zb_shape_reset();                                                                              \
+    response = parse(j);                                                                           \
+    if (pass == 2) {                                                                               \
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("success", zb_shape_error_field(), body);                 \
+    } else {                                                                                       \
+        TEST_ASSERT_NULL_MESSAGE(zb_shape_error_field(), body);                                    \
+        TEST_ASSERT_EQUAL_INT_MESSAGE(pass == 0, response.success ? 1 : 0, body);                  \
+    }
+            Z3_CHECK(sent, zb_send_file_response_from_json)
+            Z3_CHECK(deleted, zb_delete_file_response_from_json)
+            Z3_CHECK(status, zb_file_status_response_from_json)
+            Z3_CHECK(got, zb_get_file_response_from_json)
+#undef Z3_CHECK
+            json_object_put(j);
+        }
+    }
+    zb_shape_reset();
+}
+
+/* Z4 (audit C3): a "success" that is no flag is not a result field, so it alone
+   is the empty-object error with the response status, never a result. */
+void test_offline_a_non_flag_success_alone_is_an_error_on_typed_calls(void) {
+    static const NtCall calls[] = {
+        {"get_api_usage", nt_usage}, {"get_activity_data", nt_activity}, {"score_email", nt_score},
+        {"score_email_post", nt_score_post},
+    };
+    static const char *const bodies[] = {"{\"success\":\"maybe\"}", "{\"success\":null}", "{\"success\":[]}",
+                                         "{\"success\":2}", "{\"success\":{}}", "{\"success\":\"\"}"};
+    static const long statuses[] = {200, 202};
+    char message[200];
+    ZeroBounce *zb = client_with("lone-success-key");
+    g_leak_mode = 10;
+    for (size_t c = 0; c < sizeof(calls) / sizeof(calls[0]); c++) {
+        for (size_t b = 0; b < sizeof(bodies) / sizeof(bodies[0]); b++) {
+            for (size_t st = 0; st < 2; st++) {
+                snprintf(message, sizeof(message), "%s %s HTTP %ld", calls[c].name, bodies[b], statuses[st]);
+                nt_script(bodies[b], statuses[st], "application/json");
+                calls[c].call(zb);
+                TEST_ASSERT_TRUE_MESSAGE(g_error_called, message);
+                TEST_ASSERT_FALSE_MESSAGE(g_success_called, message);
+                TEST_ASSERT_EQUAL_INT_MESSAGE((int)statuses[st], (int)g_error_status, message);
+            }
+        }
+    }
+    g_leak_mode = 0;
+    reset_offline();
+}
+
+/* Z2 (audit C3): zb_url_escape zeroes curl's escaped copy before freeing it.
+   libcurl's allocator is replaced (before curl starts) with one that reports
+   what each freed block still held. */
+static int g_z2_watch;
+static int g_z2_frees;
+static int g_z2_dirty;
+static void *z2_malloc(size_t n) { return malloc(n); }
+static void *z2_realloc(void *p, size_t n) { return realloc(p, n); }
+static void *z2_calloc(size_t a, size_t b) { return calloc(a, b); }
+static char *z2_strdup(const char *s) { return strdup(s); }
+static void z2_free(void *p) {
+    if (g_z2_watch && p) {
+        g_z2_frees++;
+        if (((const char *)p)[0] != '\0') {
+            g_z2_dirty++;
+        }
+    }
+    free(p);
+}
+__attribute__((constructor)) static void z2_install_curl_allocator(void) {
+    curl_global_init_mem(CURL_GLOBAL_ALL, z2_malloc, z2_free, z2_realloc, z2_strdup, z2_calloc);
+}
+
+void test_offline_url_escape_zeroes_curls_escaped_copy(void) {
+    char *escaped;
+    g_z2_frees = 0;
+    g_z2_dirty = 0;
+    g_z2_watch = 1;
+    escaped = zb_url_escape("secret key/1");
+    g_z2_watch = 0;
+    TEST_ASSERT_EQUAL_STRING("secret%20key%2F1", escaped);
+    TEST_ASSERT_EQUAL_INT(1, g_z2_frees);
+    TEST_ASSERT_EQUAL_INT(0, g_z2_dirty);
+    zb_secure_free(escaped);
+}
+
 /* X2/X3 (audit C2): a NULL client is a no-op for both initializers, and a
    rejected key with no error callback is quiet. */
 void test_offline_initialize_with_a_null_client_is_a_no_op_and_a_rejected_key_needs_no_callback(void) {
@@ -5988,6 +6138,10 @@ void offline_run_tests(void) {
     RUN_TEST(test_offline_find_email_and_search_domain_refuse_a_message_without_a_result);
     RUN_TEST(test_offline_a_null_success_beside_a_message_or_error_is_an_error_on_every_typed_call);
     RUN_TEST(test_offline_a_success_that_is_no_flag_beside_a_message_is_an_error_on_every_typed_call);
+    RUN_TEST(test_offline_every_success_flag_spelling_decides_on_typed_calls);
+    RUN_TEST(test_offline_typed_file_parsers_read_success_like_the_error_path);
+    RUN_TEST(test_offline_a_non_flag_success_alone_is_an_error_on_typed_calls);
+    RUN_TEST(test_offline_url_escape_zeroes_curls_escaped_copy);
     RUN_TEST(test_offline_initialize_with_a_null_client_is_a_no_op_and_a_rejected_key_needs_no_callback);
     RUN_TEST(test_offline_the_secure_realloc_and_free_helpers_keep_the_text);
     RUN_TEST(test_offline_an_error_object_with_no_message_text_gets_the_fixed_message);

@@ -168,7 +168,7 @@ const char *zero_bounce_test_field_value(int index) {
 char* zb_url_escape(const char* value) {
     char* escaped = curl_easy_escape(NULL, value ? value : "", 0);
     char* copy = escaped ? strdup(escaped) : NULL;
-    curl_free(escaped);
+    zb_secure_curl_free(escaped);
     return copy;
 }
 
