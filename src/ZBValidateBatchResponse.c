@@ -189,8 +189,8 @@ int compare_validate_response_vector(const ValidateResponseVector* vec1, const V
 ZBValidateError new_zb_validate_error(void) {
     ZBValidateError validate_error;
 
-    validate_error.error = "";
-    validate_error.email_address = "";
+    validate_error.error = zb_dup_empty();
+    validate_error.email_address = zb_dup_empty();
 
     return validate_error;
 }
@@ -221,11 +221,23 @@ char* zb_validate_error_to_string(ZBValidateError* validate_error) {
     return buffer;
 }
 
+void zb_validate_error_free(ZBValidateError* instance) {
+    if (!instance) {
+        return;
+    }
+    free(instance->error);
+    instance->error = NULL;
+    free(instance->email_address);
+    instance->email_address = NULL;
+}
+
 ZBValidateError zb_validate_error_from_json(const json_object* j) {
     ZBValidateError validate_error = new_zb_validate_error();
 
-    validate_error.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
-    validate_error.email_address = *(char**)get_json_value(j, json_type_string, "email_address", &(char*){""});
+    free(validate_error.error);
+    free(validate_error.email_address);
+    validate_error.error = get_json_string_copy(j, "error", "");
+    validate_error.email_address = get_json_string_copy(j, "email_address", "");
 
     return validate_error;
 }
@@ -311,15 +323,28 @@ ZBValidateBatchResponse zb_validate_batch_response_from_json(const json_object* 
 
     for (size_t i = 0; i < email_batch_size; i++) {
         json_object* j_response = json_object_array_get_idx(j_email_batch, i);
-        validate_response_vector_append(&r.email_batch, zb_validate_response_from_json(j_response));
+        /* The vector keeps its own copies; release the intermediate one. */
+        ZBValidateResponse item = zb_validate_response_from_json(j_response);
+        validate_response_vector_append(&r.email_batch, item);
+        zb_validate_response_free(&item);
     }
 
     for (size_t i = 0; i < errors_size; i++) {
         json_object* j_error = json_object_array_get_idx(j_errors, i);
-        validate_error_vector_append(&r.errors, zb_validate_error_from_json(j_error));
+        ZBValidateError item = zb_validate_error_from_json(j_error);
+        validate_error_vector_append(&r.errors, item);
+        zb_validate_error_free(&item);
     }
 
     return r;
+}
+
+void zb_validate_batch_response_free(ZBValidateBatchResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    validate_response_vector_free(&instance->email_batch);
+    validate_error_vector_free(&instance->errors);
 }
 
 int compare_zb_validate_batch_response(const ZBValidateBatchResponse* response1, const ZBValidateBatchResponse* response2) {

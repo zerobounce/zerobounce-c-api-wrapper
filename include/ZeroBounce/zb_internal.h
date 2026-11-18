@@ -240,6 +240,18 @@ void zb_shape_reset(void);
 void zb_shape_mismatch(const char *field);
 /* The field noted since the last reset, or NULL. */
 const char *zb_shape_error_field(void);
+/*
+ * Non-allocating typed getters, with get_json_value's rules for each type: a
+ * missing or null field gives the default, a field of another JSON type notes
+ * zb_shape_mismatch(key) and gives the default. Strings use
+ * get_json_string_copy (a heap copy, default included, caller frees).
+ * zb_json_get_string_vector's strings are owned by the returned vector.
+ */
+/* strdup(""): response initialisers use it so every string field is freeable. */
+char *zb_dup_empty(void);
+bool zb_json_get_bool(const json_object *obj, const char *key, bool def);
+int zb_json_get_int(const json_object *obj, const char *key, int def);
+StringVector zb_json_get_string_vector(const json_object *obj, const char *key);
 /* A field the call cannot answer without: present and a JSON string. */
 bool zb_json_require_string(const json_object *obj, const char *key);
 /* A field that is an array when present; *out is the array or NULL. */

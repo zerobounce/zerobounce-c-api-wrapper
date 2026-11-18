@@ -10,15 +10,15 @@ ZBFileStatusResponse new_zb_file_status_response(void) {
     ZBFileStatusResponse response;
 
     response.success = false;
-    response.message = "";
-    response.error_reason = "";
-    response.file_id = "";
-    response.file_name = "";
-    response.upload_date = "";
-    response.file_status = "";
-    response.complete_percentage = "";
-    response.file_phase_2_status = "";
-    response.return_url = "";
+    response.message = zb_dup_empty();
+    response.error_reason = zb_dup_empty();
+    response.file_id = zb_dup_empty();
+    response.file_name = zb_dup_empty();
+    response.upload_date = zb_dup_empty();
+    response.file_status = zb_dup_empty();
+    response.complete_percentage = zb_dup_empty();
+    response.file_phase_2_status = zb_dup_empty();
+    response.return_url = zb_dup_empty();
 
     return response;
 }
@@ -95,6 +95,8 @@ static bool zb_file_status_has_known_field(const json_object *j) {
 
 ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j) {
     ZBFileStatusResponse r = new_zb_file_status_response();
+    /* Every string field is assigned below; drop the initial copies. */
+    zb_file_status_response_free(&r);
 
     /* An object with none of the fields a status has ({"foo":1}, {"":""},
        a message beside a null file_id) is not the API's answer. */
@@ -104,16 +106,40 @@ ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j) {
 
     r.success = zb_success_field(j);
     r.message = zb_file_job_message(j);
-    r.error_reason = *(char**)get_json_value(j, json_type_string, "error_reason", &(char*){""});
-    r.file_id = *(char**)get_json_value(j, json_type_string, "file_id", &(char*){""});
-    r.file_name = *(char**)get_json_value(j, json_type_string, "file_name", &(char*){""});
-    r.upload_date = *(char**)get_json_value(j, json_type_string, "upload_date", &(char*){""});
-    r.file_status = *(char**)get_json_value(j, json_type_string, "file_status", &(char*){""});
-    r.complete_percentage = *(char**)get_json_value(j, json_type_string, "complete_percentage", &(char*){""});
-    r.file_phase_2_status = *(char**)get_json_value(j, json_type_string, "file_phase_2_status", &(char*){""});
-    r.return_url = *(char**)get_json_value(j, json_type_string, "return_url", &(char*){""});
+    r.error_reason = get_json_string_copy(j, "error_reason", "");
+    r.file_id = get_json_string_copy(j, "file_id", "");
+    r.file_name = get_json_string_copy(j, "file_name", "");
+    r.upload_date = get_json_string_copy(j, "upload_date", "");
+    r.file_status = get_json_string_copy(j, "file_status", "");
+    r.complete_percentage = get_json_string_copy(j, "complete_percentage", "");
+    r.file_phase_2_status = get_json_string_copy(j, "file_phase_2_status", "");
+    r.return_url = get_json_string_copy(j, "return_url", "");
 
     return r;
+}
+
+void zb_file_status_response_free(ZBFileStatusResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    free(instance->message);
+    instance->message = NULL;
+    free(instance->error_reason);
+    instance->error_reason = NULL;
+    free(instance->file_id);
+    instance->file_id = NULL;
+    free(instance->file_name);
+    instance->file_name = NULL;
+    free(instance->upload_date);
+    instance->upload_date = NULL;
+    free(instance->file_status);
+    instance->file_status = NULL;
+    free(instance->complete_percentage);
+    instance->complete_percentage = NULL;
+    free(instance->file_phase_2_status);
+    instance->file_phase_2_status = NULL;
+    free(instance->return_url);
+    instance->return_url = NULL;
 }
 
 int compare_zb_file_status_response(const ZBFileStatusResponse* response1, const ZBFileStatusResponse* response2) {

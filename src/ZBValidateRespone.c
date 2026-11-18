@@ -82,33 +82,33 @@ ZBValidateSubStatus sub_status_from_string(const char* string) {
 ZBValidateResponse new_zb_validate_response(void) {
     ZBValidateResponse response;
 
-    response.address = "";
+    response.address = zb_dup_empty();
     response.status = UnknownValue;
     response.sub_status = None;
-    response.account = "";
-    response.domain = "";
-    response.did_you_mean = "";
-    response.domain_age_days = "";
-    response.active_in_days = "";
-    response.active_first_seen = "";
+    response.account = zb_dup_empty();
+    response.domain = zb_dup_empty();
+    response.did_you_mean = zb_dup_empty();
+    response.domain_age_days = zb_dup_empty();
+    response.active_in_days = zb_dup_empty();
+    response.active_first_seen = zb_dup_empty();
     response.free_email = false;
     response.mx_found = false;
-    response.mx_record = "";
-    response.smtp_provider = "";
+    response.mx_record = zb_dup_empty();
+    response.smtp_provider = zb_dup_empty();
     response.catchall_domain = false;
     response.catchall_domain_set = false;
-    response.first_name = "";
-    response.last_name = "";
-    response.gender = "";
-    response.city = "";
-    response.region = "";
-    response.zip_code = "";
-    response.country = "";
-    response.processed_at = "";
-    response.error = "";
-    response.domain_website_exists = "";
-    response.domain_registrant_company_name = "";
-    response.message = "";
+    response.first_name = zb_dup_empty();
+    response.last_name = zb_dup_empty();
+    response.gender = zb_dup_empty();
+    response.city = zb_dup_empty();
+    response.region = zb_dup_empty();
+    response.zip_code = zb_dup_empty();
+    response.country = zb_dup_empty();
+    response.processed_at = zb_dup_empty();
+    response.error = zb_dup_empty();
+    response.domain_website_exists = zb_dup_empty();
+    response.domain_registrant_company_name = zb_dup_empty();
+    response.message = zb_dup_empty();
 
     return response;
 }
@@ -219,6 +219,8 @@ char* zb_validate_response_to_string(ZBValidateResponse* response) {
 
 ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
     ZBValidateResponse r = new_zb_validate_response();
+    /* Every string field is assigned below; drop the initial copies. */
+    zb_validate_response_free(&r);
 
     /* E7: a result names its address and status, as JSON strings. The one
        answer without them is a greylist_processing validate still in
@@ -232,23 +234,29 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
         zb_json_require_string(j, "status");
     }
 
-    r.address = *(char**)get_json_value(j, json_type_string, "address", &(char*){""});
-    r.status = status_from_string(*(char**)get_json_value(j, json_type_string, "status", &(char*){""}));
-    r.sub_status = sub_status_from_string(*(char**)get_json_value(j, json_type_string, "sub_status", &(char*){""}));
-    r.account = *(char**)get_json_value(j, json_type_string, "account", &(char*){""});
-    r.domain = *(char**)get_json_value(j, json_type_string, "domain", &(char*){""});
-    r.did_you_mean = *(char**)get_json_value(j, json_type_string, "did_you_mean", &(char*){""});
-    r.domain_age_days = *(char**)get_json_value(j, json_type_string, "domain_age_days", &(char*){""});
-    r.active_in_days = *(char**)get_json_value(j, json_type_string, "active_in_days", &(char*){""});
-    r.active_first_seen = *(char**)get_json_value(j, json_type_string, "active_first_seen", &(char*){""});
-    r.free_email = *(bool*)get_json_value(j, json_type_boolean, "free_email", &(bool){false});
+    r.address = get_json_string_copy(j, "address", "");
+    char* status_text = get_json_string_copy(j, "status", "");
+    r.status = status_from_string(status_text);
+    free(status_text);
+    char* sub_status_text = get_json_string_copy(j, "sub_status", "");
+    r.sub_status = sub_status_from_string(sub_status_text);
+    free(sub_status_text);
+    r.account = get_json_string_copy(j, "account", "");
+    r.domain = get_json_string_copy(j, "domain", "");
+    r.did_you_mean = get_json_string_copy(j, "did_you_mean", "");
+    r.domain_age_days = get_json_string_copy(j, "domain_age_days", "");
+    r.active_in_days = get_json_string_copy(j, "active_in_days", "");
+    r.active_first_seen = get_json_string_copy(j, "active_first_seen", "");
+    r.free_email = zb_json_get_bool(j, "free_email", false);
 
-    if (strcasecmp(*(char**)get_json_value(j, json_type_string, "mx_found", &(char*){"false"}), "true") == 0) {
+    char* mx_found = get_json_string_copy(j, "mx_found", "false");
+    if (strcasecmp(mx_found, "true") == 0) {
         r.mx_found = true;
     }
+    free(mx_found);
 
-    r.mx_record = *(char**)get_json_value(j, json_type_string, "mx_record", &(char*){""});
-    r.smtp_provider = *(char**)get_json_value(j, json_type_string, "smtp_provider", &(char*){""});
+    r.mx_record = get_json_string_copy(j, "mx_record", "");
+    r.smtp_provider = get_json_string_copy(j, "smtp_provider", "");
 
     json_object* catchall_domain_obj = NULL;
     if (json_object_object_get_ex(j, "catchall_domain", &catchall_domain_obj)
@@ -259,21 +267,69 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j) {
         zb_shape_mismatch("catchall_domain");
     }
 
-    r.first_name = *(char**)get_json_value(j, json_type_string, "firstname", &(char*){""});
-    r.last_name = *(char**)get_json_value(j, json_type_string, "lastname", &(char*){""});
-    r.gender = *(char**)get_json_value(j, json_type_string, "gender", &(char*){""});
-    r.city = *(char**)get_json_value(j, json_type_string, "city", &(char*){""});
-    r.region = *(char**)get_json_value(j, json_type_string, "region", &(char*){""});
-    r.zip_code = *(char**)get_json_value(j, json_type_string, "zipcode", &(char*){""});
-    r.country = *(char**)get_json_value(j, json_type_string, "country", &(char*){""});
-    r.processed_at = *(char**)get_json_value(j, json_type_string, "processed_at", &(char*){""});
-    r.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
-    r.domain_website_exists = *(char**)get_json_value(j, json_type_string, "domain_website_exists", &(char*){""});
-    r.domain_registrant_company_name = *(char**)get_json_value(j, json_type_string, "domain_registrant_company_name", &(char*){""});
+    r.first_name = get_json_string_copy(j, "firstname", "");
+    r.last_name = get_json_string_copy(j, "lastname", "");
+    r.gender = get_json_string_copy(j, "gender", "");
+    r.city = get_json_string_copy(j, "city", "");
+    r.region = get_json_string_copy(j, "region", "");
+    r.zip_code = get_json_string_copy(j, "zipcode", "");
+    r.country = get_json_string_copy(j, "country", "");
+    r.processed_at = get_json_string_copy(j, "processed_at", "");
+    r.error = get_json_string_copy(j, "error", "");
+    r.domain_website_exists = get_json_string_copy(j, "domain_website_exists", "");
+    r.domain_registrant_company_name = get_json_string_copy(j, "domain_registrant_company_name", "");
     /* A repeated greylist_processing request answers with nothing but this. */
-    r.message = *(char**)get_json_value(j, json_type_string, "Message", &(char*){""});
+    r.message = get_json_string_copy(j, "Message", "");
 
     return r;
+}
+
+void zb_validate_response_free(ZBValidateResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    free(instance->address);
+    instance->address = NULL;
+    free(instance->account);
+    instance->account = NULL;
+    free(instance->domain);
+    instance->domain = NULL;
+    free(instance->did_you_mean);
+    instance->did_you_mean = NULL;
+    free(instance->domain_age_days);
+    instance->domain_age_days = NULL;
+    free(instance->active_in_days);
+    instance->active_in_days = NULL;
+    free(instance->active_first_seen);
+    instance->active_first_seen = NULL;
+    free(instance->mx_record);
+    instance->mx_record = NULL;
+    free(instance->smtp_provider);
+    instance->smtp_provider = NULL;
+    free(instance->first_name);
+    instance->first_name = NULL;
+    free(instance->last_name);
+    instance->last_name = NULL;
+    free(instance->gender);
+    instance->gender = NULL;
+    free(instance->city);
+    instance->city = NULL;
+    free(instance->region);
+    instance->region = NULL;
+    free(instance->zip_code);
+    instance->zip_code = NULL;
+    free(instance->country);
+    instance->country = NULL;
+    free(instance->processed_at);
+    instance->processed_at = NULL;
+    free(instance->error);
+    instance->error = NULL;
+    free(instance->domain_website_exists);
+    instance->domain_website_exists = NULL;
+    free(instance->domain_registrant_company_name);
+    instance->domain_registrant_company_name = NULL;
+    free(instance->message);
+    instance->message = NULL;
 }
 
 int compare_zb_validate_response(const ZBValidateResponse* response1, const ZBValidateResponse* response2) {

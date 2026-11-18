@@ -9,8 +9,8 @@ ZBSendFileResponse new_zb_send_file_response(void) {
 
     response.success = false;
     response.message = string_vector_init();
-    response.file_name = "";
-    response.file_id = "";
+    response.file_name = zb_dup_empty();
+    response.file_id = zb_dup_empty();
 
     return response;
 }
@@ -58,17 +58,30 @@ ZBSendFileResponse zb_send_file_response_from_json(const json_object* j) {
 
     if (json_object_is_type(json_object_object_get(j, "message"), json_type_array)) {
         string_vector_free(&r.message);
-        StringVector default_value = string_vector_init();
-        r.message = *(StringVector*)get_json_value(j, json_type_array, "message", &default_value);
-        string_vector_free(&default_value);
+        r.message = zb_json_get_string_vector(j, "message");
     } else {
-        string_vector_append(&r.message, *(char**)get_json_value(j, json_type_string, "message", &(char*){""}));
+        char* message = get_json_string_copy(j, "message", "");
+        string_vector_append(&r.message, message);
+        free(message);
     }
 
-    r.file_name = *(char**)get_json_value(j, json_type_string, "file_name", &(char*){""});
-    r.file_id = *(char**)get_json_value(j, json_type_string, "file_id", &(char*){""});
+    free(r.file_name);
+    free(r.file_id);
+    r.file_name = get_json_string_copy(j, "file_name", "");
+    r.file_id = get_json_string_copy(j, "file_id", "");
 
     return r;
+}
+
+void zb_send_file_response_free(ZBSendFileResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    string_vector_free(&instance->message);
+    free(instance->file_name);
+    instance->file_name = NULL;
+    free(instance->file_id);
+    instance->file_id = NULL;
 }
 
 int compare_zb_send_file_response(const ZBSendFileResponse* response1, const ZBSendFileResponse* response2) {

@@ -262,6 +262,9 @@ static void p3_send_file_json_success(
         ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
         if (!zb_shape_error_reported(http_code, error_callback)) {
             success_callback(typed_response);
+        } else {
+            /* Never handed to the caller. */
+            zb_send_file_response_free(&typed_response);
         }
         json_object_put(j_obj);
     }
@@ -285,11 +288,13 @@ static void p3_post_send_file_form(
     if (!zb_make_request_with_post_body(url_path, body, &response_data, &http_code, error_callback)) {
         free(response_data.response);
         zb_secure_free(url_path);
+        zb_secure_free(body);
         return;
     }
     p3_send_file_json_success(&response_data, http_code, success_callback, error_callback);
     free(response_data.response);
     zb_secure_free(url_path);
+    zb_secure_free(body);
 }
 
 static void p3_mime_add_int(curl_mime *multipart, const char *name, int value) {
@@ -501,7 +506,8 @@ static void p3_bulk_root_get_file(
             } else if (success_callback) {
                 ZBGetFileResponse response = new_zb_get_file_response();
                 response.success = true;
-                response.local_file_path = local_download_path;
+                free(response.local_file_path);
+                response.local_file_path = strdup(local_download_path);
                 success_callback(response);
             }
         }
@@ -545,6 +551,9 @@ static void p3_bulk_root_file_status(
             ZBFileStatusResponse typed_response = zb_file_status_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_file_status_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -585,6 +594,9 @@ static void p3_bulk_root_delete_file(
             ZBDeleteFileResponse typed_response = zb_delete_file_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_delete_file_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }

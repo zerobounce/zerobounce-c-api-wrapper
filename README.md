@@ -410,6 +410,21 @@ search_domain_by_company_name(
 ```
 
 
+## Memory
+
+Every string in a response the SDK hands to a success or error callback is a heap copy (a missing field is an empty string, also on the heap), and it belongs to you: the SDK does not free it after the callback returns, so you may keep it. Call the type's free function when you are done. It frees every string, sets the pointers to `NULL`, accepts `NULL` and can be called twice:
+
+```c
+void on_validate(ZBValidateResponse response) {
+    printf("%s\n", response.address);
+    zb_validate_response_free(&response);
+}
+```
+
+The functions are `zb_validate_response_free`, `zb_validate_batch_response_free` (also `zb_validate_error_free`), `zb_credits_response_free` (a no-op, there is nothing to free), `zb_get_api_usage_response_free`, `zb_send_file_response_free`, `zb_file_status_response_free`, `zb_get_file_response_free` (`message` and `local_file_path`, which is a copy of the path you passed), `zb_delete_file_response_free`, `zb_activity_data_response_free`, `zb_score_email_response_free` and `zb_error_response_free`.
+
+The Find Email and Domain Search callbacks are the exception: the SDK calls `zb_find_email_response_free` / `zb_domain_search_response_free` itself right after your callback returns (`find_email`, `find_email_by_*` and `search_domain*` in `src/ZeroBounce.c`), so copy what you need inside the callback and do not free those responses.
+
 ## Validate options
 
 `validate_email_with_options` takes a `ZBValidateOptions`. A tri-state field is

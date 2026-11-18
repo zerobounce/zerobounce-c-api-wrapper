@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-18
+
+### Upgrading
+
+- Nothing breaks: the new functions are additions, and the SDK still never frees a response it passes to your callback (Find Email and Domain Search excepted, as before). To stop leaking response strings in a long-running program, call the type's `zb_*_response_free` when you are done with a response (README, "Memory"). One small change: `ZBGetFileResponse.local_file_path` is now a copy of the path you passed, not your own pointer.
+
+### Added
+
+- Free functions for every response type that owns strings: `zb_validate_response_free`, `zb_validate_error_free`, `zb_validate_batch_response_free`, `zb_credits_response_free` (a no-op, kept so every type has one), `zb_get_api_usage_response_free`, `zb_send_file_response_free`, `zb_file_status_response_free`, `zb_get_file_response_free`, `zb_delete_file_response_free`, `zb_activity_data_response_free`, `zb_score_email_response_free` and `zb_error_response_free`. Each frees every string, sets the pointers to `NULL`, accepts `NULL` and can be called twice. See "Memory" in the README.
+- Offline tests: every response type parsed from JSON with its fields present and missing and then freed, a batch parse and free, and the internal typed JSON getters.
+
+### Fixed
+
+- Memory leak (audit finding C-12): the response parsers allocated a holder for every field they read and dropped it, and the batch parser copied every string a second time. Fields are now read without an allocation, and the intermediate responses the batch parser builds are freed.
+- Every string field of a response is now a heap copy, never a string literal, including those set by the `new_zb_*_response()` initialisers, `new_zb_validate_error()` and the get-file response (whose `local_file_path` is now a copy of the path rather than the caller's pointer), so the free functions are safe on any response the SDK hands out. The SDK still does not free a response it passes to your callback (Find Email and Domain Search responses are freed by the SDK after the callback, as before); a response the SDK discards because its shape was wrong is now freed.
+- Smaller leaks on the way: the query-string pieces of the Find Email and Domain Search calls, the secondary message list of every error built from a JSON body, and the form body of the S3 and SFTP file calls.
+
 ## [3.1.0] - 2026-11-16
 
 ### Upgrading
@@ -340,7 +357,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: `get_credits`, `get_api_usage`, `validate_email`, `validate_email_batch`, bulk and AI-scoring file functions, and `get_activity_data`.
 
-[Unreleased]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zerobounce/zerobounce-c-api-wrapper/compare/v2.2.0...v3.0.0

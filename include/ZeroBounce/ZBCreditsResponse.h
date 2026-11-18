@@ -42,5 +42,12 @@ ZBCreditsResponse zb_credits_response_from_json(const json_object* j);
  * @return int 1 if the instances are equal, 0 otherwise
  */
 int compare_zb_credits_response(const ZBCreditsResponse* response1, const ZBCreditsResponse* response2);
+/**
+ * @brief Present for symmetry with the other response types: a ZBCreditsResponse
+ * owns no memory, so this does nothing. NULL-safe.
+ *
+ * @param instance ZBCreditsResponse pointer
+ */
+void zb_credits_response_free(ZBCreditsResponse* instance);
 
 #endif

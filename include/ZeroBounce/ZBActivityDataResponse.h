@@ -47,4 +47,12 @@ ZBActivityDataResponse zb_activity_data_response_from_json(const json_object* j)
  */
 int compare_zb_activity_data_response(const ZBActivityDataResponse* response1, const ZBActivityDataResponse* response2);
 
+/**
+ * @brief Frees the strings of a ZBActivityDataResponse the SDK produced (every string field is a
+ * heap copy owned by the caller), sets them to NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBActivityDataResponse pointer
+ */
+void zb_activity_data_response_free(ZBActivityDataResponse* instance);
+
 #endif

@@ -78,5 +78,12 @@ bool zb_success_means_failure(const char* body);
  * @return int 1 if the instances are equal, 0 otherwise
  */
 int compare_zb_error_response(const ZBErrorResponse* response1, const ZBErrorResponse* response2);
+/**
+ * @brief Frees the strings of a ZBErrorResponse the SDK produced, leaving errors
+ * empty. NULL-safe and idempotent.
+ *
+ * @param instance ZBErrorResponse pointer
+ */
+void zb_error_response_free(ZBErrorResponse* instance);
 
 #endif

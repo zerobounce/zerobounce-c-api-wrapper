@@ -144,4 +144,12 @@ ZBValidateResponse zb_validate_response_from_json(const json_object* j);
  */
 int compare_zb_validate_response(const ZBValidateResponse* response1, const ZBValidateResponse* response2);
 
+/**
+ * @brief Frees the strings of a ZBValidateResponse the SDK produced (every string field is a
+ * heap copy owned by the caller), sets them to NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBValidateResponse pointer
+ */
+void zb_validate_response_free(ZBValidateResponse* instance);
+
 #endif

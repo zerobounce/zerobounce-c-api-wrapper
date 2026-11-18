@@ -183,6 +183,7 @@ static bool zb_append_query_param(StringVector* vector, const char* name, const 
     }
     snprintf(prefix, prefix_len, "&%s=", name);
     string_vector_append(vector, prefix);
+    free(prefix);
     char* escaped = zb_url_escape(value);
     if (!escaped) {
         return false;
@@ -1551,6 +1552,9 @@ static void send_file_internal(
                 ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
                 if (!zb_shape_error_reported(http_code, error_callback)) {
                     success_callback(typed_response);
+                } else {
+                    /* Never handed to the caller. */
+                    zb_send_file_response_free(&typed_response);
                 }
                 json_object_put(j_obj);
             }
@@ -1677,6 +1681,9 @@ static void send_file_internal(
             ZBSendFileResponse typed_response = zb_send_file_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_send_file_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -1739,6 +1746,9 @@ static void file_status_internal(
             ZBFileStatusResponse typed_response = zb_file_status_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_file_status_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -1893,7 +1903,8 @@ static void get_file_internal(
             if (success_callback) {
                 ZBGetFileResponse response = new_zb_get_file_response();
                 response.success = true;
-                response.local_file_path = local_download_path;
+                free(response.local_file_path);
+                response.local_file_path = strdup(local_download_path);
                 success_callback(response);
             }
         }
@@ -1957,6 +1968,9 @@ static void delete_file_internal(
             ZBDeleteFileResponse typed_response = zb_delete_file_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_delete_file_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -2034,7 +2048,7 @@ static void find_email_internal(
 
     StringVector string_vector = string_vector_init();
     string_vector_append(&string_vector, zb->api_base_url);
-    string_vector_append(&string_vector, strdup("/guessformat?api_key="));
+    string_vector_append(&string_vector, "/guessformat?api_key=");
     char* api_key_esc = zb_url_escape(zb->api_key);
     string_vector_append(&string_vector, api_key_esc);
     zb_secure_free(api_key_esc);
@@ -2097,7 +2111,7 @@ static void search_domain_internal(
 
     StringVector string_vector = string_vector_init();
     string_vector_append(&string_vector, zb->api_base_url);
-    string_vector_append(&string_vector, strdup("/guessformat?api_key="));
+    string_vector_append(&string_vector, "/guessformat?api_key=");
     char* api_key_esc = zb_url_escape(zb->api_key);
     string_vector_append(&string_vector, api_key_esc);
     zb_secure_free(api_key_esc);
@@ -2192,6 +2206,9 @@ void get_credits(
             ZBCreditsResponse typed_response = zb_credits_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_credits_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -2263,6 +2280,9 @@ void get_api_usage(
             ZBGetApiUsageResponse typed_response = zb_get_api_usage_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_get_api_usage_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -2409,6 +2429,9 @@ void validate_email_with_options(
                 ZBValidateResponse typed_response = zb_validate_response_from_json(j_obj);
                 if (!zb_shape_error_reported(http_code, error_callback)) {
                     success_callback(typed_response);
+                } else {
+                    /* Never handed to the caller. */
+                    zb_validate_response_free(&typed_response);
                 }
                 json_object_put(j_obj);
             }
@@ -2511,6 +2534,9 @@ void validate_email_with_options(
             ZBValidateResponse typed_response = zb_validate_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_validate_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -2684,6 +2710,9 @@ void validate_email_batch_with_options(
                 ZBValidateBatchResponse typed_response = zb_validate_batch_response_from_json(j_obj);
                 if (!zb_shape_error_reported(http_code, error_callback)) {
                     success_callback(typed_response);
+                } else {
+                    /* Never handed to the caller. */
+                    zb_validate_batch_response_free(&typed_response);
                 }
             }
             json_object_put(j_obj);
@@ -3165,7 +3194,8 @@ static void get_file_streaming_internal(
         if (success_callback) {
             ZBGetFileResponse response = new_zb_get_file_response();
             response.success = true;
-            response.local_file_path = local_download_path;
+            free(response.local_file_path);
+            response.local_file_path = strdup(local_download_path);
             success_callback(response);
         }
         return;
@@ -3240,7 +3270,8 @@ static void get_file_streaming_internal(
     if (success_callback) {
         ZBGetFileResponse response = new_zb_get_file_response();
         response.success = true;
-        response.local_file_path = local_download_path;
+        free(response.local_file_path);
+        response.local_file_path = strdup(local_download_path);
         success_callback(response);
     }
 }
@@ -3402,6 +3433,9 @@ void get_activity_data(
             ZBActivityDataResponse typed_response = zb_activity_data_response_from_json(j_obj);
             if (!zb_shape_error_reported(http_code, error_callback)) {
                 success_callback(typed_response);
+            } else {
+                /* Never handed to the caller. */
+                zb_activity_data_response_free(&typed_response);
             }
             json_object_put(j_obj);
         }
@@ -3484,6 +3518,9 @@ static void score_email_internal(
         ZBScoreEmailResponse typed_response = zb_score_email_response_from_json(j_obj);
         if (!zb_shape_error_reported(http_code, error_callback)) {
             success_callback(typed_response);
+        } else {
+            /* Never handed to the caller. */
+            zb_score_email_response_free(&typed_response);
         }
         json_object_put(j_obj);
     }
@@ -3619,7 +3656,7 @@ void find_email(
 
     StringVector string_vector = string_vector_init();
     string_vector_append(&string_vector, zb->api_base_url);
-    string_vector_append(&string_vector, strdup("/guessformat?api_key="));
+    string_vector_append(&string_vector, "/guessformat?api_key=");
     char* api_key_esc = zb_url_escape(zb->api_key);
     string_vector_append(&string_vector, api_key_esc);
     zb_secure_free(api_key_esc);

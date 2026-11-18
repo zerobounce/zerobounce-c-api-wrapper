@@ -10,7 +10,7 @@
 
 ZBScoreEmailResponse new_zb_score_email_response(void) {
     ZBScoreEmailResponse response;
-    response.email = "";
+    response.email = zb_dup_empty();
     response.score = 0;
     response.score_is_set = false;
     return response;
@@ -77,8 +77,10 @@ static bool parse_score_field(const json_object* j, int* score_out) {
 
 ZBScoreEmailResponse zb_score_email_response_from_json(const json_object* j) {
     ZBScoreEmailResponse r = new_zb_score_email_response();
+    /* Every string field is assigned below; drop the initial copies. */
+    zb_score_email_response_free(&r);
 
-    r.email = *(char**)get_json_value(j, json_type_string, "email", &(char*){""});
+    r.email = get_json_string_copy(j, "email", "");
     int score = 0;
     if (parse_score_field(j, &score)) {
         r.score = score;
@@ -86,6 +88,14 @@ ZBScoreEmailResponse zb_score_email_response_from_json(const json_object* j) {
     }
 
     return r;
+}
+
+void zb_score_email_response_free(ZBScoreEmailResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    free(instance->email);
+    instance->email = NULL;
 }
 
 int compare_zb_score_email_response(

@@ -47,4 +47,12 @@ ZBGetFileResponse zb_get_file_response_from_json(const json_object* j);
  */
 int compare_zb_get_file_response(const ZBGetFileResponse* response1, const ZBGetFileResponse* response2);
 
+/**
+ * @brief Frees the strings of a ZBGetFileResponse the SDK produced (every string field is a
+ * heap copy owned by the caller), sets them to NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBGetFileResponse pointer
+ */
+void zb_get_file_response_free(ZBGetFileResponse* instance);
+
 #endif

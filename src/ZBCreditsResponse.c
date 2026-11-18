@@ -85,6 +85,11 @@ ZBCreditsResponse zb_credits_response_from_json(const json_object* j) {
     return r;
 }
 
+void zb_credits_response_free(ZBCreditsResponse* instance) {
+    /* No string fields: nothing to release. Kept so every response type has one. */
+    (void)instance;
+}
+
 int compare_zb_credits_response(const ZBCreditsResponse* response1, const ZBCreditsResponse* response2) {
     return response1->credits == response2->credits;
 }

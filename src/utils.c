@@ -235,3 +235,59 @@ char* get_json_string_copy(const json_object* obj, const char* key, const char* 
     }
     return strdup(def);
 }
+
+/* A heap copy of "": the initial value of a response's string fields. */
+char* zb_dup_empty(void) {
+    return strdup("");
+}
+
+/*
+ * Non-allocating typed getters for the response parsers. Same rules as
+ * get_json_value for each type: a missing or null field gives the default, a
+ * field of another JSON type notes a shape mismatch and gives the default.
+ */
+bool zb_json_get_bool(const json_object* obj, const char* key, bool def) {
+    json_object* value_obj = NULL;
+
+    if (obj && json_object_object_get_ex(obj, key, &value_obj) && value_obj != NULL) {
+        if (json_object_is_type(value_obj, json_type_boolean)) {
+            return json_object_get_boolean(value_obj) ? true : false;
+        }
+        zb_shape_mismatch(key);
+    }
+    return def;
+}
+
+int zb_json_get_int(const json_object* obj, const char* key, int def) {
+    json_object* value_obj = NULL;
+
+    if (obj && json_object_object_get_ex(obj, key, &value_obj) && value_obj != NULL) {
+        if (json_object_is_type(value_obj, json_type_int)) {
+            return json_object_get_int(value_obj);
+        }
+        zb_shape_mismatch(key);
+    }
+    return def;
+}
+
+StringVector zb_json_get_string_vector(const json_object* obj, const char* key) {
+    StringVector vector = string_vector_init();
+    json_object* value_obj = NULL;
+
+    if (obj && json_object_object_get_ex(obj, key, &value_obj) && value_obj != NULL) {
+        if (!json_object_is_type(value_obj, json_type_array)) {
+            zb_shape_mismatch(key);
+            return vector;
+        }
+        size_t array_length = json_object_array_length(value_obj);
+        for (size_t i = 0; i < array_length; i++) {
+            json_object* item = json_object_array_get_idx(value_obj, i);
+            if (json_object_is_type(item, json_type_string)) {
+                string_vector_append(&vector, json_object_get_string(item));
+            } else {
+                zb_shape_mismatch(key);
+            }
+        }
+    }
+    return vector;
+}

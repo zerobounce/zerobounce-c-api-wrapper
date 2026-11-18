@@ -342,12 +342,13 @@ static void t_on_error(ZBErrorResponse error) {
         used += n;
         t_error_text[used] = '\0';
     }
+    zb_error_response_free(&error);
 }
 static void t_on_credits(ZBCreditsResponse r) { (void)r; t_successes++; }
-static void t_on_score(ZBScoreEmailResponse r) { (void)r; t_successes++; }
-static void t_on_send(ZBSendFileResponse r) { (void)r; t_successes++; }
-static void t_on_get(ZBGetFileResponse r) { (void)r; t_successes++; }
-static void t_on_batch(ZBValidateBatchResponse r) { (void)r; t_successes++; }
+static void t_on_score(ZBScoreEmailResponse r) { zb_score_email_response_free(&r); t_successes++; }
+static void t_on_send(ZBSendFileResponse r) { zb_send_file_response_free(&r); t_successes++; }
+static void t_on_get(ZBGetFileResponse r) { zb_get_file_response_free(&r); t_successes++; }
+static void t_on_batch(ZBValidateBatchResponse r) { zb_validate_batch_response_free(&r); t_successes++; }
 static void t_on_raw(const char *json) { (void)json; t_successes++; }
 
 static char t_base[96];

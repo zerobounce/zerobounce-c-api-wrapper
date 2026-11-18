@@ -16,6 +16,13 @@ ZBErrorResponse new_zb_error_response(void) {
     return response;
 }
 
+void zb_error_response_free(ZBErrorResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    string_vector_free(&instance->errors);
+}
+
 char* zb_error_response_to_string(ZBErrorResponse* response) {
     const char* serialization = "ZBErrorResponse{success=%d, errors=[%s]}";
     char* errors = concatenate_strings(&response->errors, ", ");
@@ -764,6 +771,7 @@ ZBErrorResponse parse_error_with_status(const char* error, long status_code) {
     }
 
     response.errors = errors;
+    string_vector_free(&other_messages);
     if (hash_map != NULL) {
         json_object_put(hash_map);
     }

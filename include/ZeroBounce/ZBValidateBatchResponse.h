@@ -86,6 +86,15 @@ ZBValidateError zb_validate_error_from_json(const json_object* j);
 
 
 /**
+ * @brief Frees the strings of a ZBValidateError the SDK produced, sets them to
+ * NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBValidateError pointer
+ */
+void zb_validate_error_free(ZBValidateError* instance);
+
+
+/**
  * @brief Struct used to simulate a vector of ZBValidateError instances.
  *
  */
@@ -207,5 +216,13 @@ ZBValidateBatchResponse zb_validate_batch_response_from_json(const json_object* 
  * @return int 1 if the instances are equal, 0 otherwise
  */
 int compare_zb_validate_batch_response(const ZBValidateBatchResponse* response1, const ZBValidateBatchResponse* response2);
+
+/**
+ * @brief Frees both vectors of a ZBValidateBatchResponse the SDK produced and
+ * every string in them. NULL-safe and idempotent.
+ *
+ * @param instance ZBValidateBatchResponse pointer
+ */
+void zb_validate_batch_response_free(ZBValidateBatchResponse* instance);
 
 #endif

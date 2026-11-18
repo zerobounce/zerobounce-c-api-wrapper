@@ -61,6 +61,7 @@ static void w_on_error(ZBErrorResponse error) {
         }
         used += (size_t)written;
     }
+    zb_error_response_free(&error);
 }
 
 static int warmup_perform(memory *response_data, long *http_code, char **content_type_out) {

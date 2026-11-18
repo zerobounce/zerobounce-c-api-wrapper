@@ -83,4 +83,12 @@ ZBGetApiUsageResponse zb_get_api_usage_response_from_json(const json_object* j);
  */
 int compare_zb_get_api_usage_response(const ZBGetApiUsageResponse* response1, const ZBGetApiUsageResponse* response2);
 
+/**
+ * @brief Frees the strings of a ZBGetApiUsageResponse the SDK produced (every string field is a
+ * heap copy owned by the caller), sets them to NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBGetApiUsageResponse pointer
+ */
+void zb_get_api_usage_response_free(ZBGetApiUsageResponse* instance);
+
 #endif

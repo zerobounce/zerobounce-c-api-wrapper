@@ -3,6 +3,7 @@
 
 #include "ZeroBounce/ZBGetApiUsageResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 ZBGetApiUsageResponse new_zb_get_api_usage_response(void) {
     ZBGetApiUsageResponse response;
@@ -44,9 +45,9 @@ ZBGetApiUsageResponse new_zb_get_api_usage_response(void) {
     response.sub_status_role_based_accept_all = 0;
     response.sub_status_leading_period_removed = 0;
     response.sub_status_alias_address = 0;
-    response.start_date = "";
-    response.end_date = "";
-    response.error = "";
+    response.start_date = zb_dup_empty();
+    response.end_date = zb_dup_empty();
+    response.error = zb_dup_empty();
 
     return response;
 }
@@ -196,49 +197,63 @@ char* zb_get_api_usage_response_to_string(ZBGetApiUsageResponse* response) {
 
 ZBGetApiUsageResponse zb_get_api_usage_response_from_json(const json_object* j) {
     ZBGetApiUsageResponse r = new_zb_get_api_usage_response();
+    /* Every string field is assigned below; drop the initial copies. */
+    zb_get_api_usage_response_free(&r);
 
-    r.total = *(int*)get_json_value(j, json_type_int, "total", &(int){0});
-    r.status_valid = *(int*)get_json_value(j, json_type_int, "status_valid", &(int){0});
-    r.status_invalid = *(int*)get_json_value(j, json_type_int, "status_invalid", &(int){0});
-    r.status_catch_all = *(int*)get_json_value(j, json_type_int, "status_catch_all", &(int){0});
-    r.status_do_not_mail = *(int*)get_json_value(j, json_type_int, "status_do_not_mail", &(int){0});
-    r.status_spamtrap = *(int*)get_json_value(j, json_type_int, "status_spamtrap", &(int){0});
-    r.status_unknown = *(int*)get_json_value(j, json_type_int, "status_unknown", &(int){0});
-    r.sub_status_toxic = *(int*)get_json_value(j, json_type_int, "sub_status_toxic", &(int){0});
-    r.sub_status_disposable = *(int*)get_json_value(j, json_type_int, "sub_status_disposable", &(int){0});
-    r.sub_status_role_based = *(int*)get_json_value(j, json_type_int, "sub_status_role_based", &(int){0});
-    r.sub_status_possible_trap = *(int*)get_json_value(j, json_type_int, "sub_status_possible_trap", &(int){0});
-    r.sub_status_global_suppression = *(int*)get_json_value(j, json_type_int, "sub_status_global_suppression", &(int){0});
-    r.sub_status_timeout_exceeded = *(int*)get_json_value(j, json_type_int, "sub_status_timeout_exceeded", &(int){0});
-    r.sub_status_mail_server_temporary_error = *(int*)get_json_value(j, json_type_int, "sub_status_mail_server_temporary_error", &(int){0});
-    r.sub_status_mail_server_did_not_respond = *(int*)get_json_value(j, json_type_int, "sub_status_mail_server_did_not_respond", &(int){0});
-    r.sub_status_grey_listed = *(int*)get_json_value(j, json_type_int, "sub_status_greylisted", &(int){0});
-    r.sub_status_anti_spam_system = *(int*)get_json_value(j, json_type_int, "sub_status_antispam_system", &(int){0});
-    r.sub_status_does_not_accept_mail = *(int*)get_json_value(j, json_type_int, "sub_status_does_not_accept_mail", &(int){0});
-    r.sub_status_exception_occurred = *(int*)get_json_value(j, json_type_int, "sub_status_exception_occurred", &(int){0});
-    r.sub_status_failed_syntax_check = *(int*)get_json_value(j, json_type_int, "sub_status_failed_syntax_check", &(int){0});
-    r.sub_status_mailbox_not_found = *(int*)get_json_value(j, json_type_int, "sub_status_mailbox_not_found", &(int){0});
-    r.sub_status_unroutable_ip_address = *(int*)get_json_value(j, json_type_int, "sub_status_unroutable_ip_address", &(int){0});
-    r.sub_status_possible_typo = *(int*)get_json_value(j, json_type_int, "sub_status_possible_typo", &(int){0});
-    r.sub_status_no_dns_entries = *(int*)get_json_value(j, json_type_int, "sub_status_no_dns_entries", &(int){0});
-    r.sub_status_role_based_catch_all = *(int*)get_json_value(j, json_type_int, "sub_status_role_based_catch_all", &(int){0});
-    r.sub_status_mailbox_quota_exceeded = *(int*)get_json_value(j, json_type_int, "sub_status_mailbox_quota_exceeded", &(int){0});
-    r.sub_status_forcible_disconnect = *(int*)get_json_value(j, json_type_int, "sub_status_forcible_disconnect", &(int){0});
-    r.sub_status_failed_smtp_connection = *(int*)get_json_value(j, json_type_int, "sub_status_failed_smtp_connection", &(int){0});
-    r.sub_status_mx_forward = *(int*)get_json_value(j, json_type_int, "sub_status_mx_forward", &(int){0});
-    r.sub_status_alternate = *(int*)get_json_value(j, json_type_int, "sub_status_alternate", &(int){0});
-    r.sub_status_blocked = *(int*)get_json_value(j, json_type_int, "sub_status_blocked", &(int){0});
-    r.sub_status_allowed = *(int*)get_json_value(j, json_type_int, "sub_status_allowed", &(int){0});
-    r.sub_status_accept_all = *(int*)get_json_value(j, json_type_int, "sub_status_accept_all", &(int){0});
-    r.sub_status_gold = *(int*)get_json_value(j, json_type_int, "sub_status_gold", &(int){0});
-    r.sub_status_role_based_accept_all = *(int*)get_json_value(j, json_type_int, "sub_status_role_based_accept_all", &(int){0});
-    r.sub_status_leading_period_removed = *(int*)get_json_value(j, json_type_int, "sub_status_leading_period_removed", &(int){0});
-    r.sub_status_alias_address = *(int*)get_json_value(j, json_type_int, "sub_status_alias_address", &(int){0});
-    r.start_date = *(char**)get_json_value(j, json_type_string, "start_date", &(char*){""});
-    r.end_date = *(char**)get_json_value(j, json_type_string, "end_date", &(char*){""});
-    r.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
+    r.total = zb_json_get_int(j, "total", 0);
+    r.status_valid = zb_json_get_int(j, "status_valid", 0);
+    r.status_invalid = zb_json_get_int(j, "status_invalid", 0);
+    r.status_catch_all = zb_json_get_int(j, "status_catch_all", 0);
+    r.status_do_not_mail = zb_json_get_int(j, "status_do_not_mail", 0);
+    r.status_spamtrap = zb_json_get_int(j, "status_spamtrap", 0);
+    r.status_unknown = zb_json_get_int(j, "status_unknown", 0);
+    r.sub_status_toxic = zb_json_get_int(j, "sub_status_toxic", 0);
+    r.sub_status_disposable = zb_json_get_int(j, "sub_status_disposable", 0);
+    r.sub_status_role_based = zb_json_get_int(j, "sub_status_role_based", 0);
+    r.sub_status_possible_trap = zb_json_get_int(j, "sub_status_possible_trap", 0);
+    r.sub_status_global_suppression = zb_json_get_int(j, "sub_status_global_suppression", 0);
+    r.sub_status_timeout_exceeded = zb_json_get_int(j, "sub_status_timeout_exceeded", 0);
+    r.sub_status_mail_server_temporary_error = zb_json_get_int(j, "sub_status_mail_server_temporary_error", 0);
+    r.sub_status_mail_server_did_not_respond = zb_json_get_int(j, "sub_status_mail_server_did_not_respond", 0);
+    r.sub_status_grey_listed = zb_json_get_int(j, "sub_status_greylisted", 0);
+    r.sub_status_anti_spam_system = zb_json_get_int(j, "sub_status_antispam_system", 0);
+    r.sub_status_does_not_accept_mail = zb_json_get_int(j, "sub_status_does_not_accept_mail", 0);
+    r.sub_status_exception_occurred = zb_json_get_int(j, "sub_status_exception_occurred", 0);
+    r.sub_status_failed_syntax_check = zb_json_get_int(j, "sub_status_failed_syntax_check", 0);
+    r.sub_status_mailbox_not_found = zb_json_get_int(j, "sub_status_mailbox_not_found", 0);
+    r.sub_status_unroutable_ip_address = zb_json_get_int(j, "sub_status_unroutable_ip_address", 0);
+    r.sub_status_possible_typo = zb_json_get_int(j, "sub_status_possible_typo", 0);
+    r.sub_status_no_dns_entries = zb_json_get_int(j, "sub_status_no_dns_entries", 0);
+    r.sub_status_role_based_catch_all = zb_json_get_int(j, "sub_status_role_based_catch_all", 0);
+    r.sub_status_mailbox_quota_exceeded = zb_json_get_int(j, "sub_status_mailbox_quota_exceeded", 0);
+    r.sub_status_forcible_disconnect = zb_json_get_int(j, "sub_status_forcible_disconnect", 0);
+    r.sub_status_failed_smtp_connection = zb_json_get_int(j, "sub_status_failed_smtp_connection", 0);
+    r.sub_status_mx_forward = zb_json_get_int(j, "sub_status_mx_forward", 0);
+    r.sub_status_alternate = zb_json_get_int(j, "sub_status_alternate", 0);
+    r.sub_status_blocked = zb_json_get_int(j, "sub_status_blocked", 0);
+    r.sub_status_allowed = zb_json_get_int(j, "sub_status_allowed", 0);
+    r.sub_status_accept_all = zb_json_get_int(j, "sub_status_accept_all", 0);
+    r.sub_status_gold = zb_json_get_int(j, "sub_status_gold", 0);
+    r.sub_status_role_based_accept_all = zb_json_get_int(j, "sub_status_role_based_accept_all", 0);
+    r.sub_status_leading_period_removed = zb_json_get_int(j, "sub_status_leading_period_removed", 0);
+    r.sub_status_alias_address = zb_json_get_int(j, "sub_status_alias_address", 0);
+    r.start_date = get_json_string_copy(j, "start_date", "");
+    r.end_date = get_json_string_copy(j, "end_date", "");
+    r.error = get_json_string_copy(j, "error", "");
 
     return r;
+}
+
+void zb_get_api_usage_response_free(ZBGetApiUsageResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    free(instance->start_date);
+    instance->start_date = NULL;
+    free(instance->end_date);
+    instance->end_date = NULL;
+    free(instance->error);
+    instance->error = NULL;
 }
 
 int compare_zb_get_api_usage_response(const ZBGetApiUsageResponse* response1, const ZBGetApiUsageResponse* response2) {

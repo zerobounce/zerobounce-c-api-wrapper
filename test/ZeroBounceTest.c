@@ -6,6 +6,7 @@
 #include "fff.h"
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/zb_internal.h"
 
 void offline_run_tests(void);
 void warmup_run_tests(void);
@@ -61,6 +62,7 @@ void on_error_valid(ZBErrorResponse error_response) {
 
 void on_error_invalid(ZBErrorResponse error_response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_error_response(&expected_error_response, &error_response));
+    zb_error_response_free(&error_response);
 }
 
 void on_success_credits_valid(ZBCreditsResponse response) {
@@ -73,6 +75,7 @@ void on_success_credits_invalid(ZBCreditsResponse response) {
 
 void on_success_api_usage_valid(ZBGetApiUsageResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_get_api_usage_response(&expected_api_usage_response, &response));
+    zb_get_api_usage_response_free(&response);
 }
 
 void on_success_api_usage_invalid(ZBGetApiUsageResponse response) {
@@ -81,6 +84,7 @@ void on_success_api_usage_invalid(ZBGetApiUsageResponse response) {
 
 void on_success_validate_valid(ZBValidateResponse response) {
     TEST_ASSERT_EQUAL_INT(1,compare_zb_validate_response(&expected_validate_response, &response));
+    zb_validate_response_free(&response);
 }
 
 void on_success_validate_invalid(ZBValidateResponse response) {
@@ -89,6 +93,7 @@ void on_success_validate_invalid(ZBValidateResponse response) {
 
 void on_success_validate_batch_valid(ZBValidateBatchResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_validate_batch_response(&expected_validate_batch_response, &response));
+    zb_validate_batch_response_free(&response);
 }
 
 void on_success_validate_batch_invalid(ZBValidateBatchResponse response) {
@@ -97,6 +102,7 @@ void on_success_validate_batch_invalid(ZBValidateBatchResponse response) {
 
 void on_success_send_file_valid(ZBSendFileResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_send_file_response(&expected_send_file_response, &response));
+    zb_send_file_response_free(&response);
 }
 
 void on_success_send_file_invalid(ZBSendFileResponse response) {
@@ -105,6 +111,7 @@ void on_success_send_file_invalid(ZBSendFileResponse response) {
 
 void on_success_file_status_valid(ZBFileStatusResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_file_status_response(&expected_file_status_response, &response));
+    zb_file_status_response_free(&response);
 }
 
 void on_success_file_status_invalid(ZBFileStatusResponse response) {
@@ -113,6 +120,7 @@ void on_success_file_status_invalid(ZBFileStatusResponse response) {
 
 void on_success_get_file_valid(ZBGetFileResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_get_file_response(&expected_get_file_response, &response));
+    zb_get_file_response_free(&response);
 }
 
 void on_success_get_file_invalid(ZBGetFileResponse response) {
@@ -121,6 +129,7 @@ void on_success_get_file_invalid(ZBGetFileResponse response) {
 
 void on_success_delete_file_valid(ZBDeleteFileResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_delete_file_response(&expected_delete_file_response, &response));
+    zb_delete_file_response_free(&response);
 }
 
 void on_success_delete_file_invalid(ZBDeleteFileResponse response) {
@@ -129,6 +138,7 @@ void on_success_delete_file_invalid(ZBDeleteFileResponse response) {
 
 void on_success_activity_data_valid(ZBActivityDataResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_activity_data_response(&expected_activity_data_response, &response));
+    zb_activity_data_response_free(&response);
 }
 
 void on_success_activity_data_invalid(ZBActivityDataResponse response) {
@@ -137,6 +147,7 @@ void on_success_activity_data_invalid(ZBActivityDataResponse response) {
 
 void on_success_score_email_valid(ZBScoreEmailResponse response) {
     TEST_ASSERT_EQUAL_INT(1, compare_zb_score_email_response(&expected_score_email_response, &response));
+    zb_score_email_response_free(&response);
 }
 
 static char last_raw_json_buffer[4096];
@@ -1297,6 +1308,240 @@ void test_search_domain_status_serialize_functions() {
     zb_domain_search_response_free(&response_obj);
 }
 
+/*
+ * Memory: every string a *_from_json parser returns is a heap copy (default
+ * included), so the matching *_free is safe on a response with its fields
+ * present or missing. Run under ASan/LSan: a freed literal, a double free or a
+ * leaked holder fails the run.
+ */
+static json_object* parse_or_fail(const char* text)
+{
+    json_object* j = json_tokener_parse(text);
+    TEST_ASSERT_NOT_NULL_MESSAGE(j, text);
+    return j;
+}
+
+void test_validate_response_free_present_and_missing(void)
+{
+    const char* bodies[] = {
+        "{\"address\":\"a@b.c\",\"status\":\"valid\",\"sub_status\":\"role_based\",\"account\":\"a\","
+        "\"domain\":\"b.c\",\"did_you_mean\":\"x\",\"domain_age_days\":\"1\",\"active_in_days\":\"2\","
+        "\"active_first_seen\":\"3\",\"free_email\":true,\"mx_found\":\"true\",\"mx_record\":\"mx\","
+        "\"smtp_provider\":\"p\",\"catchall_domain\":true,\"firstname\":\"f\",\"lastname\":\"l\","
+        "\"gender\":\"g\",\"city\":\"c\",\"region\":\"r\",\"zipcode\":\"z\",\"country\":\"C\","
+        "\"processed_at\":\"t\",\"error\":\"e\",\"domain_website_exists\":\"true\","
+        "\"domain_registrant_company_name\":\"co\",\"Message\":\"m\"}",
+        "{}",
+        "{\"address\":\"a@b.c\",\"status\":null,\"mx_found\":\"FALSE\"}",
+    };
+    for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+        json_object* j = parse_or_fail(bodies[i]);
+        ZBValidateResponse r = zb_validate_response_from_json(j);
+        json_object_put(j);
+        TEST_ASSERT_NOT_NULL(r.address);
+        TEST_ASSERT_NOT_NULL(r.message);
+        if (i == 0) {
+            TEST_ASSERT_EQUAL_STRING("a@b.c", r.address);
+            TEST_ASSERT_EQUAL_INT(Valid, r.status);
+            TEST_ASSERT_EQUAL_INT(RoleBased, r.sub_status);
+            TEST_ASSERT_TRUE(r.mx_found);
+            TEST_ASSERT_EQUAL_STRING("m", r.message);
+        } else {
+            TEST_ASSERT_EQUAL_STRING("", r.account);
+        }
+        zb_validate_response_free(&r);
+        TEST_ASSERT_NULL(r.address);
+        TEST_ASSERT_NULL(r.message);
+        zb_validate_response_free(&r);  /* idempotent */
+    }
+    zb_validate_response_free(NULL);
+
+    /* An initialiser's struct is freeable too. */
+    ZBValidateResponse fresh = new_zb_validate_response();
+    zb_validate_response_free(&fresh);
+}
+
+void test_small_response_types_free_present_and_missing(void)
+{
+    const char* bodies[] = {
+        "{\"success\":true,\"message\":\"done\",\"file_name\":\"n.csv\",\"file_id\":\"id1\","
+        "\"error_reason\":\"er\",\"upload_date\":\"d\",\"file_status\":\"Complete\","
+        "\"complete_percentage\":\"100%\",\"file_phase_2_status\":\"p\",\"return_url\":\"u\","
+        "\"found\":true,\"active_in_days\":\"30\",\"error\":\"e\",\"email\":\"a@b.c\",\"score\":\"4\"}",
+        "{\"file_status\":\"x\"}",
+        "{\"message\":[\"a\",\"b\"],\"success\":false}",
+    };
+    for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+        json_object* j = parse_or_fail(bodies[i]);
+
+        ZBSendFileResponse send = zb_send_file_response_from_json(j);
+        ZBFileStatusResponse status = zb_file_status_response_from_json(j);
+        ZBGetFileResponse get = zb_get_file_response_from_json(j);
+        ZBDeleteFileResponse del = zb_delete_file_response_from_json(j);
+        ZBActivityDataResponse activity = zb_activity_data_response_from_json(j);
+        ZBScoreEmailResponse score = zb_score_email_response_from_json(j);
+        ZBCreditsResponse credits = zb_credits_response_from_json(j);
+        json_object_put(j);
+
+        if (i == 0) {
+            TEST_ASSERT_EQUAL_size_t(1, send.message.size);
+            TEST_ASSERT_EQUAL_STRING("done", send.message.data[0]);
+            TEST_ASSERT_EQUAL_STRING("n.csv", send.file_name);
+            TEST_ASSERT_EQUAL_STRING("100%", status.complete_percentage);
+            TEST_ASSERT_EQUAL_STRING("done", get.message);
+            TEST_ASSERT_EQUAL_STRING("", get.local_file_path);
+            TEST_ASSERT_EQUAL_STRING("id1", del.file_id);
+            TEST_ASSERT_EQUAL_INT(30, activity.active_in_days);
+            TEST_ASSERT_EQUAL_STRING("a@b.c", score.email);
+        } else {
+            TEST_ASSERT_EQUAL_STRING("", send.file_id);
+            TEST_ASSERT_EQUAL_STRING("", del.file_name);
+            TEST_ASSERT_EQUAL_STRING("", score.email);
+            TEST_ASSERT_EQUAL_INT(-1, activity.active_in_days);
+        }
+
+        zb_send_file_response_free(&send);
+        zb_file_status_response_free(&status);
+        zb_get_file_response_free(&get);
+        zb_delete_file_response_free(&del);
+        zb_activity_data_response_free(&activity);
+        zb_score_email_response_free(&score);
+        zb_credits_response_free(&credits);
+        TEST_ASSERT_NULL(send.file_name);
+        TEST_ASSERT_EQUAL_size_t(0, send.message.size);
+        TEST_ASSERT_NULL(status.message);
+        TEST_ASSERT_NULL(get.local_file_path);
+        TEST_ASSERT_NULL(del.file_id);
+        TEST_ASSERT_NULL(activity.error);
+        TEST_ASSERT_NULL(score.email);
+
+        /* Twice is fine. */
+        zb_send_file_response_free(&send);
+        zb_file_status_response_free(&status);
+        zb_get_file_response_free(&get);
+        zb_delete_file_response_free(&del);
+        zb_activity_data_response_free(&activity);
+        zb_score_email_response_free(&score);
+    }
+
+    ZBSendFileResponse send0 = new_zb_send_file_response();
+    ZBFileStatusResponse status0 = new_zb_file_status_response();
+    ZBGetFileResponse get0 = new_zb_get_file_response();
+    ZBDeleteFileResponse del0 = new_zb_delete_file_response();
+    ZBActivityDataResponse activity0 = new_zb_activity_data_response();
+    ZBScoreEmailResponse score0 = new_zb_score_email_response();
+    zb_send_file_response_free(&send0);
+    zb_file_status_response_free(&status0);
+    zb_get_file_response_free(&get0);
+    zb_delete_file_response_free(&del0);
+    zb_activity_data_response_free(&activity0);
+    zb_score_email_response_free(&score0);
+    zb_send_file_response_free(NULL);
+    zb_file_status_response_free(NULL);
+    zb_get_file_response_free(NULL);
+    zb_delete_file_response_free(NULL);
+    zb_activity_data_response_free(NULL);
+    zb_score_email_response_free(NULL);
+    zb_credits_response_free(NULL);
+}
+
+void test_api_usage_and_error_response_free(void)
+{
+    json_object* j = parse_or_fail("{\"total\":5,\"status_valid\":3,\"start_date\":\"1/1/2025\","
+                                   "\"end_date\":\"2/1/2025\",\"error\":\"oops\"}");
+    ZBGetApiUsageResponse usage = zb_get_api_usage_response_from_json(j);
+    json_object_put(j);
+    TEST_ASSERT_EQUAL_INT(5, usage.total);
+    TEST_ASSERT_EQUAL_STRING("1/1/2025", usage.start_date);
+    zb_get_api_usage_response_free(&usage);
+    TEST_ASSERT_NULL(usage.start_date);
+    zb_get_api_usage_response_free(&usage);
+
+    j = parse_or_fail("{}");
+    ZBGetApiUsageResponse empty = zb_get_api_usage_response_from_json(j);
+    json_object_put(j);
+    TEST_ASSERT_EQUAL_STRING("", empty.error);
+    zb_get_api_usage_response_free(&empty);
+    ZBGetApiUsageResponse fresh = new_zb_get_api_usage_response();
+    zb_get_api_usage_response_free(&fresh);
+    zb_get_api_usage_response_free(NULL);
+
+    ZBErrorResponse err = parse_error_with_status("{\"error\":\"bad\",\"message\":[\"m1\",\"m2\"]}", 400);
+    TEST_ASSERT_EQUAL_size_t(3, err.errors.size);
+    zb_error_response_free(&err);
+    TEST_ASSERT_EQUAL_size_t(0, err.errors.size);
+    zb_error_response_free(&err);
+    ZBErrorResponse blank = new_zb_error_response();
+    zb_error_response_free(&blank);
+    zb_error_response_free(NULL);
+}
+
+void test_validate_batch_parse_and_free(void)
+{
+    json_object* j = parse_or_fail(
+        "{\"email_batch\":[{\"address\":\"a@b.c\",\"status\":\"valid\",\"firstname\":\"f\"},"
+        "{\"address\":\"d@e.f\",\"status\":\"invalid\"},{}],"
+        "\"errors\":[{\"error\":\"bad\",\"email_address\":\"x\"},{\"error\":\"worse\"},{}]}");
+    ZBValidateBatchResponse batch = zb_validate_batch_response_from_json(j);
+    json_object_put(j);
+    TEST_ASSERT_EQUAL_size_t(3, batch.email_batch.size);
+    TEST_ASSERT_EQUAL_size_t(3, batch.errors.size);
+    TEST_ASSERT_EQUAL_STRING("f", batch.email_batch.data[0].first_name);
+    TEST_ASSERT_EQUAL_STRING("", batch.email_batch.data[1].first_name);
+    TEST_ASSERT_EQUAL_STRING("bad", batch.errors.data[0].error);
+    TEST_ASSERT_EQUAL_STRING("", batch.errors.data[1].email_address);
+    zb_validate_batch_response_free(&batch);
+    TEST_ASSERT_EQUAL_size_t(0, batch.email_batch.size);
+    TEST_ASSERT_NULL(batch.errors.data);
+    zb_validate_batch_response_free(&batch);
+    zb_validate_batch_response_free(NULL);
+
+    j = parse_or_fail("{\"error\":\"e\",\"email_address\":\"a@b.c\"}");
+    ZBValidateError one = zb_validate_error_from_json(j);
+    json_object_put(j);
+    TEST_ASSERT_EQUAL_STRING("e", one.error);
+    zb_validate_error_free(&one);
+    TEST_ASSERT_NULL(one.error);
+    zb_validate_error_free(&one);
+    j = parse_or_fail("{}");
+    ZBValidateError none = zb_validate_error_from_json(j);
+    json_object_put(j);
+    TEST_ASSERT_EQUAL_STRING("", none.email_address);
+    zb_validate_error_free(&none);
+    ZBValidateError fresh = new_zb_validate_error();
+    zb_validate_error_free(&fresh);
+    zb_validate_error_free(NULL);
+}
+
+void test_internal_json_getters_match_get_json_value(void)
+{
+    json_object* j = parse_or_fail("{\"b\":true,\"i\":7,\"s\":\"x\",\"a\":[\"p\",1,\"q\"],\"n\":null}");
+    zb_shape_reset();
+    TEST_ASSERT_TRUE(zb_json_get_bool(j, "b", false));
+    TEST_ASSERT_EQUAL_INT(7, zb_json_get_int(j, "i", 0));
+    TEST_ASSERT_NULL(zb_shape_error_field());
+    TEST_ASSERT_EQUAL_INT(9, zb_json_get_int(j, "missing", 9));
+    TEST_ASSERT_EQUAL_INT(9, zb_json_get_int(j, "n", 9));
+    TEST_ASSERT_NULL(zb_shape_error_field());
+    TEST_ASSERT_EQUAL_INT(9, zb_json_get_int(j, "s", 9));  /* wrong type: default + shape error */
+    TEST_ASSERT_EQUAL_STRING("s", zb_shape_error_field());
+    zb_shape_reset();
+    TEST_ASSERT_TRUE(zb_json_get_bool(j, "i", true));
+    TEST_ASSERT_EQUAL_STRING("i", zb_shape_error_field());
+    zb_shape_reset();
+    StringVector v = zb_json_get_string_vector(j, "a");  /* the non-string item is skipped */
+    TEST_ASSERT_EQUAL_size_t(2, v.size);
+    TEST_ASSERT_EQUAL_STRING("q", v.data[1]);
+    TEST_ASSERT_EQUAL_STRING("a", zb_shape_error_field());
+    string_vector_free(&v);
+    zb_shape_reset();
+    v = zb_json_get_string_vector(j, "s");
+    TEST_ASSERT_EQUAL_size_t(0, v.size);
+    TEST_ASSERT_EQUAL_STRING("s", zb_shape_error_field());
+    zb_shape_reset();
+    json_object_put(j);
+}
+
 
 int main(void)
 {
@@ -1350,6 +1595,11 @@ int main(void)
     RUN_TEST(test_search_domain_status_invalid_payload);
     RUN_TEST(test_search_domain_status_valid_payload);
     RUN_TEST(test_search_domain_status_serialize_functions);
+    RUN_TEST(test_validate_response_free_present_and_missing);
+    RUN_TEST(test_small_response_types_free_present_and_missing);
+    RUN_TEST(test_api_usage_and_error_response_free);
+    RUN_TEST(test_validate_batch_parse_and_free);
+    RUN_TEST(test_internal_json_getters_match_get_json_value);
 
     offline_run_tests();
     warmup_run_tests();

@@ -54,4 +54,12 @@ ZBFileStatusResponse zb_file_status_response_from_json(const json_object* j);
  */
 int compare_zb_file_status_response(const ZBFileStatusResponse* response1, const ZBFileStatusResponse* response2);
 
+/**
+ * @brief Frees the strings of a ZBFileStatusResponse the SDK produced (every string field is a
+ * heap copy owned by the caller), sets them to NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBFileStatusResponse pointer
+ */
+void zb_file_status_response_free(ZBFileStatusResponse* instance);
+
 #endif

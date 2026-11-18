@@ -424,6 +424,7 @@ static void on_error(ZBErrorResponse error) {
         used += n;
         g_error_text[used] = '\0';
     }
+    zb_error_response_free(&error);
 }
 
 static void expect_short_error(void) {
@@ -465,6 +466,7 @@ static void on_validate(ZBValidateResponse response) {
     g_success_called = 1;
     snprintf(tls_echo, sizeof(tls_echo), "%s", response.address ? response.address : "");
     snprintf(g_echo, sizeof(g_echo), "%s", tls_echo);
+    zb_validate_response_free(&response);
 }
 
 static char g_validate_message[256];
@@ -472,6 +474,7 @@ static char g_validate_message[256];
 static void on_validate_message(ZBValidateResponse response) {
     g_success_called = 1;
     snprintf(g_validate_message, sizeof(g_validate_message), "%s", response.message ? response.message : "");
+    zb_validate_response_free(&response);
 }
 
 static void on_batch(ZBValidateBatchResponse response) {
@@ -483,26 +486,31 @@ static void on_batch(ZBValidateBatchResponse response) {
     if (response.errors.size > 0) {
         snprintf(g_error_text, sizeof(g_error_text), "%s", response.errors.data[0].email_address);
     }
+    zb_validate_batch_response_free(&response);
 }
 
 static void on_send(ZBSendFileResponse response) {
     g_success_called = 1;
     snprintf(g_echo, sizeof(g_echo), "%s", response.file_id ? response.file_id : "");
+    zb_send_file_response_free(&response);
 }
 
 static void on_status(ZBFileStatusResponse response) {
     g_success_called = 1;
     snprintf(g_echo, sizeof(g_echo), "%s", response.file_id ? response.file_id : "");
+    zb_file_status_response_free(&response);
 }
 
 static void on_get(ZBGetFileResponse response) {
     g_success_called = 1;
     (void)response;
+    zb_get_file_response_free(&response);
 }
 
 static void on_delete(ZBDeleteFileResponse response) {
     g_success_called = 1;
     (void)response;
+    zb_delete_file_response_free(&response);
 }
 
 static void on_activity(ZBActivityDataResponse response) {
@@ -510,11 +518,13 @@ static void on_activity(ZBActivityDataResponse response) {
     if (g_leak_mode != 10) {
         TEST_ASSERT_TRUE(response.found);
     }
+    zb_activity_data_response_free(&response);
 }
 
 static void on_score(ZBScoreEmailResponse response) {
     g_success_called = 1;
     snprintf(g_echo, sizeof(g_echo), "%s", response.email ? response.email : "");
+    zb_score_email_response_free(&response);
 }
 
 static void on_find(ZBFindEmailResponse response) {
@@ -532,6 +542,7 @@ static void on_usage(ZBGetApiUsageResponse response) {
     if (g_leak_mode != 10) {
         TEST_ASSERT_EQUAL_INT(1, response.total);
     }
+    zb_get_api_usage_response_free(&response);
 }
 
 static char g_raw[1024];
@@ -694,11 +705,13 @@ static char g_job_message[256];
 static void on_delete_message(ZBDeleteFileResponse response) {
     g_success_called = 1;
     snprintf(g_job_message, sizeof(g_job_message), "%s", response.message ? response.message : "<null>");
+    zb_delete_file_response_free(&response);
 }
 
 static void on_status_message(ZBFileStatusResponse response) {
     g_success_called = 1;
     snprintf(g_job_message, sizeof(g_job_message), "%s", response.message ? response.message : "<null>");
+    zb_file_status_response_free(&response);
 }
 
 /* A file job's message is one string or a list of strings, and the public type
@@ -2193,11 +2206,13 @@ static void scripted_on_error(ZBErrorResponse error) {
     g_scripted_errors++;
     g_scripted_status = error.status_code;
     snprintf(g_scripted_text, sizeof(g_scripted_text), "%s", error.errors.size ? error.errors.data[0] : "");
+    zb_error_response_free(&error);
 }
 
 static void scripted_on_get(ZBGetFileResponse response) {
     (void)response;
     g_scripted_successes++;
+    zb_get_file_response_free(&response);
 }
 
 #define DOWNLOAD_KINDS 6
@@ -3819,7 +3834,8 @@ static void add_shape_field(const char *name, size_t len) {
 
 static int scan_shape_fields(void) {
     static const char *const readers[] = {
-        "get_json_value(", "get_json_string_copy(", "zb_json_require_string(",
+        "get_json_value(", "get_json_string_copy(", "zb_json_get_bool(", "zb_json_get_int(",
+        "zb_json_get_string_vector(", "zb_json_require_string(",
         "zb_json_array_or_null(", "json_object_object_get_ex(",
     };
     DIR *dir = opendir(ZB_SOURCE_DIR);
@@ -4609,6 +4625,7 @@ static void on_validate_empty_fields(ZBValidateResponse response) {
                         response.error[0] == '\0' && response.domain_website_exists &&
                         response.domain_website_exists[0] == '\0' && !response.free_email && !response.mx_found &&
                         !response.catchall_domain;
+    zb_validate_response_free(&response);
 }
 
 void test_offline_missing_validate_fields_read_as_empty_values(void) {
@@ -5061,6 +5078,10 @@ void test_offline_typed_file_parsers_read_success_like_the_error_path(void) {
             Z3_CHECK(status, zb_file_status_response_from_json)
             Z3_CHECK(got, zb_get_file_response_from_json)
 #undef Z3_CHECK
+            zb_send_file_response_free(&sent);
+            zb_delete_file_response_free(&deleted);
+            zb_file_status_response_free(&status);
+            zb_get_file_response_free(&got);
             json_object_put(j);
         }
     }

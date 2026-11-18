@@ -3,13 +3,14 @@
 
 #include "ZeroBounce/ZBActivityDataResponse.h"
 #include "ZeroBounce/utils.h"
+#include "ZeroBounce/zb_internal.h"
 
 ZBActivityDataResponse new_zb_activity_data_response(void) {
     ZBActivityDataResponse response;
 
     response.found = false;
     response.active_in_days = -1;
-    response.error = "";
+    response.error = zb_dup_empty();
 
     return response;
 }
@@ -48,12 +49,24 @@ char* zb_activity_data_response_to_string(ZBActivityDataResponse* response) {
 
 ZBActivityDataResponse zb_activity_data_response_from_json(const json_object* j) {
     ZBActivityDataResponse r = new_zb_activity_data_response();
+    /* Every string field is assigned below; drop the initial copies. */
+    zb_activity_data_response_free(&r);
 
-    r.found = *(bool*)get_json_value(j, json_type_boolean, "found", &(bool){false});
-    r.active_in_days = atoi(*(char**)get_json_value(j, json_type_string, "active_in_days", &(char*){"-1"}));
-    r.error = *(char**)get_json_value(j, json_type_string, "error", &(char*){""});
+    r.found = zb_json_get_bool(j, "found", false);
+    char* active_in_days = get_json_string_copy(j, "active_in_days", "-1");
+    r.active_in_days = atoi(active_in_days);
+    free(active_in_days);
+    r.error = get_json_string_copy(j, "error", "");
 
     return r;
+}
+
+void zb_activity_data_response_free(ZBActivityDataResponse* instance) {
+    if (!instance) {
+        return;
+    }
+    free(instance->error);
+    instance->error = NULL;
 }
 
 int compare_zb_activity_data_response(const ZBActivityDataResponse* response1, const ZBActivityDataResponse* response2) {

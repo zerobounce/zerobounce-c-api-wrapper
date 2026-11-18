@@ -25,4 +25,12 @@ int compare_zb_score_email_response(
     const ZBScoreEmailResponse* response2
 );
 
+/**
+ * @brief Frees the strings of a ZBScoreEmailResponse the SDK produced (every string field is a
+ * heap copy owned by the caller), sets them to NULL. NULL-safe and idempotent.
+ *
+ * @param instance ZBScoreEmailResponse pointer
+ */
+void zb_score_email_response_free(ZBScoreEmailResponse* instance);
+
 #endif
